@@ -1,6 +1,8 @@
 package com.ghostkey.app
 
-import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -29,19 +31,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.lifecycleScope
-import com.ghostkey.app.crypto.OpenKeychainHelper
-import com.ghostkey.app.net.EncryptedMessageRecord
+import com.ghostkey.app.crypto.PgpKeyPairArmored
+import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.net.TorRelayClient
-import com.ghostkey.app.ui.*
+import com.ghostkey.app.ui.theme.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.*
 import kotlin.system.exitProcess
 
 data class ChatMessage(
@@ -56,18 +61,19 @@ data class ChatMessage(
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var openKeychain: OpenKeychainHelper
     private val torClient = TorRelayClient()
 
     // Volatile in-memory state - Never saved to SQLite or disk
     private val messagesState = mutableStateListOf<ChatMessage>()
-    private val isOpenKeychainConnected = mutableStateOf(false)
     private val isRelayConnected = mutableStateOf(false)
 
+    // Standalone PGP In-Memory State
+    private var myPgpKeys by mutableStateOf<PgpKeyPairArmored?>(null)
+    private var recipientArmoredKey by mutableStateOf("")
+    private var recipientFingerprint by mutableStateOf("")
+    private var isGeneratingKey by mutableStateOf(false)
+
     // Configuration state
-    private var recipientUserId by mutableStateOf("recipient@ghostkey.onion")
-    private var recipientKeyIdHex by mutableStateOf("")
-    private var myMailboxKeyId by mutableStateOf("my-ghostkey-address")
     private var relayServerUrl by mutableStateOf("http://10.0.2.2:8765")
     private var useTorSocks by mutableStateOf(false)
 
@@ -80,14 +86,11 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE
         )
 
-        // Initialize OpenKeychain binding
-        openKeychain = OpenKeychainHelper(this) { isBound ->
-            isOpenKeychainConnected.value = isBound
-        }
+        // Generate ephemeral in-memory keys on startup
+        generateFreshKeys()
 
         // Initialize network client
         torClient.updateConfig(relayServerUrl, useTorSocks)
-        connectToRelayMailbox()
 
         setContent {
             GhostKeyTheme {
@@ -99,11 +102,29 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         torClient.disconnectWebSocket()
-        openKeychain.unbindService()
     }
 
-    private fun connectToRelayMailbox() {
-        val myMailboxHash = OpenKeychainHelper.deriveMailboxHash(myMailboxKeyId)
+    private fun generateFreshKeys() {
+        isGeneratingKey = true
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val keys = StandalonePgpEngine.generateKeyPair()
+                runOnUiThread {
+                    myPgpKeys = keys
+                    isGeneratingKey = false
+                    connectToRelayMailbox(keys.fingerprint)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    isGeneratingKey = false
+                    Toast.makeText(this@MainActivity, "Keygen failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun connectToRelayMailbox(fingerprint: String) {
+        val myMailboxHash = StandalonePgpEngine.deriveMailbox(fingerprint)
         torClient.subscribeLive(
             mailboxHash = myMailboxHash,
             onMessageReceived = { record ->
@@ -117,7 +138,7 @@ class MainActivity : ComponentActivity() {
                         isDecrypted = false
                     )
                     messagesState.add(msg)
-                    // Automatically attempt to decrypt with OpenKeychain
+                    // Automatically attempt to decrypt with standalone engine
                     decryptMessage(msg)
                 }
             },
@@ -157,60 +178,63 @@ class MainActivity : ComponentActivity() {
     private fun sendMessage(text: String) {
         if (text.isBlank()) return
 
-        val recipientHash = OpenKeychainHelper.deriveMailboxHash(
-            if (recipientKeyIdHex.isNotBlank()) recipientKeyIdHex else recipientUserId
-        )
+        val keys = myPgpKeys
+        if (keys == null) {
+            Toast.makeText(this, "No active PGP key in RAM. Please generate keys first.", Toast.LENGTH_SHORT).show()
+            return
+        }
 
-        val recipientUserIds = if (recipientUserId.isNotBlank()) arrayOf(recipientUserId) else null
-        val recipientKeyIds = if (recipientKeyIdHex.isNotBlank()) {
+        if (recipientArmoredKey.isBlank()) {
+            Toast.makeText(this, "Please paste your peer's public key first!", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        CoroutineScope(Dispatchers.Default).launch {
             try {
-                longArrayOf(recipientKeyIdHex.toLong(16))
-            } catch (e: Exception) {
-                null
-            }
-        } else null
+                // Step 1: Encrypt payload in-memory using standalone OpenPGP engine
+                val ciphertext = StandalonePgpEngine.encrypt(
+                    text.toByteArray(Charsets.UTF_8),
+                    recipientArmoredKey
+                )
 
-        // Step 1: Encrypt payload using OpenKeychain
-        openKeychain.encrypt(
-            plainText = text,
-            recipientUserIds = recipientUserIds,
-            recipientKeyIds = recipientKeyIds,
-            activity = this,
-            onSuccess = { armoredCiphertext ->
-                // Step 2: Push armored ciphertext to the blind Tor relay
-                lifecycleScope.launch {
-                    val result = torClient.sendMessage(recipientHash, armoredCiphertext)
-                    result.onSuccess { msgId ->
+                // Step 2: Push to recipient's blind mailbox
+                val recipientMailboxHash = StandalonePgpEngine.deriveMailbox(recipientFingerprint)
+                torClient.pushMessage(
+                    mailboxHash = recipientMailboxHash,
+                    ciphertext = ciphertext,
+                    onSuccess = {
                         runOnUiThread {
-                            messagesState.add(
-                                ChatMessage(
-                                    id = msgId,
-                                    isOutgoing = true,
-                                    plaintext = text,
-                                    ciphertext = armoredCiphertext,
-                                    timestamp = System.currentTimeMillis(),
-                                    isDecrypted = true
-                                )
+                            val msg = ChatMessage(
+                                id = UUID.randomUUID().toString(),
+                                isOutgoing = true,
+                                plaintext = text,
+                                ciphertext = ciphertext,
+                                timestamp = System.currentTimeMillis(),
+                                isDecrypted = true
                             )
+                            messagesState.add(msg)
                         }
-                    }.onFailure { err ->
+                    },
+                    onError = { err ->
                         runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Send failed: ${err.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "Send failed: $err", Toast.LENGTH_LONG).show()
                         }
                     }
+                )
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Encryption error: ${e.message}", Toast.LENGTH_LONG).show()
                 }
-            },
-            onError = { errorMsg ->
-                Toast.makeText(this, "Encryption error: $errorMsg", Toast.LENGTH_LONG).show()
             }
-        )
+        }
     }
 
     private fun decryptMessage(msg: ChatMessage) {
-        openKeychain.decrypt(
-            cipherText = msg.ciphertext,
-            activity = this,
-            onSuccess = { plainText ->
+        val keys = myPgpKeys ?: return
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val clearBytes = StandalonePgpEngine.decrypt(msg.ciphertext, keys.privateKeyArmored)
+                val plainText = String(clearBytes, Charsets.UTF_8)
                 runOnUiThread {
                     val index = messagesState.indexOfFirst { it.id == msg.id }
                     if (index != -1) {
@@ -220,13 +244,10 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-            },
-            onError = { err ->
-                runOnUiThread {
-                    Toast.makeText(this, "Decryption error: $err", Toast.LENGTH_SHORT).show()
-                }
+            } catch (e: Exception) {
+                // Keep as ciphertext for manual retry
             }
-        )
+        }
     }
 
     /**
@@ -234,9 +255,11 @@ class MainActivity : ComponentActivity() {
      * Erases all memory objects, clears lists, closes sockets, and terminates immediately.
      */
     private fun triggerEmergencyPanicWipe() {
+        myPgpKeys = null
+        recipientArmoredKey = ""
+        recipientFingerprint = ""
         messagesState.clear()
         torClient.disconnectWebSocket()
-        openKeychain.unbindService()
         finishAffinity()
         exitProcess(0)
     }
@@ -247,7 +270,11 @@ class MainActivity : ComponentActivity() {
         var inputText by remember { mutableStateOf("") }
         var showSettingsDialog by remember { mutableStateOf(false) }
         var showSafetyCodeDialog by remember { mutableStateOf(false) }
+        var showPeerKeyDialog by remember { mutableStateOf(false) }
+        var showMyKeyDialog by remember { mutableStateOf(false) }
         var isPeerVerified by remember { mutableStateOf(false) }
+
+        val clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
         val filePicker = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -277,8 +304,8 @@ class MainActivity : ComponentActivity() {
                             Spacer(modifier = Modifier.width(8.dp))
                             // Status indicators
                             StatusBadge(
-                                label = if (isOpenKeychainConnected.value) "PGP: READY" else "PGP: OFF",
-                                isActive = isOpenKeychainConnected.value
+                                label = if (myPgpKeys != null) "PGP: READY" else if (isGeneratingKey) "PGP: GEN..." else "PGP: WIPED",
+                                isActive = myPgpKeys != null
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             StatusBadge(
@@ -318,19 +345,97 @@ class MainActivity : ComponentActivity() {
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                // Security Notice Banner
-                Box(
+                // Key Management Quick Cards
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(StealthSurfaceVariant)
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "🔒 Zero-Knowledge RAM Store • OpenKeychain E2EE • Tor Route Ready",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        color = StealthTextSecondary
-                    )
+                    // My Key Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { showMyKeyDialog = true }
+                        ) {
+                            Icon(Icons.Default.VpnKey, contentDescription = null, tint = NeonEmerald, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (myPgpKeys != null) "MY KEY: ${myPgpKeys!!.fingerprint.take(12)}..." else "NO KEY IN RAM",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (myPgpKeys != null) NeonEmerald else AlertCrimson
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = {
+                                    myPgpKeys?.let {
+                                        clipboardManager.setPrimaryClip(ClipData.newPlainText("PGP Public Key", it.publicKeyArmored))
+                                        Toast.makeText(this@MainActivity, "Public Key copied to clipboard! 📋", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("COPY KEY", fontSize = 10.sp, color = NeonEmerald, fontFamily = FontFamily.Monospace)
+                            }
+                            TextButton(
+                                onClick = { generateFreshKeys() },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("NEW KEY", fontSize = 10.sp, color = StealthTextSecondary, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+
+                    // Recipient Key Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (recipientArmoredKey.isBlank()) AlertCrimson.copy(alpha = 0.15f) else NeonEmerald.copy(alpha = 0.1f))
+                            .border(
+                                1.dp,
+                                if (recipientArmoredKey.isBlank()) AlertCrimson.copy(alpha = 0.4f) else NeonEmerald.copy(alpha = 0.4f),
+                                RoundedCornerShape(4.dp)
+                            )
+                            .clickable { showPeerKeyDialog = true }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (recipientArmoredKey.isBlank()) Icons.Default.AddLink else Icons.Default.Person,
+                                contentDescription = null,
+                                tint = if (recipientArmoredKey.isBlank()) AlertCrimson else NeonEmerald,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (recipientArmoredKey.isNotBlank()) "PEER: ${recipientFingerprint.take(12)}..." else "PASTE PEER'S PUBLIC KEY TO CHAT",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (recipientArmoredKey.isNotBlank()) NeonEmerald else AlertCrimson
+                            )
+                        }
+
+                        Text(
+                            text = if (recipientArmoredKey.isNotBlank()) "EDIT" else "PASTE",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (recipientArmoredKey.isNotBlank()) NeonEmerald else AlertCrimson
+                        )
+                    }
                 }
 
                 // Chat Message Stream
@@ -364,7 +469,7 @@ class MainActivity : ComponentActivity() {
                                         fontSize = 12.sp
                                     )
                                     Text(
-                                        "Messages are zero-disk and purged upon receipt.",
+                                        "Zero-disk, ephemeral PGP in-memory store.",
                                         color = StealthTextSecondary.copy(alpha = 0.6f),
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 10.sp
@@ -419,7 +524,7 @@ class MainActivity : ComponentActivity() {
                         onValueChange = { inputText = it },
                         placeholder = {
                             Text(
-                                "Type secret message...",
+                                if (recipientArmoredKey.isBlank()) "Paste peer key above first..." else "Type secret message...",
                                 color = StealthTextSecondary,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 13.sp
@@ -444,6 +549,11 @@ class MainActivity : ComponentActivity() {
 
                     IconButton(
                         onClick = {
+                            if (recipientArmoredKey.isBlank()) {
+                                showPeerKeyDialog = true
+                                Toast.makeText(this@MainActivity, "Please set recipient key first", Toast.LENGTH_SHORT).show()
+                                return@IconButton
+                            }
                             val txt = inputText
                             inputText = ""
                             sendMessage(txt)
@@ -462,6 +572,119 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // Dialog: My Public Key Full View & Share
+            if (showMyKeyDialog && myPgpKeys != null) {
+                AlertDialog(
+                    onDismissRequest = { showMyKeyDialog = false },
+                    containerColor = StealthSurface,
+                    title = {
+                        Text(
+                            "MY OPENPGP PUBLIC KEY",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = NeonEmerald,
+                            fontSize = 15.sp
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Fingerprint:\n${myPgpKeys!!.fingerprint}",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = StealthTextSecondary
+                            )
+                            OutlinedTextField(
+                                value = myPgpKeys!!.publicKeyArmored,
+                                onValueChange = {},
+                                readOnly = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 9.sp)
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                clipboardManager.setPrimaryClip(ClipData.newPlainText("PGP Public Key", myPgpKeys!!.publicKeyArmored))
+                                Toast.makeText(this@MainActivity, "Public Key copied to clipboard! 📋", Toast.LENGTH_SHORT).show()
+                                showMyKeyDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
+                        ) {
+                            Text("COPY KEY", color = Color(0xFF002914), fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showMyKeyDialog = false }) {
+                            Text("CLOSE", color = StealthTextSecondary)
+                        }
+                    }
+                )
+            }
+
+            // Dialog: Paste Peer Public Key
+            if (showPeerKeyDialog) {
+                var tempKeyText by remember { mutableStateOf(recipientArmoredKey) }
+                AlertDialog(
+                    onDismissRequest = { showPeerKeyDialog = false },
+                    containerColor = StealthSurface,
+                    title = {
+                        Text(
+                            "RECIPIENT PUBLIC KEY",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = NeonEmerald,
+                            fontSize = 15.sp
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Paste your peer's armored OpenPGP public key (starts with -----BEGIN PGP PUBLIC KEY BLOCK-----):",
+                                color = StealthTextSecondary,
+                                fontSize = 11.sp
+                            )
+                            OutlinedTextField(
+                                value = tempKeyText,
+                                onValueChange = { tempKeyText = it },
+                                placeholder = { Text("-----BEGIN PGP PUBLIC KEY BLOCK-----\n...", fontSize = 10.sp) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 9.sp)
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                try {
+                                    val fp = StandalonePgpEngine.getFingerprint(tempKeyText)
+                                    recipientArmoredKey = tempKeyText.trim()
+                                    recipientFingerprint = fp
+                                    isPeerVerified = false
+                                    showPeerKeyDialog = false
+                                    Toast.makeText(this@MainActivity, "Key verified! Fingerprint: ${fp.take(12)}...", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    Toast.makeText(this@MainActivity, "Invalid PGP Key: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
+                        ) {
+                            Text("SAVE KEY", color = Color(0xFF002914), fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showPeerKeyDialog = false }) {
+                            Text("CANCEL", color = StealthTextSecondary)
+                        }
+                    }
+                )
+            }
+
             // Settings & Security Config Dialog
             if (showSettingsDialog) {
                 AlertDialog(
@@ -478,27 +701,6 @@ class MainActivity : ComponentActivity() {
                     },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            OutlinedTextField(
-                                value = recipientUserId,
-                                onValueChange = { recipientUserId = it },
-                                label = { Text("Recipient PGP User ID / Email") },
-                                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            OutlinedTextField(
-                                value = recipientKeyIdHex,
-                                onValueChange = { recipientKeyIdHex = it },
-                                label = { Text("Recipient Key ID (Hex, optional)") },
-                                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            OutlinedTextField(
-                                value = myMailboxKeyId,
-                                onValueChange = { myMailboxKeyId = it },
-                                label = { Text("My Mailbox Identifier / Fingerprint") },
-                                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                                modifier = Modifier.fillMaxWidth()
-                            )
                             OutlinedTextField(
                                 value = relayServerUrl,
                                 onValueChange = { relayServerUrl = it },
@@ -530,7 +732,7 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 showSettingsDialog = false
                                 torClient.updateConfig(relayServerUrl, useTorSocks)
-                                connectToRelayMailbox()
+                                myPgpKeys?.let { connectToRelayMailbox(it.fingerprint) }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
                         ) {
@@ -547,10 +749,11 @@ class MainActivity : ComponentActivity() {
 
             // Safety Code MITM Verification Dialog
             if (showSafetyCodeDialog) {
-                val safetyNumber = OpenKeychainHelper.computeSafetyCode(
-                    myMailboxKeyId,
-                    recipientKeyIdHex.ifBlank { recipientUserId }
-                )
+                val safetyNumber = if (myPgpKeys != null && recipientFingerprint.isNotBlank()) {
+                    StandalonePgpEngine.generateSafetyCode(myPgpKeys!!.fingerprint, recipientFingerprint)
+                } else {
+                    "PLEASE PASTE PEER KEY FIRST"
+                }
                 AlertDialog(
                     onDismissRequest = { showSafetyCodeDialog = false },
                     containerColor = StealthSurface,
@@ -593,25 +796,27 @@ class MainActivity : ComponentActivity() {
                                     lineHeight = 20.sp
                                 )
                             }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { isPeerVerified = !isPeerVerified }
-                            ) {
-                                Checkbox(
-                                    checked = isPeerVerified,
-                                    onCheckedChange = { isPeerVerified = it },
-                                    colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    "Mark Peer as Verified",
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isPeerVerified) NeonEmerald else StealthTextPrimary,
-                                    fontSize = 12.sp
-                                )
+                            if (recipientFingerprint.isNotBlank()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { isPeerVerified = !isPeerVerified }
+                                ) {
+                                    Checkbox(
+                                        checked = isPeerVerified,
+                                        onCheckedChange = { isPeerVerified = it },
+                                        colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        "Mark Peer as Verified",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isPeerVerified) NeonEmerald else StealthTextPrimary,
+                                        fontSize = 12.sp
+                                    )
+                                }
                             }
                         }
                     },
@@ -663,8 +868,9 @@ class MainActivity : ComponentActivity() {
         onManualDecrypt: () -> Unit
     ) {
         val align = if (message.isOutgoing) Alignment.End else Alignment.Start
-        val bgColor = if (message.isOutgoing) StealthSurfaceVariant else StealthSurface
-        val borderColor = if (message.isOutgoing) NeonEmerald.copy(alpha = 0.3f) else StealthBorder
+        val bubbleColor = if (message.isOutgoing) StealthSurfaceVariant else StealthSurface
+        val borderColor = if (message.isOutgoing) NeonEmerald.copy(alpha = 0.4f) else Color.DarkGray
+        val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
         Column(
             modifier = Modifier.fillMaxWidth(),
@@ -672,9 +878,9 @@ class MainActivity : ComponentActivity() {
         ) {
             Box(
                 modifier = Modifier
-                    .widthIn(max = 310.dp)
+                    .widthIn(max = 300.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(bgColor)
+                    .background(bubbleColor)
                     .border(1.dp, borderColor, RoundedCornerShape(8.dp))
                     .padding(10.dp)
             ) {
@@ -685,17 +891,17 @@ class MainActivity : ComponentActivity() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (message.isOutgoing) "OUTGOING [PGP]" else "INCOMING [PGP]",
+                            text = if (message.isOutgoing) "OUTGOING (E2EE)" else "INCOMING (BURN-ON-READ)",
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            color = if (message.isOutgoing) NeonEmerald else NeonCyan
+                            fontSize = 9.sp,
+                            color = if (message.isOutgoing) NeonEmerald else AlertAmber
                         )
                         Text(
-                            text = if (message.isDecrypted) "🔓 DECRYPTED" else "🔒 ENCRYPTED",
+                            text = timeFormat.format(Date(message.timestamp)),
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 9.sp,
-                            color = if (message.isDecrypted) NeonEmerald else WarningAmber
+                            fontSize = 8.sp,
+                            color = StealthTextSecondary
                         )
                     }
 
@@ -703,109 +909,120 @@ class MainActivity : ComponentActivity() {
 
                     if (message.isDecrypted && message.plaintext != null) {
                         val text = message.plaintext!!
-                        var mediaBitmap by remember(text) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-                        var mediaFilename by remember(text) { mutableStateOf<String?>(null) }
-                        var isMedia by remember(text) { mutableStateOf(false) }
+
+                        var isMedia by remember(message.id) { mutableStateOf(false) }
+                        var mimeType by remember(message.id) { mutableStateOf("") }
+                        var filename by remember(message.id) { mutableStateOf("") }
+                        var bitmapImage by remember(message.id) { mutableStateOf<ImageBitmap?>(null) }
 
                         LaunchedEffect(text) {
-                            if (text.startsWith("{\"type\":\"media\"")) {
+                            if (text.startsWith("{") && text.contains("\"type\":\"media\"")) {
                                 try {
                                     val json = JSONObject(text)
-                                    val mime = json.optString("mimeType", "")
-                                    mediaFilename = json.optString("filename", "file")
-                                    isMedia = true
-                                    val data = json.optString("data", "")
-                                    if (mime.startsWith("image/") && data.contains(",")) {
-                                        val base64Part = data.substringAfter(",")
-                                        val bytes = Base64.decode(base64Part, Base64.DEFAULT)
-                                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                        if (bmp != null) {
-                                            mediaBitmap = bmp.asImageBitmap()
+                                    if (json.optString("type") == "media") {
+                                        isMedia = true
+                                        mimeType = json.optString("mimeType")
+                                        filename = json.optString("filename")
+                                        val data = json.optString("data")
+                                        if (mimeType.startsWith("image/") && data.contains(",")) {
+                                            val base64Part = data.substringAfter(",")
+                                            val imageBytes = Base64.decode(base64Part, Base64.DEFAULT)
+                                            val bmp = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                                            if (bmp != null) {
+                                                bitmapImage = bmp.asImageBitmap()
+                                            }
                                         }
                                     }
-                                } catch (_: Exception) {}
+                                } catch (e: Exception) {
+                                    isMedia = false
+                                }
                             }
                         }
 
                         if (isMedia) {
-                            if (mediaBitmap != null) {
-                                Image(
-                                    bitmap = mediaBitmap!!,
-                                    contentDescription = mediaFilename,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 240.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                )
-                            } else {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(StealthBackground)
-                                        .padding(8.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                ) {
-                                    Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = NeonEmerald)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = mediaFilename ?: "file",
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 11.sp,
-                                        color = StealthTextPrimary
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (bitmapImage != null) {
+                                    Image(
+                                        bitmap = bitmapImage!!,
+                                        contentDescription = filename,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 240.dp)
+                                            .clip(RoundedCornerShape(6.dp))
                                     )
+                                } else {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(StealthBackground)
+                                            .padding(8.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Default.AttachFile, contentDescription = null, tint = NeonEmerald)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Column {
+                                            Text(filename, color = StealthTextPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                            Text(mimeType, color = StealthTextSecondary, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                                        }
+                                    }
                                 }
+                                Text("📎 $filename", fontSize = 10.sp, color = NeonEmerald, fontFamily = FontFamily.Monospace)
                             }
                         } else {
-                            Text(text = text, color = StealthTextPrimary, fontSize = 14.sp)
+                            Text(
+                                text = text,
+                                color = StealthTextPrimary,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
                         }
                     } else {
-                        Text(
-                            text = "[PGP Encrypted Payload]",
-                            color = StealthTextSecondary,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 12.sp
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Button(
-                            onClick = onManualDecrypt,
-                            colors = ButtonDefaults.buttonColors(containerColor = StealthSurfaceVariant),
-                            modifier = Modifier.height(28.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                        ) {
-                            Text("DECRYPT VIA OPENKEYCHAIN", fontSize = 10.sp, color = NeonEmerald)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = AlertAmber, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Encrypted Payload (In-RAM)",
+                                color = AlertAmber,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp
+                            )
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // PGP Armor expander
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clickable { onToggleArmor() }
-                    ) {
-                        Icon(
-                            if (message.showRawArmor) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = null,
-                            tint = StealthTextSecondary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            if (message.showRawArmor) "Hide PGP Ciphertext" else "View PGP Ciphertext",
-                            fontSize = 9.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = StealthTextSecondary
-                        )
+                        TextButton(
+                            onClick = onManualDecrypt,
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("RETRY DECRYPT", color = NeonEmerald, fontSize = 10.sp)
+                        }
                     }
 
                     if (message.showRawArmor) {
                         Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color.Black.copy(alpha = 0.5f))
+                                .padding(4.dp)
+                        ) {
+                            Text(
+                                text = message.ciphertext,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 8.sp,
+                                color = StealthTextSecondary
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
                         Text(
-                            text = message.ciphertext,
+                            text = if (message.showRawArmor) "HIDE ARMOR" else "VIEW ARMOR",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 8.sp,
                             color = StealthTextSecondary,
-                            lineHeight = 10.sp
+                            modifier = Modifier.clickable { onToggleArmor() }
                         )
                     }
                 }

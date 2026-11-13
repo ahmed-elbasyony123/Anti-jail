@@ -56,15 +56,16 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-stealth
-          name: "GhostKey v1.0.0 Stealth APK"
+          tag_name: v1.1.0-standalone
+          name: "GhostKey v1.1.0 Standalone APK"
           body: |
-            ### 🛡️ GhostKey v1.0.0-stealth APK
-            - **End-to-End Encryption:** OpenKeychain (OpenPGP Curve25519)
-            - **ISP Anonymity:** Tor v3 Onion Routing & SOCKS5 (Orbot)
-            - **Ephemeral Drop:** RAM-only blind mailbox with Burn-on-Read
-            - **Multimedia Support:** Encrypted Photos, Audio & Documents
-            - **Anti-Forensics:** FLAG_SECURE & Emergency Panic Wipe
+            ### 🛡️ GhostKey v1.1.0 Standalone (Self-Contained OpenPGP)
+            - **No External Apps Required:** Built-in in-memory OpenPGP engine (BouncyCastle 1.78)
+            - **Instant Peer Paste:** Paste your peer's public key directly in the app
+            - **Deterministic 30-Digit Safety Code:** MITM defense matches web companion
+            - **ISP Anonymity:** Tor SOCKS5 routing (Orbot 9050) & RAM-only mailbox
+            - **Full Multimedia Support:** Encrypt and exchange photos, audio, documents
+            - **Anti-Forensics:** Android FLAG_SECURE & Emergency Panic Wipe
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
