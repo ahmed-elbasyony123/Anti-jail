@@ -16,6 +16,9 @@
  
 package org.openintents.openpgp;
 
+import android.content.Intent;
+import android.os.ParcelFileDescriptor;
+
 interface IOpenPgpService2 {
 
     /**
