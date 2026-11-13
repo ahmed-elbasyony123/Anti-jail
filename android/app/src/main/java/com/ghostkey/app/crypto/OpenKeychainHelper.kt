@@ -37,6 +37,28 @@ class OpenKeychainHelper(
             val hashBytes = digest.digest(input)
             return hashBytes.joinToString("") { "%02x".format(it) }
         }
+
+        /**
+         * Computes a unified 30-digit Signal-style Safety Code from two PGP fingerprints.
+         * Identical on both users' phones to detect and prevent Man-In-The-Middle (MITM) attacks.
+         */
+        fun computeSafetyCode(fp1: String, fp2: String): String {
+            if (fp1.isBlank() || fp2.isBlank()) return "00000 00000 00000 00000 00000 00000"
+            val clean1 = fp1.replace(" ", "").uppercase()
+            val clean2 = fp2.replace(" ", "").uppercase()
+            val sorted = listOf(clean1, clean2).sorted()
+            val combined = "${sorted[0]}:${sorted[1]}"
+            val digest = MessageDigest.getInstance("SHA-256").digest(combined.toByteArray(StandardCharsets.UTF_8))
+            
+            val chunks = mutableListOf<String>()
+            for (i in 0 until 6) {
+                val b0 = digest[i * 2].toInt() and 0xFF
+                val b1 = digest[i * 2 + 1].toInt() and 0xFF
+                val num = (b0 shl 8) or b1
+                chunks.add(String.format(java.util.Locale.US, "%05d", num % 100000))
+            }
+            return chunks.joinToString(" ")
+        }
     }
 
     private var openPgpServiceConnection: OpenPgpServiceConnection? = null

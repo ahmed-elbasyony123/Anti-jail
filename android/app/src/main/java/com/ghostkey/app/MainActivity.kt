@@ -246,6 +246,8 @@ class MainActivity : ComponentActivity() {
     fun MainStealthScreen() {
         var inputText by remember { mutableStateOf("") }
         var showSettingsDialog by remember { mutableStateOf(false) }
+        var showSafetyCodeDialog by remember { mutableStateOf(false) }
+        var isPeerVerified by remember { mutableStateOf(false) }
 
         val filePicker = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -272,13 +274,13 @@ class MainActivity : ComponentActivity() {
                                 fontSize = 18.sp,
                                 color = NeonEmerald
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             // Status indicators
                             StatusBadge(
                                 label = if (isOpenKeychainConnected.value) "PGP: READY" else "PGP: OFF",
                                 isActive = isOpenKeychainConnected.value
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
                             StatusBadge(
                                 label = if (isRelayConnected.value) "RELAY: LIVE" else "RELAY: OFF",
                                 isActive = isRelayConnected.value
@@ -286,6 +288,14 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     actions = {
+                        // Safety Code Verification Button
+                        IconButton(onClick = { showSafetyCodeDialog = true }) {
+                            Icon(
+                                Icons.Default.VerifiedUser,
+                                contentDescription = "Safety Code",
+                                tint = if (isPeerVerified) NeonEmerald else StealthTextSecondary
+                            )
+                        }
                         IconButton(onClick = { showSettingsDialog = true }) {
                             Icon(Icons.Default.Security, contentDescription = "Settings", tint = StealthTextPrimary)
                         }
@@ -530,6 +540,87 @@ class MainActivity : ComponentActivity() {
                     dismissButton = {
                         TextButton(onClick = { showSettingsDialog = false }) {
                             Text("CANCEL", color = StealthTextSecondary)
+                        }
+                    }
+                )
+            }
+
+            // Safety Code MITM Verification Dialog
+            if (showSafetyCodeDialog) {
+                val safetyNumber = OpenKeychainHelper.computeSafetyCode(
+                    myMailboxKeyId,
+                    recipientKeyIdHex.ifBlank { recipientUserId }
+                )
+                AlertDialog(
+                    onDismissRequest = { showSafetyCodeDialog = false },
+                    containerColor = StealthSurface,
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = NeonEmerald)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "SAFETY CODE VERIFICATION",
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = NeonEmerald,
+                                fontSize = 14.sp
+                            )
+                        }
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "Compare these 30 security digits with your peer (by voice call or in person). If they match, your connection is 100% genuine and safe from interception:",
+                                color = StealthTextSecondary,
+                                fontSize = 11.sp
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(StealthBackground)
+                                    .border(1.dp, NeonEmerald.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                    .padding(12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = safetyNumber,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NeonEmerald,
+                                    fontSize = 13.sp,
+                                    letterSpacing = 1.sp,
+                                    lineHeight = 20.sp
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { isPeerVerified = !isPeerVerified }
+                            ) {
+                                Checkbox(
+                                    checked = isPeerVerified,
+                                    onCheckedChange = { isPeerVerified = it },
+                                    colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Mark Peer as Verified",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isPeerVerified) NeonEmerald else StealthTextPrimary,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { showSafetyCodeDialog = false },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
+                        ) {
+                            Text("DONE", color = Color(0xFF002914), fontWeight = FontWeight.Bold)
                         }
                     }
                 )

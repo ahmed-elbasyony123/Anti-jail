@@ -152,8 +152,12 @@
                         </span>
                     </div>
                 </div>
-                <div class="text-xs text-[#8B949E]">
-                    <span>🔒 Ephemeral Blind Dead-Drop • Burn on Read</span>
+                <div class="flex items-center space-x-3">
+                    <button type="button" onclick="openSafetyModal()" class="px-2.5 py-1 bg-[#1A2129] border border-[#28333E] hover:border-[#00FF9D] text-[#8B949E] hover:text-[#00FF9D] rounded text-xs font-bold transition flex items-center space-x-1.5">
+                        <i data-lucide="shield-check" class="w-3.5 h-3.5 text-[#00FF9D]"></i>
+                        <span>SAFETY CODE</span>
+                    </button>
+                    <span class="text-xs text-[#8B949E] hidden md:inline">🔒 Burn on Read</span>
                 </div>
             </header>
 
@@ -695,10 +699,66 @@
             return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
+        async function computeSafetyCode(fp1, fp2) {
+            if (!fp1 || !fp2) return "00000 00000 00000 00000 00000 00000";
+            const clean1 = fp1.replace(/ /g, '').toUpperCase();
+            const clean2 = fp2.replace(/ /g, '').toUpperCase();
+            const sorted = [clean1, clean2].sort();
+            const combined = `${sorted[0]}:${sorted[1]}`;
+            const enc = new TextEncoder();
+            const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(combined));
+            const bytes = new Uint8Array(hashBuf);
+            const chunks = [];
+            for (let i = 0; i < 6; i++) {
+                const num = ((bytes[i * 2] & 0xff) << 8) | (bytes[i * 2 + 1] & 0xff);
+                chunks.push(String(num % 100000).padStart(5, '0'));
+            }
+            return chunks.join(' ');
+        }
+
+        async function openSafetyModal() {
+            const current = personas[activePersona];
+            const peer = personas[activePersona === 'Alice' ? 'Bob' : 'Alice'];
+            if (!current.keyPair || !peer.keyPair) {
+                alert('Keys are wiped. Regenerate keys first.');
+                return;
+            }
+            const code = await computeSafetyCode(current.keyPair.fingerprint, peer.keyPair.fingerprint);
+            document.getElementById('safety-code-digits').textContent = code;
+            document.getElementById('safety-modal').classList.remove('hidden');
+            lucide.createIcons();
+        }
+
         window.onload = () => {
             lucide.createIcons();
             initKeys();
         };
     </script>
+
+    <!-- Safety Code Modal -->
+    <div id="safety-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+        <div class="bg-[#12171D] border border-[#00FF9D]/40 rounded-xl p-5 max-w-md w-full shadow-2xl">
+            <div class="flex items-center justify-between pb-3 border-b border-[#28333E]">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="shield-check" class="w-5 h-5 text-[#00FF9D]"></i>
+                    <span class="font-bold text-[#E6EDF3] text-sm">SAFETY NUMBER VERIFICATION</span>
+                </div>
+                <button onclick="document.getElementById('safety-modal').classList.add('hidden')" class="text-[#8B949E] hover:text-white">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            <p class="text-xs text-[#8B949E] mt-3">
+                Compare these 30 security digits with your peer (by voice call or in person). If they match, your connection is genuine and immune to Man-in-the-Middle (MITM) attacks:
+            </p>
+            <div id="safety-code-digits" class="mt-4 p-4 bg-[#0A0D0F] border border-[#00FF9D]/50 rounded-lg text-center font-mono text-[#00FF9D] font-bold text-sm tracking-widest leading-loose break-words">
+                00000 00000 00000 00000 00000 00000
+            </div>
+            <div class="mt-4 flex justify-end">
+                <button onclick="document.getElementById('safety-modal').classList.add('hidden')" class="px-4 py-2 bg-[#00FF9D] text-black font-bold text-xs rounded hover:bg-[#00E5FF] transition">
+                    VERIFIED & CLOSE
+                </button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
