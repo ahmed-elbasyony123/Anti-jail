@@ -703,48 +703,58 @@ class MainActivity : ComponentActivity() {
 
                     if (message.isDecrypted && message.plaintext != null) {
                         val text = message.plaintext!!
-                        if (text.startsWith("{\"type\":\"media\"")) {
-                            try {
-                                val json = JSONObject(text)
-                                val mime = json.optString("mimeType", "")
-                                val filename = json.optString("filename", "file")
-                                val data = json.optString("data", "")
+                        var mediaBitmap by remember(text) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+                        var mediaFilename by remember(text) { mutableStateOf<String?>(null) }
+                        var isMedia by remember(text) { mutableStateOf(false) }
 
-                                if (mime.startsWith("image/") && data.contains(",")) {
-                                    val base64Part = data.substringAfter(",")
-                                    val imageBytes = Base64.decode(base64Part, Base64.DEFAULT)
-                                    val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                                    if (bitmap != null) {
-                                        Image(
-                                            bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = filename,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .heightIn(max = 240.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                        )
+                        LaunchedEffect(text) {
+                            if (text.startsWith("{\"type\":\"media\"")) {
+                                try {
+                                    val json = JSONObject(text)
+                                    val mime = json.optString("mimeType", "")
+                                    mediaFilename = json.optString("filename", "file")
+                                    isMedia = true
+                                    val data = json.optString("data", "")
+                                    if (mime.startsWith("image/") && data.contains(",")) {
+                                        val base64Part = data.substringAfter(",")
+                                        val bytes = Base64.decode(base64Part, Base64.DEFAULT)
+                                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                        if (bmp != null) {
+                                            mediaBitmap = bmp.asImageBitmap()
+                                        }
                                     }
-                                } else {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(StealthBackground)
-                                            .padding(8.dp)
-                                            .clip(RoundedCornerShape(4.dp))
-                                    ) {
-                                        Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = NeonEmerald)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = filename,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 11.sp,
-                                            color = StealthTextPrimary
-                                        )
-                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+
+                        if (isMedia) {
+                            if (mediaBitmap != null) {
+                                Image(
+                                    bitmap = mediaBitmap!!,
+                                    contentDescription = mediaFilename,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 240.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                )
+                            } else {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(StealthBackground)
+                                        .padding(8.dp)
+                                        .clip(RoundedCornerShape(4.dp))
+                                ) {
+                                    Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = NeonEmerald)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = mediaFilename ?: "file",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        color = StealthTextPrimary
+                                    )
                                 }
-                            } catch (e: Exception) {
-                                Text(text = text, color = StealthTextPrimary, fontSize = 14.sp)
                             }
                         } else {
                             Text(text = text, color = StealthTextPrimary, fontSize = 14.sp)
