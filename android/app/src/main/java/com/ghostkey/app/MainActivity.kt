@@ -1,11 +1,17 @@
 package com.ghostkey.app
 
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,6 +41,7 @@ import com.ghostkey.app.net.EncryptedMessageRecord
 import com.ghostkey.app.net.TorRelayClient
 import com.ghostkey.app.ui.*
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import kotlin.system.exitProcess
 
 data class ChatMessage(
@@ -119,6 +127,31 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+    }
+
+    private fun sendMedia(uri: Uri) {
+        try {
+            contentResolver.openInputStream(uri)?.use { stream ->
+                val bytes = stream.readBytes()
+                if (bytes.size > 8 * 1024 * 1024) {
+                    Toast.makeText(this, "Attachment exceeds 8 MB limit", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
+                val fileName = uri.lastPathSegment ?: "file"
+                val payload = JSONObject().apply {
+                    put("type", "media")
+                    put("mimeType", mimeType)
+                    put("filename", fileName)
+                    put("data", "data:$mimeType;base64,$base64")
+                    put("caption", "")
+                }
+                sendMessage(payload.toString())
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Attachment error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun sendMessage(text: String) {
@@ -213,6 +246,14 @@ class MainActivity : ComponentActivity() {
     fun MainStealthScreen() {
         var inputText by remember { mutableStateOf("") }
         var showSettingsDialog by remember { mutableStateOf(false) }
+
+        val filePicker = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri: Uri? ->
+            if (uri != null) {
+                sendMedia(uri)
+            }
+        }
 
         Scaffold(
             topBar = {
@@ -347,6 +388,22 @@ class MainActivity : ComponentActivity() {
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    IconButton(
+                        onClick = { filePicker.launch("*/*") },
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(StealthSurfaceVariant)
+                    ) {
+                        Icon(
+                            Icons.Default.AttachFile,
+                            contentDescription = "Attach File",
+                            tint = NeonEmerald
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
                     TextField(
                         value = inputText,
                         onValueChange = { inputText = it },
@@ -554,11 +611,53 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(6.dp))
 
                     if (message.isDecrypted && message.plaintext != null) {
-                        Text(
-                            text = message.plaintext!!,
-                            color = StealthTextPrimary,
-                            fontSize = 14.sp
-                        )
+                        val text = message.plaintext!!
+                        if (text.startsWith("{\"type\":\"media\"")) {
+                            try {
+                                val json = JSONObject(text)
+                                val mime = json.optString("mimeType", "")
+                                val filename = json.optString("filename", "file")
+                                val data = json.optString("data", "")
+
+                                if (mime.startsWith("image/") && data.contains(",")) {
+                                    val base64Part = data.substringAfter(",")
+                                    val imageBytes = Base64.decode(base64Part, Base64.DEFAULT)
+                                    val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                                    if (bitmap != null) {
+                                        Image(
+                                            bitmap = bitmap.asImageBitmap(),
+                                            contentDescription = filename,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(max = 240.dp)
+                                                .clip(RoundedCornerShape(6.dp))
+                                        )
+                                    }
+                                } else {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(StealthBackground)
+                                            .padding(8.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                    ) {
+                                        Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = NeonEmerald)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = filename,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.sp,
+                                            color = StealthTextPrimary
+                                        )
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Text(text = text, color = StealthTextPrimary, fontSize = 14.sp)
+                            }
+                        } else {
+                            Text(text = text, color = StealthTextPrimary, fontSize = 14.sp)
+                        }
                     } else {
                         Text(
                             text = "[PGP Encrypted Payload]",

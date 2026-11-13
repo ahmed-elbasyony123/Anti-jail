@@ -11,6 +11,8 @@ jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Code
@@ -41,3 +43,20 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Create or Update GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-stealth
+          name: "GhostKey v1.0.0 Stealth APK"
+          body: |
+            ### 🛡️ GhostKey v1.0.0-stealth APK
+            - **End-to-End Encryption:** OpenKeychain (OpenPGP Curve25519)
+            - **ISP Anonymity:** Tor v3 Onion Routing & SOCKS5 (Orbot)
+            - **Ephemeral Drop:** RAM-only blind mailbox with Burn-on-Read
+            - **Multimedia Support:** Encrypted Photos, Audio & Documents
+            - **Anti-Forensics:** FLAG_SECURE & Emergency Panic Wipe
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

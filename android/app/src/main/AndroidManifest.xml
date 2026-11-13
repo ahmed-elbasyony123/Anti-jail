@@ -20,8 +20,9 @@
         android:allowBackup="false"
         android:dataExtractionRules="@null"
         android:fullBackupContent="false"
-        android:icon="@android:drawable/sym_def_app_icon"
+        android:icon="@drawable/ic_launcher_stealth"
         android:label="GhostKey"
+        android:roundIcon="@drawable/ic_launcher_stealth"
         android:supportsRtl="true"
         android:theme="@style/Theme.GhostKey"
         android:usesCleartextTraffic="true">
