@@ -40,7 +40,7 @@ import androidx.compose.ui.unit.sp
 import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.net.TorRelayClient
-import com.ghostkey.app.ui.theme.*
+import com.ghostkey.app.ui.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -199,28 +199,27 @@ class MainActivity : ComponentActivity() {
 
                 // Step 2: Push to recipient's blind mailbox
                 val recipientMailboxHash = StandalonePgpEngine.deriveMailbox(recipientFingerprint)
-                torClient.pushMessage(
+                val result = torClient.sendMessage(
                     mailboxHash = recipientMailboxHash,
-                    ciphertext = ciphertext,
-                    onSuccess = {
-                        runOnUiThread {
-                            val msg = ChatMessage(
-                                id = UUID.randomUUID().toString(),
-                                isOutgoing = true,
-                                plaintext = text,
-                                ciphertext = ciphertext,
-                                timestamp = System.currentTimeMillis(),
-                                isDecrypted = true
-                            )
-                            messagesState.add(msg)
-                        }
-                    },
-                    onError = { err ->
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Send failed: $err", Toast.LENGTH_LONG).show()
-                        }
-                    }
+                    ciphertext = ciphertext
                 )
+                result.onSuccess {
+                    runOnUiThread {
+                        val msg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isOutgoing = true,
+                            plaintext = text,
+                            ciphertext = ciphertext,
+                            timestamp = System.currentTimeMillis(),
+                            isDecrypted = true
+                        )
+                        messagesState.add(msg)
+                    }
+                }.onFailure { err ->
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "Send failed: ${err.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             } catch (e: Exception) {
                 runOnUiThread {
                     Toast.makeText(this@MainActivity, "Encryption error: ${e.message}", Toast.LENGTH_LONG).show()
@@ -895,7 +894,7 @@ class MainActivity : ComponentActivity() {
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 9.sp,
-                            color = if (message.isOutgoing) NeonEmerald else AlertAmber
+                            color = if (message.isOutgoing) NeonEmerald else WarningAmber
                         )
                         Text(
                             text = timeFormat.format(Date(message.timestamp)),
@@ -979,11 +978,11 @@ class MainActivity : ComponentActivity() {
                         }
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Lock, contentDescription = null, tint = AlertAmber, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 "Encrypted Payload (In-RAM)",
-                                color = AlertAmber,
+                                color = WarningAmber,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp
                             )

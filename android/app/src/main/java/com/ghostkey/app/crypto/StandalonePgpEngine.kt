@@ -15,7 +15,6 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.Security
 import java.util.Date
-
 data class PgpKeyPairArmored(
     val publicKeyArmored: String,
     val privateKeyArmored: String,
@@ -40,18 +39,17 @@ object StandalonePgpEngine {
      */
     fun generateKeyPair(userId: String = "ghostkey@stealth.local"): PgpKeyPairArmored {
         val kpg = KeyPairGenerator.getInstance("RSA", "BC")
-        kpg.initialize(2048)
+        kpg.initialize(2048, SecureRandom())
         val masterJavaPair = kpg.generateKeyPair()
 
         val subKpg = KeyPairGenerator.getInstance("RSA", "BC")
-        subKpg.initialize(2048)
+        subKpg.initialize(2048, SecureRandom())
         val subJavaPair = subKpg.generateKeyPair()
 
-        val keyConverter = JcaPGPKeyConverter().setProvider("BC")
-        val masterPgpPair = keyConverter.getPGPKeyPair(PGPPublicKey.RSA_GENERAL, masterJavaPair, Date())
-        val subPgpPair = keyConverter.getPGPKeyPair(PGPPublicKey.RSA_GENERAL, subJavaPair, Date())
+        val sha1Calc = JcaPGPDigestCalculatorProviderBuilder().setProvider("BC").build().get(HashAlgorithmTags.SHA1)
 
-        val sha1Calc = JcaPGPDigestCalculatorProviderBuilder().build().get(HashAlgorithmTags.SHA1)
+        val masterPgpPair = JcaPGPKeyPair(PGPPublicKey.RSA_GENERAL, masterJavaPair, Date())
+        val subPgpPair = JcaPGPKeyPair(PGPPublicKey.RSA_GENERAL, subJavaPair, Date())
 
         val masterSubpacketGen = PGPSignatureSubpacketGenerator()
         masterSubpacketGen.setKeyFlags(false, KeyFlags.SIGN_DATA or KeyFlags.CERTIFY_OTHER)
@@ -104,7 +102,7 @@ object StandalonePgpEngine {
         ArmoredOutputStream(secOut).use { it.write(secRing.encoded) }
         val secArmored = secOut.toString(Charsets.UTF_8.name())
 
-        val fp = pubRing.publicKey.fingerprint.joinToString("") { "%02X".format(it) }
+        val fp = pubRing.publicKey.getFingerprint().joinToString("") { "%02X".format(it) }
 
         return PgpKeyPairArmored(pubArmored, secArmored, fp)
     }
@@ -137,7 +135,7 @@ object StandalonePgpEngine {
         for (ring in pubRingCol) {
             val masterKey = ring.publicKey
             if (masterKey != null) {
-                return masterKey.fingerprint.joinToString("") { "%02X".format(it) }
+                return masterKey.getFingerprint().joinToString("") { "%02X".format(it) }
             }
         }
         throw IllegalArgumentException("Could not extract fingerprint from key block")
