@@ -144,7 +144,7 @@ class MainActivity : ComponentActivity() {
         applyNetworkConfig()
     }
 
-    private fun setKeepAlive(enabled: Boolean) {
+    private fun updateKeepAlive(enabled: Boolean) {
         keepAlive = enabled
         getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("keep_alive", enabled).apply()
         if (enabled) {
@@ -816,7 +816,7 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Checkbox(
                                     checked = keepAlive,
-                                    onCheckedChange = { setKeepAlive(it) },
+                                    onCheckedChange = { updateKeepAlive(it) },
                                     colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
