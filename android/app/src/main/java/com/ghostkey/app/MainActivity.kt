@@ -86,6 +86,11 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE
         )
 
+        // Load network config preferences
+        val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
+        relayServerUrl = prefs.getString("relay_url", "http://10.0.2.2:8765") ?: "http://10.0.2.2:8765"
+        useTorSocks = prefs.getBoolean("use_tor", relayServerUrl.contains(".onion"))
+
         // Generate ephemeral in-memory keys on startup
         generateFreshKeys()
 
@@ -702,7 +707,12 @@ class MainActivity : ComponentActivity() {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedTextField(
                                 value = relayServerUrl,
-                                onValueChange = { relayServerUrl = it },
+                                onValueChange = {
+                                    relayServerUrl = it.trim()
+                                    if (relayServerUrl.contains(".onion", ignoreCase = true)) {
+                                        useTorSocks = true
+                                    }
+                                },
                                 label = { Text("Relay (.onion or IP:Port)") },
                                 textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
                                 modifier = Modifier.fillMaxWidth()
@@ -730,6 +740,11 @@ class MainActivity : ComponentActivity() {
                         Button(
                             onClick = {
                                 showSettingsDialog = false
+                                val p = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
+                                p.edit()
+                                    .putString("relay_url", relayServerUrl)
+                                    .putBoolean("use_tor", useTorSocks)
+                                    .apply()
                                 torClient.updateConfig(relayServerUrl, useTorSocks)
                                 myPgpKeys?.let { connectToRelayMailbox(it.fingerprint) }
                             },

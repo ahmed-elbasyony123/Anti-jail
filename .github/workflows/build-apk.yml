@@ -56,16 +56,16 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.1-standalone
-          name: "GhostKey v1.1.1 Standalone APK"
+          tag_name: v1.1.2-standalone
+          name: "GhostKey v1.1.2 Standalone APK"
           body: |
-            ### 🛡️ GhostKey v1.1.1 Standalone (Self-Contained OpenPGP)
-            - **Fixed NoSuchAlgorithmException on Android:** Registered direct BouncyCastle provider instance
+            ### 🛡️ GhostKey v1.1.2 Standalone (Resilient Tor & Auto-Reconnect)
+            - **Tor SOCKS5 DNS Leak Fix:** Remote DNS resolution for .onion addresses
+            - **Auto-Reconnect & Circuit Resiliency:** 60s timeout + exponential backoff auto-reconnect
+            - **Persistent Network Preferences:** Saved relay URL & Tor toggle in SharedPreferences
             - **No External Apps Required:** Built-in in-memory OpenPGP engine (BouncyCastle 1.78)
             - **Instant Peer Paste:** Paste your peer's public key directly in the app
-            - **Deterministic 30-Digit Safety Code:** MITM defense matches web companion
-            - **ISP Anonymity:** Tor SOCKS5 routing (Orbot 9050) & RAM-only mailbox
-            - **Full Multimedia Support:** Encrypt and exchange photos, audio, documents
+            - **Deterministic 30-Digit Safety Code:** True PGP fingerprint MITM defense
             - **Anti-Forensics:** Android FLAG_SECURE & Emergency Panic Wipe
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
