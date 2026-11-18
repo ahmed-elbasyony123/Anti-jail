@@ -56,10 +56,11 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.0-standalone
-          name: "GhostKey v1.1.0 Standalone APK"
+          tag_name: v1.1.1-standalone
+          name: "GhostKey v1.1.1 Standalone APK"
           body: |
-            ### 🛡️ GhostKey v1.1.0 Standalone (Self-Contained OpenPGP)
+            ### 🛡️ GhostKey v1.1.1 Standalone (Self-Contained OpenPGP)
+            - **Fixed NoSuchAlgorithmException on Android:** Registered direct BouncyCastle provider instance
             - **No External Apps Required:** Built-in in-memory OpenPGP engine (BouncyCastle 1.78)
             - **Instant Peer Paste:** Paste your peer's public key directly in the app
             - **Deterministic 30-Digit Safety Code:** MITM defense matches web companion

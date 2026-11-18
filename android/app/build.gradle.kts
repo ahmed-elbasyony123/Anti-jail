@@ -12,8 +12,8 @@ android {
         applicationId = "com.ghostkey.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0-standalone"
+        versionCode = 3
+        versionName = "1.1.1-standalone"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

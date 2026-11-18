@@ -12,9 +12,11 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
+import java.security.Provider
 import java.security.SecureRandom
 import java.security.Security
 import java.util.Date
+
 data class PgpKeyPairArmored(
     val publicKeyArmored: String,
     val privateKeyArmored: String,
@@ -28,25 +30,28 @@ data class PgpKeyPairArmored(
  */
 object StandalonePgpEngine {
 
+    val bcProvider: Provider = BouncyCastleProvider()
+
     init {
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.addProvider(BouncyCastleProvider())
-        }
+        try {
+            Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
+        } catch (_: Exception) {}
+        Security.insertProviderAt(bcProvider, 1)
     }
 
     /**
      * Generate an ephemeral OpenPGP RSA-2048 keypair in memory.
      */
     fun generateKeyPair(userId: String = "ghostkey@stealth.local"): PgpKeyPairArmored {
-        val kpg = KeyPairGenerator.getInstance("RSA", "BC")
+        val kpg = KeyPairGenerator.getInstance("RSA")
         kpg.initialize(2048, SecureRandom())
         val masterJavaPair = kpg.generateKeyPair()
 
-        val subKpg = KeyPairGenerator.getInstance("RSA", "BC")
+        val subKpg = KeyPairGenerator.getInstance("RSA")
         subKpg.initialize(2048, SecureRandom())
         val subJavaPair = subKpg.generateKeyPair()
 
-        val sha1Calc = JcaPGPDigestCalculatorProviderBuilder().setProvider("BC").build().get(HashAlgorithmTags.SHA1)
+        val sha1Calc = JcaPGPDigestCalculatorProviderBuilder().setProvider(bcProvider).build().get(HashAlgorithmTags.SHA1)
 
         val masterPgpPair = JcaPGPKeyPair(PGPPublicKey.RSA_GENERAL, masterJavaPair, Date())
         val subPgpPair = JcaPGPKeyPair(PGPPublicKey.RSA_GENERAL, subJavaPair, Date())
@@ -71,7 +76,7 @@ object StandalonePgpEngine {
         )
 
         val encryptor = JcePBESecretKeyEncryptorBuilder(PGPEncryptedData.AES_256, sha1Calc)
-            .setProvider("BC")
+            .setProvider(bcProvider)
             .build("".toCharArray())
 
         val keyRingGen = PGPKeyRingGenerator(
@@ -81,7 +86,7 @@ object StandalonePgpEngine {
             sha1Calc,
             masterSubpacketGen.generate(),
             null,
-            JcaPGPContentSignerBuilder(masterPgpPair.publicKey.algorithm, HashAlgorithmTags.SHA256).setProvider("BC"),
+            JcaPGPContentSignerBuilder(masterPgpPair.publicKey.algorithm, HashAlgorithmTags.SHA256).setProvider(bcProvider),
             encryptor
         )
 
@@ -112,7 +117,7 @@ object StandalonePgpEngine {
      */
     fun readPublicKey(armored: String): PGPPublicKey {
         val stream = PGPUtil.getDecoderStream(ByteArrayInputStream(armored.toByteArray(Charsets.UTF_8)))
-        val pubRingCol = PGPPublicKeyRingCollection(stream, JcaKeyFingerprintCalculator())
+        val pubRingCol = PGPPublicKeyRingCollection(stream, JcaKeyFingerprintCalculator().setProvider(bcProvider))
 
         var fallbackKey: PGPPublicKey? = null
         for (ring in pubRingCol) {
@@ -131,7 +136,7 @@ object StandalonePgpEngine {
      */
     fun getFingerprint(armored: String): String {
         val stream = PGPUtil.getDecoderStream(ByteArrayInputStream(armored.toByteArray(Charsets.UTF_8)))
-        val pubRingCol = PGPPublicKeyRingCollection(stream, JcaKeyFingerprintCalculator())
+        val pubRingCol = PGPPublicKeyRingCollection(stream, JcaKeyFingerprintCalculator().setProvider(bcProvider))
         for (ring in pubRingCol) {
             val masterKey = ring.publicKey
             if (masterKey != null) {
@@ -151,10 +156,10 @@ object StandalonePgpEngine {
             JcePGPDataEncryptorBuilder(PGPEncryptedData.AES_256)
                 .setWithIntegrityPacket(true)
                 .setSecureRandom(SecureRandom())
-                .setProvider("BC")
+                .setProvider(bcProvider)
         )
         encDataGen.addMethod(
-            JcePublicKeyKeyEncryptionMethodGenerator(recipientKey).setProvider("BC")
+            JcePublicKeyKeyEncryptionMethodGenerator(recipientKey).setProvider(bcProvider)
         )
 
         val out = ByteArrayOutputStream()
@@ -183,10 +188,10 @@ object StandalonePgpEngine {
      */
     fun decrypt(armoredMessage: String, privateKeyArmored: String): ByteArray {
         val privStream = PGPUtil.getDecoderStream(ByteArrayInputStream(privateKeyArmored.toByteArray(Charsets.UTF_8)))
-        val privRingCollection = PGPSecretKeyRingCollection(privStream, JcaKeyFingerprintCalculator())
+        val privRingCollection = PGPSecretKeyRingCollection(privStream, JcaKeyFingerprintCalculator().setProvider(bcProvider))
 
         val msgStream = PGPUtil.getDecoderStream(ByteArrayInputStream(armoredMessage.toByteArray(Charsets.UTF_8)))
-        val pgpFact = PGPObjectFactory(msgStream, JcaKeyFingerprintCalculator())
+        val pgpFact = PGPObjectFactory(msgStream, JcaKeyFingerprintCalculator().setProvider(bcProvider))
 
         var obj = pgpFact.nextObject()
         var encList: PGPEncryptedDataList? = null
@@ -205,7 +210,7 @@ object StandalonePgpEngine {
         var privKey: PGPPrivateKey? = null
         var pbe: PGPPublicKeyEncryptedData? = null
 
-        val decryptor = JcePBESecretKeyDecryptorBuilder().setProvider("BC").build("".toCharArray())
+        val decryptor = JcePBESecretKeyDecryptorBuilder().setProvider(bcProvider).build("".toCharArray())
 
         for (item in encList) {
             if (item is PGPPublicKeyEncryptedData) {
@@ -260,13 +265,13 @@ object StandalonePgpEngine {
         }
 
         val clearStream: InputStream = pbe.getDataStream(
-            JcePublicKeyDataDecryptorFactoryBuilder().setProvider("BC").build(privKey)
+            JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
         )
-        val plainFact = PGPObjectFactory(clearStream, JcaKeyFingerprintCalculator())
+        val plainFact = PGPObjectFactory(clearStream, JcaKeyFingerprintCalculator().setProvider(bcProvider))
         var plainObj = plainFact.nextObject()
 
         if (plainObj is PGPCompressedData) {
-            val compFact = PGPObjectFactory(plainObj.dataStream, JcaKeyFingerprintCalculator())
+            val compFact = PGPObjectFactory(plainObj.dataStream, JcaKeyFingerprintCalculator().setProvider(bcProvider))
             plainObj = compFact.nextObject()
         }
 
