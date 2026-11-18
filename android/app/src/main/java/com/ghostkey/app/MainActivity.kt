@@ -6,7 +6,6 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
-import android.util.Base64
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -38,13 +37,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.crypto.PgpKeyPairArmored
+import com.ghostkey.app.crypto.SignatureStatus
 import com.ghostkey.app.crypto.StandalonePgpEngine
+import com.ghostkey.app.crypto.WireFormat
 import com.ghostkey.app.net.TorRelayClient
 import com.ghostkey.app.ui.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.system.exitProcess
@@ -56,7 +56,9 @@ data class ChatMessage(
     val ciphertext: String,
     val timestamp: Long,
     var isDecrypted: Boolean = false,
-    var showRawArmor: Boolean = false
+    var showRawArmor: Boolean = false,
+    val signatureStatus: SignatureStatus? = null,
+    val signerFingerprint: String? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -71,6 +73,7 @@ class MainActivity : ComponentActivity() {
     private var myPgpKeys by mutableStateOf<PgpKeyPairArmored?>(null)
     private var recipientArmoredKey by mutableStateOf("")
     private var recipientFingerprint by mutableStateOf("")
+    private var recipientDropId by mutableStateOf("")
     private var isGeneratingKey by mutableStateOf(false)
 
     // Configuration state
@@ -117,7 +120,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     myPgpKeys = keys
                     isGeneratingKey = false
-                    connectToRelayMailbox(keys.fingerprint)
+                    connectToRelayMailbox(keys.dropId)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -128,10 +131,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connectToRelayMailbox(fingerprint: String) {
-        val myMailboxHash = StandalonePgpEngine.deriveMailbox(fingerprint)
+    private fun connectToRelayMailbox(dropId: String) {
         torClient.subscribeLive(
-            mailboxHash = myMailboxHash,
+            mailboxHash = dropId,
             onMessageReceived = { record ->
                 runOnUiThread {
                     val msg = ChatMessage(
@@ -163,17 +165,9 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this, "Attachment exceeds 8 MB limit", Toast.LENGTH_SHORT).show()
                     return
                 }
-                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
                 val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
                 val fileName = uri.lastPathSegment ?: "file"
-                val payload = JSONObject().apply {
-                    put("type", "media")
-                    put("mimeType", mimeType)
-                    put("filename", fileName)
-                    put("data", "data:$mimeType;base64,$base64")
-                    put("caption", "")
-                }
-                sendMessage(payload.toString())
+                sendPayload(WireFormat.buildMedia(mimeType, fileName, bytes))
             }
         } catch (e: Exception) {
             Toast.makeText(this, "Attachment error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -182,7 +176,10 @@ class MainActivity : ComponentActivity() {
 
     private fun sendMessage(text: String) {
         if (text.isBlank()) return
+        sendPayload(WireFormat.buildText(text))
+    }
 
+    private fun sendPayload(payload: ByteArray) {
         val keys = myPgpKeys
         if (keys == null) {
             Toast.makeText(this, "No active PGP key in RAM. Please generate keys first.", Toast.LENGTH_SHORT).show()
@@ -194,18 +191,25 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        if (recipientDropId.isBlank()) {
+            Toast.makeText(
+                this,
+                "Peer key has no Drop-ID. Ask your peer to copy their key again from GhostKey v2.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val peerKey = recipientArmoredKey
+        val peerDrop = recipientDropId
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                // Step 1: Encrypt payload in-memory using standalone OpenPGP engine
-                val ciphertext = StandalonePgpEngine.encrypt(
-                    text.toByteArray(Charsets.UTF_8),
-                    recipientArmoredKey
-                )
+                // Step 1: Sign with our key and encrypt for the peer (in memory)
+                val ciphertext = StandalonePgpEngine.encrypt(payload, peerKey, keys.privateKeyArmored)
 
-                // Step 2: Push to recipient's blind mailbox
-                val recipientMailboxHash = StandalonePgpEngine.deriveMailbox(recipientFingerprint)
+                // Step 2: Push to the peer's blind drop
                 val result = torClient.sendMessage(
-                    mailboxHash = recipientMailboxHash,
+                    mailboxHash = peerDrop,
                     ciphertext = ciphertext
                 )
                 result.onSuccess {
@@ -213,7 +217,7 @@ class MainActivity : ComponentActivity() {
                         val msg = ChatMessage(
                             id = UUID.randomUUID().toString(),
                             isOutgoing = true,
-                            plaintext = text,
+                            plaintext = String(payload, Charsets.UTF_8),
                             ciphertext = ciphertext,
                             timestamp = System.currentTimeMillis(),
                             isDecrypted = true
@@ -237,14 +241,17 @@ class MainActivity : ComponentActivity() {
         val keys = myPgpKeys ?: return
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                val clearBytes = StandalonePgpEngine.decrypt(msg.ciphertext, keys.privateKeyArmored)
-                val plainText = String(clearBytes, Charsets.UTF_8)
+                val peerKey = recipientArmoredKey.ifBlank { null }
+                val result = StandalonePgpEngine.decrypt(msg.ciphertext, keys.privateKeyArmored, peerKey)
+                val plainText = String(result.bytes, Charsets.UTF_8)
                 runOnUiThread {
                     val index = messagesState.indexOfFirst { it.id == msg.id }
                     if (index != -1) {
                         messagesState[index] = messagesState[index].copy(
                             plaintext = plainText,
-                            isDecrypted = true
+                            isDecrypted = true,
+                            signatureStatus = result.signatureStatus,
+                            signerFingerprint = result.signerFingerprint
                         )
                     }
                 }
@@ -262,6 +269,7 @@ class MainActivity : ComponentActivity() {
         myPgpKeys = null
         recipientArmoredKey = ""
         recipientFingerprint = ""
+        recipientDropId = ""
         messagesState.clear()
         torClient.disconnectWebSocket()
         finishAffinity()
@@ -666,12 +674,18 @@ class MainActivity : ComponentActivity() {
                         Button(
                             onClick = {
                                 try {
-                                    val fp = StandalonePgpEngine.getFingerprint(tempKeyText)
-                                    recipientArmoredKey = tempKeyText.trim()
-                                    recipientFingerprint = fp
+                                    val info = StandalonePgpEngine.parsePeerKey(tempKeyText)
+                                    recipientArmoredKey = info.publicKeyArmored
+                                    recipientFingerprint = info.fingerprint
+                                    recipientDropId = info.dropId ?: ""
                                     isPeerVerified = false
                                     showPeerKeyDialog = false
-                                    Toast.makeText(this@MainActivity, "Key verified! Fingerprint: ${fp.take(12)}...", Toast.LENGTH_SHORT).show()
+                                    val note = if (info.dropId == null) " (no Drop-ID found in this key)" else ""
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Key saved. Fingerprint: ${info.fingerprint.take(12)}...$note",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 } catch (e: Exception) {
                                     Toast.makeText(this@MainActivity, "Invalid PGP Key: ${e.message}", Toast.LENGTH_LONG).show()
                                 }
@@ -751,7 +765,7 @@ class MainActivity : ComponentActivity() {
                                     .putBoolean("use_tor", useTorSocks)
                                     .apply()
                                 torClient.updateConfig(relayServerUrl, useTorSocks)
-                                myPgpKeys?.let { connectToRelayMailbox(it.fingerprint) }
+                                myPgpKeys?.let { connectToRelayMailbox(it.dropId) }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
                         ) {
@@ -933,28 +947,29 @@ class MainActivity : ComponentActivity() {
                         var mimeType by remember(message.id) { mutableStateOf("") }
                         var filename by remember(message.id) { mutableStateOf("") }
                         var bitmapImage by remember(message.id) { mutableStateOf<ImageBitmap?>(null) }
+                        var displayText by remember(message.id) { mutableStateOf<String?>(null) }
 
                         LaunchedEffect(text) {
-                            if (text.startsWith("{") && text.contains("\"type\":\"media\"")) {
-                                try {
-                                    val json = JSONObject(text)
-                                    if (json.optString("type") == "media") {
-                                        isMedia = true
-                                        mimeType = json.optString("mimeType")
-                                        filename = json.optString("filename")
-                                        val data = json.optString("data")
-                                        if (mimeType.startsWith("image/") && data.contains(",")) {
-                                            val base64Part = data.substringAfter(",")
-                                            val imageBytes = Base64.decode(base64Part, Base64.DEFAULT)
-                                            val bmp = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                                            if (bmp != null) {
-                                                bitmapImage = bmp.asImageBitmap()
-                                            }
+                            val wire = WireFormat.parse(text.toByteArray(Charsets.UTF_8))
+                            if (wire == null) {
+                                displayText = text            // not a v2 envelope: show as-is
+                            } else if (wire.isMedia) {
+                                isMedia = true
+                                mimeType = wire.mimeType ?: ""
+                                filename = wire.filename ?: ""
+                                if (mimeType.startsWith("image/")) {
+                                    try {
+                                        val imageBytes = WireFormat.decodeMediaData(wire)
+                                        val bmp = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                                        if (bmp != null) {
+                                            bitmapImage = bmp.asImageBitmap()
                                         }
+                                    } catch (e: Exception) {
+                                        // keep the file card
                                     }
-                                } catch (e: Exception) {
-                                    isMedia = false
                                 }
+                            } else {
+                                displayText = wire.text ?: ""
                             }
                         }
 
@@ -990,7 +1005,7 @@ class MainActivity : ComponentActivity() {
                             }
                         } else {
                             Text(
-                                text = text,
+                                text = displayText ?: "",
                                 color = StealthTextPrimary,
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp
