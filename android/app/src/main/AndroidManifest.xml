@@ -5,15 +5,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Package Visibility for Android 11+ to interact with OpenKeychain -->
+    <!-- Optional keep-alive foreground service (user-enabled in Settings) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Package visibility (Android 11+): only needed to talk to Orbot -->
     <queries>
-        <package android:name="org.sufficientlysecure.keychain" />
-        <intent>
-            <action android:name="org.openintents.openpgp.IOpenPgpService" />
-        </intent>
-        <intent>
-            <action android:name="org.openintents.openpgp.IOpenPgpService2" />
-        </intent>
+        <package android:name="org.torproject.android" />
     </queries>
 
     <application
@@ -24,8 +23,8 @@
         android:label="GhostKey"
         android:roundIcon="@drawable/ic_launcher_stealth"
         android:supportsRtl="true"
-        android:theme="@style/Theme.GhostKey"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.GhostKey">
 
         <activity
             android:name=".MainActivity"
@@ -37,6 +36,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".service.TorForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

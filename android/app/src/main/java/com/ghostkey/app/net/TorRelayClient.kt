@@ -1,253 +1,436 @@
 package com.ghostkey.app.net
 
-import kotlinx.coroutines.*
-import okhttp3.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Dns
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.ConnectException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
+/** What the UI shows about the relay connection. */
+enum class RelayStatus {
+    DISCONNECTED,
+    ORBOT_NOT_RUNNING,
+    BUILDING_CIRCUIT,
+    CONNECTED,
+    TIMED_OUT,
+    AUTH_FAILED
+}
+
+/** A message as stored on the relay: still encrypted, until the app decrypts it. */
 data class EncryptedMessageRecord(
     val id: String,
+    val dropId: String,
     val ciphertext: String,
-    val createdAt: Long,
-    var decryptedPlaintext: String? = null
+    val createdAt: Long
 )
 
+data class InboxPage(val messages: List<EncryptedMessageRecord>, val more: Boolean)
+
+class RelayHttpException(val code: Int) : IOException("Relay returned HTTP $code")
+
+/**
+ * Relay client for wire protocol v2.
+ *
+ * - Mailboxes are addressed by random drop IDs. Reading needs the secret read token, sent as
+ *   the X-Mailbox-Token header (HTTP) or the readToken field of SUBSCRIBE (WebSocket).
+ * - The relay keeps messages until they are ACKed, so delivery is at-least-once: callers must
+ *   de-duplicate by message id and call [ack] only after the message has been processed.
+ * - When the Tor proxy is on, every connection goes through Orbot's SOCKS5 port and host names
+ *   are resolved by Tor; local DNS lookups are refused.
+ */
 class TorRelayClient(
     var serverBaseUrl: String = "http://127.0.0.1:8765",
     var useTorProxy: Boolean = false,
     var torSocksHost: String = "127.0.0.1",
-    var torSocksPort: Int = 9050
+    var torSocksPort: Int = OrbotPortWatcher.DEFAULT_SOCKS_PORT
 ) {
-    private var httpClient: OkHttpClient = buildClient()
-    private var currentWebSocket: WebSocket? = null
+    private val jsonType = "application/json; charset=utf-8".toMediaType()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Reconnection & Subscription state
-    private var isSubscribed = false
-    private var activeMailboxHash: String? = null
-    private var messageListener: ((EncryptedMessageRecord) -> Unit)? = null
-    private var statusListener: ((Boolean) -> Unit)? = null
+    private var httpClient: OkHttpClient = buildClient()
+
+    private var currentWebSocket: WebSocket? = null
+    private val socketGeneration = AtomicInteger(0)
+
+    @Volatile private var isSubscribed = false
+    @Volatile private var authFailed = false
+    @Volatile private var subscriptionConfirmed = false
+    @Volatile private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
-    private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private var activeDropId: String? = null
+    private var activeReadToken: String? = null
+    private var messageListener: ((EncryptedMessageRecord) -> Unit)? = null
+    private var statusListener: ((RelayStatus) -> Unit)? = null
+
+    // ---------------------------------------------------------------------------------------
+    // Configuration
+    // ---------------------------------------------------------------------------------------
 
     private fun buildClient(): OkHttpClient {
+        val torActive = useTorProxy
         val builder = OkHttpClient.Builder()
             .connectTimeout(60, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
             .pingInterval(20, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
 
-        // Custom DNS to prevent local DNS leak for .onion addresses
-        // Forces SOCKS5 proxy to resolve .onion remotely via Tor network
-        builder.dns(object : Dns {
-            override fun lookup(hostname: String): List<InetAddress> {
-                return if (hostname.endsWith(".onion", ignoreCase = true)) {
-                    listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
-                } else {
-                    Dns.SYSTEM.lookup(hostname)
-                }
-            }
-        })
-
-        if (useTorProxy) {
-            val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(torSocksHost, torSocksPort))
-            builder.proxy(socksProxy)
+        if (torActive) {
+            builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress(torSocksHost, torSocksPort)))
         }
 
+        // With a SOCKS proxy OkHttp hands the host name to the proxy (Tor resolves it). This
+        // resolver is a second line of defence: while Tor is on, any attempt to resolve a name
+        // locally fails instead of leaking a DNS query outside Tor.
+        builder.dns(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                if (torActive) {
+                    throw UnknownHostException("Local DNS lookups are disabled while the Tor proxy is on")
+                }
+                return Dns.SYSTEM.lookup(hostname)
+            }
+        })
         return builder.build()
     }
 
-    fun updateConfig(baseUrl: String, useTor: Boolean, host: String = "127.0.0.1", port: Int = 9050) {
-        var cleanUrl = baseUrl.trim().trimEnd('/')
-        if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
-            cleanUrl = "http://$cleanUrl"
+    /** Accepts a relay URL typed by a person: adds http:// when missing and trims slashes. */
+    private fun sanitizeUrl(url: String): String {
+        var clean = url.trim()
+        if (clean.isNotEmpty() && !clean.startsWith("http://") && !clean.startsWith("https://")) {
+            clean = "http://$clean"
         }
-        this.serverBaseUrl = if (cleanUrl.isBlank()) "http://10.0.2.2:8765" else cleanUrl
-        this.useTorProxy = useTor || cleanUrl.contains(".onion", ignoreCase = true)
-        this.torSocksHost = host
-        this.torSocksPort = port
-        this.httpClient = buildClient()
+        return clean.trimEnd('/')
+    }
 
-        // If currently subscribed, reconnect with new client configuration
-        if (isSubscribed && activeMailboxHash != null) {
+    /**
+     * Apply new network settings. If a live subscription exists it is restarted with the new
+     * settings. Passing [useTor] = false is only honoured for non-.onion hosts.
+     */
+    fun updateConfig(
+        url: String,
+        useTor: Boolean,
+        socksHost: String = torSocksHost,
+        socksPort: Int = torSocksPort
+    ) {
+        serverBaseUrl = sanitizeUrl(url)
+        useTorProxy = useTor || serverBaseUrl.contains(".onion")
+        torSocksHost = socksHost
+        torSocksPort = socksPort
+        httpClient = buildClient()
+
+        if (isSubscribed) {
+            authFailed = false
+            reconnectAttempt = 0
             startWebSocketConnection()
         }
     }
 
-    /**
-     * Send an armored PGP ciphertext to the blind mailbox.
-     */
-    suspend fun sendMessage(mailboxHash: String, ciphertext: String, ttlSeconds: Int = 3600): Result<String> {
-        return withContext(Dispatchers.IO) {
+    private fun emit(status: RelayStatus) {
+        statusListener?.invoke(status)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // HTTP API
+    // ---------------------------------------------------------------------------------------
+
+    /** POST /api/v2/send. Returns the relay's message id. */
+    suspend fun sendMessage(dropId: String, ciphertext: String, ttlSeconds: Int = 3600): Result<String> =
+        withContext(Dispatchers.IO) {
             try {
-                val json = JSONObject().apply {
-                    put("mailboxHash", mailboxHash)
-                    put("ciphertext", ciphertext)
-                    put("ttlSeconds", ttlSeconds)
-                }
-
-                val mediaType = "application/json; charset=utf-8".toMediaType()
-                val requestBody = json.toString().toRequestBody(mediaType)
-
-                val request = Request.Builder()
-                    .url("$serverBaseUrl/api/v1/send")
-                    .post(requestBody)
-                    .build()
-
+                val body = JSONObject()
+                    .put("dropId", dropId)
+                    .put("ciphertext", ciphertext)
+                    .put("ttlSeconds", ttlSeconds)
+                    .toString()
+                    .toRequestBody(jsonType)
+                val request = Request.Builder().url("$serverBaseUrl/api/v2/send").post(body).build()
                 httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext Result.failure(IOException("Server error: ${response.code}"))
-                    }
-                    val respJson = JSONObject(response.body?.string() ?: "{}")
-                    val msgId = respJson.optString("messageId", "ok")
-                    Result.success(msgId)
+                    if (!response.isSuccessful) throw RelayHttpException(response.code)
+                    val json = JSONObject(response.body?.string() ?: "{}")
+                    Result.success(json.optString("messageId", ""))
                 }
             } catch (e: Exception) {
                 Result.failure(e)
             }
         }
-    }
 
-    /**
-     * Fetch all waiting messages from the blind mailbox and BURN them immediately on the server.
-     */
-    suspend fun fetchAndBurnMessages(mailboxHash: String): Result<List<EncryptedMessageRecord>> {
-        return withContext(Dispatchers.IO) {
+    /** GET /api/v2/inbox/:dropId with X-Mailbox-Token. Does not delete anything on the relay. */
+    suspend fun fetchPendingMessages(dropId: String, readToken: String): Result<InboxPage> =
+        withContext(Dispatchers.IO) {
             try {
                 val request = Request.Builder()
-                    .url("$serverBaseUrl/api/v1/inbox/$mailboxHash")
+                    .url("$serverBaseUrl/api/v2/inbox/$dropId")
+                    .header("X-Mailbox-Token", readToken)
                     .get()
                     .build()
-
                 httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        return@withContext Result.failure(IOException("Fetch error: ${response.code}"))
-                    }
+                    if (!response.isSuccessful) throw RelayHttpException(response.code)
                     val json = JSONObject(response.body?.string() ?: "{}")
-                    val msgsArray: JSONArray = json.optJSONArray("messages") ?: JSONArray()
-                    val list = mutableListOf<EncryptedMessageRecord>()
-
-                    for (i in 0 until msgsArray.length()) {
-                        val obj = msgsArray.getJSONObject(i)
-                        list.add(
-                            EncryptedMessageRecord(
-                                id = obj.getString("id"),
-                                ciphertext = obj.getString("ciphertext"),
-                                createdAt = obj.optLong("createdAt", System.currentTimeMillis())
-                            )
-                        )
+                    val array = json.optJSONArray("messages") ?: JSONArray()
+                    val list = ArrayList<EncryptedMessageRecord>(array.length())
+                    for (i in 0 until array.length()) {
+                        list.add(parseMessage(dropId, array.getJSONObject(i)))
                     }
-                    Result.success(list)
+                    Result.success(InboxPage(list, json.optBoolean("more", false)))
                 }
             } catch (e: Exception) {
                 Result.failure(e)
             }
         }
-    }
+
+    /** POST /api/v2/ack: tells the relay these messages were received and may be deleted. */
+    suspend fun ackMessages(dropId: String, readToken: String, messageIds: List<String>): Result<Int> =
+        withContext(Dispatchers.IO) {
+            try {
+                val ids = JSONArray()
+                messageIds.forEach { ids.put(it) }
+                val body = JSONObject()
+                    .put("dropId", dropId)
+                    .put("messageIds", ids)
+                    .toString()
+                    .toRequestBody(jsonType)
+                val request = Request.Builder()
+                    .url("$serverBaseUrl/api/v2/ack")
+                    .header("X-Mailbox-Token", readToken)
+                    .post(body)
+                    .build()
+                httpClient.newCall(request).execute().use { response: Response ->
+                    if (!response.isSuccessful) throw RelayHttpException(response.code)
+                    val json = JSONObject(response.body?.string() ?: "{}")
+                    Result.success(json.optInt("removed", 0))
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    private fun parseMessage(dropId: String, obj: JSONObject): EncryptedMessageRecord =
+        EncryptedMessageRecord(
+            id = obj.getString("id"),
+            dropId = dropId,
+            ciphertext = obj.getString("ciphertext"),
+            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+        )
+
+    // ---------------------------------------------------------------------------------------
+    // Live subscription (WebSocket)
+    // ---------------------------------------------------------------------------------------
 
     /**
-     * Connect to live WebSocket push feed for zero-latency messaging.
-     * Automatically reconnects if Tor circuit drops or network switches.
+     * Subscribe to a mailbox and keep the connection alive (with backoff) until
+     * [disconnectWebSocket] is called. Messages arrive via [onMessageReceived]; call [ack]
+     * once a message has been decrypted and stored.
      */
     fun subscribeLive(
-        mailboxHash: String,
+        dropId: String,
+        readToken: String,
         onMessageReceived: (EncryptedMessageRecord) -> Unit,
-        onStatusChanged: (Boolean) -> Unit
+        onStatusChanged: (RelayStatus) -> Unit
     ) {
-        this.isSubscribed = true
-        this.activeMailboxHash = mailboxHash
+        this.activeDropId = dropId
+        this.activeReadToken = readToken
         this.messageListener = onMessageReceived
         this.statusListener = onStatusChanged
-
+        this.isSubscribed = true
+        this.authFailed = false
+        this.reconnectAttempt = 0
         startWebSocketConnection()
     }
 
-    private fun startWebSocketConnection() {
-        disconnectWebSocket()
-
-        val mailbox = activeMailboxHash ?: return
-        val wsUrl = try {
-            var url = serverBaseUrl.trimEnd('/')
-            if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                url = "http://$url"
-            }
-            url.replace("http://", "ws://").replace("https://", "wss://") + "/api/v1/live"
-        } catch (e: Exception) {
-            statusListener?.invoke(false)
-            return
+    /**
+     * Confirm receipt. Uses the open WebSocket when possible, otherwise HTTP. If the ACK is
+     * lost the relay simply delivers the message again, which the caller de-duplicates.
+     */
+    fun ack(messageIds: List<String>) {
+        val dropId = activeDropId ?: return
+        val token = activeReadToken ?: return
+        if (messageIds.isEmpty()) return
+        val ws = currentWebSocket
+        if (ws != null && subscriptionConfirmed) {
+            val ids = JSONArray()
+            messageIds.forEach { ids.put(it) }
+            val sent = ws.send(
+                JSONObject().put("type", "ACK").put("dropId", dropId).put("messageIds", ids).toString()
+            )
+            if (sent) return
         }
+        scope.launch { ackMessages(dropId, token, messageIds) }
+    }
+
+    /** Stop everything: no further reconnects. */
+    fun disconnectWebSocket() {
+        isSubscribed = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        closeSocketOnly()
+    }
+
+    /**
+     * Close the current socket without touching the subscription state, so the auto-reconnect
+     * logic keeps working. (Bumping the generation makes late callbacks of the old socket
+     * harmless.)
+     */
+    private fun closeSocketOnly() {
+        socketGeneration.incrementAndGet()
+        subscriptionConfirmed = false
+        val ws = currentWebSocket
+        currentWebSocket = null
+        try {
+            ws?.close(1000, "closing")
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun isCurrent(generation: Int) = generation == socketGeneration.get()
+
+    private fun buildWsUrl(): String {
+        val base = when {
+            serverBaseUrl.startsWith("https://") -> "wss://" + serverBaseUrl.removePrefix("https://")
+            else -> "ws://" + serverBaseUrl.removePrefix("http://")
+        }
+        return "$base/api/v2/live"
+    }
+
+    private fun startWebSocketConnection() {
+        closeSocketOnly()                              // NOT disconnectWebSocket(): keep isSubscribed
+        val dropId = activeDropId ?: return
+        val token = activeReadToken ?: return
 
         val request = try {
-            Request.Builder().url(wsUrl).build()
+            Request.Builder().url(buildWsUrl()).build()
         } catch (e: Exception) {
-            statusListener?.invoke(false)
+            emit(RelayStatus.DISCONNECTED)
             return
         }
 
-        currentWebSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                reconnectJob?.cancel()
-                statusListener?.invoke(true)
+        emit(if (useTorProxy) RelayStatus.BUILDING_CIRCUIT else RelayStatus.DISCONNECTED)
 
-                // Subscribe to blind mailbox
-                val sub = JSONObject().apply {
-                    put("type", "SUBSCRIBE")
-                    put("mailboxHash", mailbox)
-                }
-                webSocket.send(sub.toString())
+        val generation = socketGeneration.incrementAndGet()
+        currentWebSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
+
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (!isCurrent(generation)) return
+                reconnectAttempt = 0                   // success resets the backoff to 4 s
+                webSocket.send(
+                    JSONObject()
+                        .put("type", "SUBSCRIBE")
+                        .put("dropId", dropId)
+                        .put("readToken", token)
+                        .toString()
+                )
+                // The relay also pushes its backlog after SUBSCRIBE; polling as well makes sure
+                // nothing queued while we were offline is missed. Duplicates are de-duplicated
+                // by id on the caller side.
+                pollPending(generation, dropId, token)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (!isCurrent(generation)) return
                 try {
                     val json = JSONObject(text)
-                    if (json.optString("type") == "MESSAGE") {
-                        val msgObj = json.getJSONObject("message")
-                        val record = EncryptedMessageRecord(
-                            id = msgObj.getString("id"),
-                            ciphertext = msgObj.getString("ciphertext"),
-                            createdAt = msgObj.optLong("createdAt", System.currentTimeMillis())
-                        )
-                        messageListener?.invoke(record)
+                    when (json.optString("type")) {
+                        "SUBSCRIBED" -> {
+                            subscriptionConfirmed = true
+                            emit(RelayStatus.CONNECTED)
+                        }
+                        "AUTH_FAILED" -> handleAuthFailed()
+                        "MESSAGE" -> {
+                            val obj = json.optJSONObject("message") ?: return
+                            messageListener?.invoke(parseMessage(dropId, obj))
+                        }
+                        else -> { /* ACKED, PONG, ERROR: nothing to do */ }
                     }
-                } catch (e: Exception) {
-                    // Ignore malformed push payloads
+                } catch (_: Exception) {
+                    // ignore malformed frames
                 }
             }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                statusListener?.invoke(false)
-                scheduleReconnect()
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                statusListener?.invoke(false)
+                if (!isCurrent(generation)) return
+                socketGeneration.incrementAndGet()     // later events of this socket are ignored
+                subscriptionConfirmed = false
+                emit(RelayStatus.DISCONNECTED)
+                scheduleReconnect()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (!isCurrent(generation)) return
+                socketGeneration.incrementAndGet()
+                subscriptionConfirmed = false
+                emit(classifyFailure(t))
                 scheduleReconnect()
             }
         })
     }
 
-    private fun scheduleReconnect() {
-        if (!isSubscribed) return
-        reconnectJob?.cancel()
-        reconnectJob = clientScope.launch {
-            delay(4000) // Wait 4 seconds for Tor circuit or network stabilization
-            if (isSubscribed) {
-                startWebSocketConnection()
+    private fun pollPending(generation: Int, dropId: String, token: String) {
+        scope.launch {
+            val result = fetchPendingMessages(dropId, token)
+            if (!isSubscribed) return@launch
+            result.onSuccess { page ->
+                page.messages.forEach { messageListener?.invoke(it) }
+            }.onFailure { e ->
+                if (e is RelayHttpException && e.code == 401) handleAuthFailed()
             }
         }
     }
 
-    fun disconnectWebSocket() {
-        isSubscribed = false
+    private fun handleAuthFailed() {
+        // The relay has this mailbox claimed with a different token: retrying cannot help.
+        authFailed = true
         reconnectJob?.cancel()
-        currentWebSocket?.close(1000, "Client disconnect")
-        currentWebSocket = null
+        closeSocketOnly()
+        emit(RelayStatus.AUTH_FAILED)
+    }
+
+    private fun classifyFailure(t: Throwable): RelayStatus {
+        val message = t.message.orEmpty()
+        return when {
+            t is SocketTimeoutException || message.contains("timeout", ignoreCase = true) ->
+                RelayStatus.TIMED_OUT
+            // Cannot even reach Orbot's local SOCKS port: Orbot is not running.
+            useTorProxy && t is ConnectException -> RelayStatus.ORBOT_NOT_RUNNING
+            // Orbot answered but Tor could not reach the relay yet (no circuit / descriptor).
+            useTorProxy && t is SocketException && message.contains("SOCKS", ignoreCase = true) ->
+                RelayStatus.BUILDING_CIRCUIT
+            else -> RelayStatus.DISCONNECTED
+        }
+    }
+
+    private fun scheduleReconnect() {
+        if (!isSubscribed || authFailed) return
+        reconnectJob?.cancel()
+        val wait = Backoff.delayMs(reconnectAttempt)
+        reconnectAttempt++
+        reconnectJob = scope.launch {
+            delay(wait)
+            if (isSubscribed && !authFailed) startWebSocketConnection()
+        }
     }
 }

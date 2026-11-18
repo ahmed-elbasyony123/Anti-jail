@@ -4,7 +4,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import android.widget.Toast
@@ -40,7 +43,13 @@ import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.crypto.SignatureStatus
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.crypto.WireFormat
+import androidx.core.content.ContextCompat
+import com.ghostkey.app.net.EncryptedMessageRecord
+import com.ghostkey.app.net.OrbotPortWatcher
+import com.ghostkey.app.net.RelayHttpException
+import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.net.TorRelayClient
+import com.ghostkey.app.service.TorForegroundService
 import com.ghostkey.app.ui.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,7 +76,7 @@ class MainActivity : ComponentActivity() {
 
     // Volatile in-memory state - Never saved to SQLite or disk
     private val messagesState = mutableStateListOf<ChatMessage>()
-    private val isRelayConnected = mutableStateOf(false)
+    private val relayStatus = mutableStateOf(RelayStatus.DISCONNECTED)
 
     // Standalone PGP In-Memory State
     private var myPgpKeys by mutableStateOf<PgpKeyPairArmored?>(null)
@@ -79,6 +88,12 @@ class MainActivity : ComponentActivity() {
     // Configuration state
     private var relayServerUrl by mutableStateOf("http://10.0.2.2:8765")
     private var useTorSocks by mutableStateOf(false)
+    private var keepAlive by mutableStateOf(false)
+    private var orbotSocksPort = OrbotPortWatcher.DEFAULT_SOCKS_PORT
+    private var orbotWatcher: OrbotPortWatcher? = null
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* the service runs either way */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,12 +108,16 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
         relayServerUrl = prefs.getString("relay_url", "http://10.0.2.2:8765") ?: "http://10.0.2.2:8765"
         useTorSocks = prefs.getBoolean("use_tor", relayServerUrl.contains(".onion"))
+        keepAlive = prefs.getBoolean("keep_alive", false)
+        orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
 
         // Generate ephemeral in-memory keys on startup
         generateFreshKeys()
 
-        // Initialize network client
-        torClient.updateConfig(relayServerUrl, useTorSocks)
+        // Initialize network client (and listen for the SOCKS port Orbot reports, if it does)
+        applyNetworkConfig()
+        orbotWatcher = OrbotPortWatcher(this) { port -> runOnUiThread { onOrbotPort(port) } }.also { it.start() }
+        if (keepAlive) TorForegroundService.start(this)
 
         setContent {
             GhostKeyTheme {
@@ -109,7 +128,35 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        orbotWatcher?.stop()
         torClient.disconnectWebSocket()
+        if (isFinishing) TorForegroundService.stop(this)
+    }
+
+    private fun applyNetworkConfig() {
+        torClient.updateConfig(relayServerUrl, useTorSocks, socksPort = orbotSocksPort)
+    }
+
+    private fun onOrbotPort(port: Int) {
+        if (port == orbotSocksPort) return
+        orbotSocksPort = port
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putInt("orbot_socks_port", port).apply()
+        applyNetworkConfig()
+    }
+
+    private fun setKeepAlive(enabled: Boolean) {
+        keepAlive = enabled
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("keep_alive", enabled).apply()
+        if (enabled) {
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            TorForegroundService.start(this)
+        } else {
+            TorForegroundService.stop(this)
+        }
     }
 
     private fun generateFreshKeys() {
@@ -120,7 +167,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     myPgpKeys = keys
                     isGeneratingKey = false
-                    connectToRelayMailbox(keys.dropId)
+                    connectToRelayMailbox(keys)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -131,30 +178,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun connectToRelayMailbox(dropId: String) {
+    private fun connectToRelayMailbox(keys: PgpKeyPairArmored) {
         torClient.subscribeLive(
-            mailboxHash = dropId,
-            onMessageReceived = { record ->
-                runOnUiThread {
-                    val msg = ChatMessage(
-                        id = record.id,
-                        isOutgoing = false,
-                        plaintext = null,
-                        ciphertext = record.ciphertext,
-                        timestamp = record.createdAt,
-                        isDecrypted = false
-                    )
-                    messagesState.add(msg)
-                    // Automatically attempt to decrypt with standalone engine
-                    decryptMessage(msg)
-                }
-            },
-            onStatusChanged = { connected ->
-                runOnUiThread {
-                    isRelayConnected.value = connected
-                }
-            }
+            dropId = keys.dropId,
+            readToken = keys.readToken,
+            onMessageReceived = { record -> runOnUiThread { handleIncoming(record) } },
+            onStatusChanged = { status -> runOnUiThread { relayStatus.value = status } }
         )
+    }
+
+    /** The relay delivers at least once, so the same message id can arrive more than once. */
+    private fun handleIncoming(record: EncryptedMessageRecord) {
+        val existing = messagesState.firstOrNull { it.id == record.id }
+        if (existing != null) {
+            if (existing.isDecrypted) torClient.ack(listOf(existing.id))   // earlier ACK may have been lost
+            return
+        }
+        val msg = ChatMessage(
+            id = record.id,
+            isOutgoing = false,
+            plaintext = null,
+            ciphertext = record.ciphertext,
+            timestamp = record.createdAt,
+            isDecrypted = false
+        )
+        messagesState.add(msg)
+        decryptMessage(msg)
     }
 
     private fun sendMedia(uri: Uri) {
@@ -209,7 +258,7 @@ class MainActivity : ComponentActivity() {
 
                 // Step 2: Push to the peer's blind drop
                 val result = torClient.sendMessage(
-                    mailboxHash = peerDrop,
+                    dropId = peerDrop,
                     ciphertext = ciphertext
                 )
                 result.onSuccess {
@@ -226,7 +275,13 @@ class MainActivity : ComponentActivity() {
                     }
                 }.onFailure { err ->
                     runOnUiThread {
-                        Toast.makeText(this@MainActivity, "Send failed: ${err.message}", Toast.LENGTH_LONG).show()
+                        val reason = when ((err as? RelayHttpException)?.code) {
+                            429 -> "rate limit reached or the peer's mailbox is full, try again shortly"
+                            503 -> "the relay is at capacity"
+                            413 -> "message is too large for the relay"
+                            else -> err.message
+                        }
+                        Toast.makeText(this@MainActivity, "Send failed: $reason", Toast.LENGTH_LONG).show()
                     }
                 }
             } catch (e: Exception) {
@@ -253,6 +308,8 @@ class MainActivity : ComponentActivity() {
                             signatureStatus = result.signatureStatus,
                             signerFingerprint = result.signerFingerprint
                         )
+                        // Only now that the message is decrypted and in state may the relay delete it.
+                        torClient.ack(listOf(msg.id))
                     }
                 }
             } catch (e: Exception) {
@@ -272,6 +329,7 @@ class MainActivity : ComponentActivity() {
         recipientDropId = ""
         messagesState.clear()
         torClient.disconnectWebSocket()
+        TorForegroundService.stop(this)
         finishAffinity()
         exitProcess(0)
     }
@@ -321,8 +379,8 @@ class MainActivity : ComponentActivity() {
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             StatusBadge(
-                                label = if (isRelayConnected.value) "RELAY: LIVE" else "RELAY: OFF",
-                                isActive = isRelayConnected.value
+                                label = relayBadgeLabel(relayStatus.value),
+                                isActive = relayStatus.value == RelayStatus.CONNECTED
                             )
                         }
                     },
@@ -357,6 +415,10 @@ class MainActivity : ComponentActivity() {
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
+                if (relayStatus.value != RelayStatus.CONNECTED) {
+                    RelayStatusBanner(relayStatus.value)
+                }
+
                 // Key Management Quick Cards
                 Column(
                     modifier = Modifier
@@ -742,7 +804,24 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    "Route via Tor SOCKS5 (Orbot 9050)",
+                                    "Route via Tor SOCKS5 (Orbot, port auto-detected, default 9050)",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = StealthTextPrimary
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Checkbox(
+                                    checked = keepAlive,
+                                    onCheckedChange = { setKeepAlive(it) },
+                                    colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Keep connection alive in background (shows a notification)",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
                                     color = StealthTextPrimary
@@ -764,8 +843,8 @@ class MainActivity : ComponentActivity() {
                                     .putString("relay_url", relayServerUrl)
                                     .putBoolean("use_tor", useTorSocks)
                                     .apply()
-                                torClient.updateConfig(relayServerUrl, useTorSocks)
-                                myPgpKeys?.let { connectToRelayMailbox(it.dropId) }
+                                applyNetworkConfig()
+                                myPgpKeys?.let { connectToRelayMailbox(it) }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
                         ) {
@@ -864,6 +943,42 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    private fun relayBadgeLabel(status: RelayStatus): String = when (status) {
+        RelayStatus.CONNECTED -> "RELAY: LIVE"
+        RelayStatus.BUILDING_CIRCUIT -> "TOR: CONNECTING"
+        RelayStatus.ORBOT_NOT_RUNNING -> "NO ORBOT"
+        RelayStatus.TIMED_OUT -> "TIMED OUT"
+        RelayStatus.AUTH_FAILED -> "AUTH FAILED"
+        RelayStatus.DISCONNECTED -> "RELAY: OFF"
+    }
+
+    @Composable
+    fun RelayStatusBanner(status: RelayStatus) {
+        val (text, color) = when (status) {
+            RelayStatus.ORBOT_NOT_RUNNING ->
+                "Orbot is not running. Start Orbot and connect it to Tor, then return here." to AlertCrimson
+            RelayStatus.BUILDING_CIRCUIT ->
+                "Connecting through Tor. This can take a minute." to StealthTextSecondary
+            RelayStatus.TIMED_OUT ->
+                "Connection timed out. Retrying automatically." to AlertCrimson
+            RelayStatus.AUTH_FAILED ->
+                "The relay rejected this mailbox's access token and will not retry. Create a new identity or check the relay." to AlertCrimson
+            RelayStatus.DISCONNECTED ->
+                "Not connected to the relay. Retrying automatically." to StealthTextSecondary
+            RelayStatus.CONNECTED -> return
+        }
+        Text(
+            text = text,
+            color = color,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(StealthSurface)
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+        )
     }
 
     @Composable
