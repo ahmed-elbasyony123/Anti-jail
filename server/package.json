@@ -1,11 +1,13 @@
 {
   "name": "ghostkey-blind-relay",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Zero-Knowledge RAM-Only Blind Relay for OpenPGP Messaging over Tor Onion Services",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "check": "node --check server.js",
+    "test": "node --test test/relay.test.js"
   },
   "dependencies": {
     "openpgp": "^6.3.2",
