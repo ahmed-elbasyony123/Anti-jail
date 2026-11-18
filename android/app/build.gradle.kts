@@ -54,6 +54,10 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/DEPENDENCIES"
             excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/versions/**"
+            excludes += "META-INF/*.version"
+            excludes += "META-INF/*.kotlin_module"
         }
     }
 }
