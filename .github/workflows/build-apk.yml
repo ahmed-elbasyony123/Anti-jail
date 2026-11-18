@@ -56,10 +56,11 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.2-standalone
-          name: "GhostKey v1.1.2 Standalone APK"
+          tag_name: v1.1.3-standalone
+          name: "GhostKey v1.1.3 Standalone APK"
           body: |
-            ### 🛡️ GhostKey v1.1.2 Standalone (Resilient Tor & Auto-Reconnect)
+            ### 🛡️ GhostKey v1.1.3 Standalone (Crash Fix & URL Sanitization)
+            - **URL Sanitization Crash Fix:** Automatically prepends http:// and trims .onion addresses so clicking Save Config never crashes
             - **Tor SOCKS5 DNS Leak Fix:** Remote DNS resolution for .onion addresses
             - **Auto-Reconnect & Circuit Resiliency:** 60s timeout + exponential backoff auto-reconnect
             - **Persistent Network Preferences:** Saved relay URL & Tor toggle in SharedPreferences

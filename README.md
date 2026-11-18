@@ -101,7 +101,7 @@ Open `http://localhost:5173`. You can switch between **Alice** and **Bob** to te
 ## 📱 Mobile Step-by-Step Guide (دليل التشغيل الكامل على الهواتف)
 
 ### 🧩 كل ما تحتاجه على هاتفك:
-1. **GhostKey Standalone APK:** حمّله مباشرة من [GitHub Releases: v1.1.2](https://github.com/ahmed-elbasyony123/Anti-jail/releases/tag/v1.1.2-standalone) (`app-debug.apk`).
+1. **GhostKey Standalone APK:** حمّله مباشرة من [GitHub Releases: v1.1.3](https://github.com/ahmed-elbasyony123/Anti-jail/releases/tag/v1.1.3-standalone) (`app-debug.apk`).
 2. **Orbot (Tor for Android) [اختياري للتخفي التام]:** من متجر [Google Play](https://play.google.com/store/apps/details?id=org.torproject.android) أو [F-Droid](https://f-droid.org/packages/org.torproject.android/) لتوجيه الحركة عبر شبكة البصلة Tor وإخفاء هويتك تماماً عن مزود الإنترنت (ISP).
 
 > **ملحوظة:** لا تحتاج لتثبيت تطبيق OpenKeychain نهائياً! محرك التشفير (OpenPGP BouncyCastle) مدمج بالكامل داخل تطبيق GhostKey ويعمل في ذاكرة الرام فقط لحرق كل شيء فوراً.

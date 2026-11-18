@@ -65,8 +65,12 @@ class TorRelayClient(
     }
 
     fun updateConfig(baseUrl: String, useTor: Boolean, host: String = "127.0.0.1", port: Int = 9050) {
-        this.serverBaseUrl = baseUrl.trimEnd('/')
-        this.useTorProxy = useTor || baseUrl.contains(".onion", ignoreCase = true)
+        var cleanUrl = baseUrl.trim().trimEnd('/')
+        if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            cleanUrl = "http://$cleanUrl"
+        }
+        this.serverBaseUrl = if (cleanUrl.isBlank()) "http://10.0.2.2:8765" else cleanUrl
+        this.useTorProxy = useTor || cleanUrl.contains(".onion", ignoreCase = true)
         this.torSocksHost = host
         this.torSocksPort = port
         this.httpClient = buildClient()
@@ -169,8 +173,23 @@ class TorRelayClient(
         disconnectWebSocket()
 
         val mailbox = activeMailboxHash ?: return
-        val wsUrl = serverBaseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/api/v1/live"
-        val request = Request.Builder().url(wsUrl).build()
+        val wsUrl = try {
+            var url = serverBaseUrl.trimEnd('/')
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                url = "http://$url"
+            }
+            url.replace("http://", "ws://").replace("https://", "wss://") + "/api/v1/live"
+        } catch (e: Exception) {
+            statusListener?.invoke(false)
+            return
+        }
+
+        val request = try {
+            Request.Builder().url(wsUrl).build()
+        } catch (e: Exception) {
+            statusListener?.invoke(false)
+            return
+        }
 
         currentWebSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {

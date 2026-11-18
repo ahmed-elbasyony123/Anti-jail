@@ -740,6 +740,11 @@ class MainActivity : ComponentActivity() {
                         Button(
                             onClick = {
                                 showSettingsDialog = false
+                                var cleanUrl = relayServerUrl.trim().trimEnd('/')
+                                if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+                                    cleanUrl = "http://$cleanUrl"
+                                }
+                                relayServerUrl = cleanUrl
                                 val p = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
                                 p.edit()
                                     .putString("relay_url", relayServerUrl)
