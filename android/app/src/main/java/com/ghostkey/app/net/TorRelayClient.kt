@@ -103,12 +103,20 @@ class TorRelayClient(
         }
 
         // With a SOCKS proxy OkHttp hands the host name to the proxy (Tor resolves it). This
-        // resolver is a second line of defence: while Tor is on, returning a dummy address
-        // prevents any local DNS leak and forces OkHttp to pass the hostname directly to SOCKS5.
+        // resolver prevents local DNS leaks for .onion hosts by returning a dummy address,
+        // which forces OkHttp to pass the unresolved hostname directly to the SOCKS5 proxy.
+        // For non-onion hosts (e.g. direct IPs or regular domains), it resolves standard IPs.
         builder.dns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
                 if (torActive) {
-                    return listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
+                    if (hostname.endsWith(".onion", ignoreCase = true)) {
+                        return listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
+                    }
+                    return try {
+                        Dns.SYSTEM.lookup(hostname)
+                    } catch (e: Exception) {
+                        listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
+                    }
                 }
                 return Dns.SYSTEM.lookup(hostname)
             }

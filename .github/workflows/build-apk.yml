@@ -86,21 +86,20 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.5.0
-          name: "GhostKey v2.5.0 (Telegram UI, Anthropic Palette & E2EE Group Chats)"
+          tag_name: v2.5.1
+          name: "GhostKey v2.5.1 (Standalone In-Process Arti Tor Fix & DNS Routing)"
           body: |
-            ### 📱 GhostKey v2.5.0 (New Telegram UI, Anthropic Palette & E2EE Group Chats)
-            - **New Telegram UI Layout:**
-              - Clean conversations list with initials avatars, unread badges, timestamps, and Floating Action Button (`+`).
-              - Navigation Drawer (`☰`) containing Identity Card, Drop ID, Fingerprint Copy, Tor circuit live telemetry, and Panic Wipe.
-              - Clutter-free Chat Screen: Removed top KeyBar clutter; replaced with Telegram asymmetric bubbles (`20dp`/`4dp`), inline time stamps, and read receipts (`✓✓`).
-              - Floating pill capsule input bar with morphing voice note mic button and audio waveform player.
-              - Dedicated grouped Settings screen for Tor Network, Push Notifications, Device Privacy, and Security Keys.
-            - **Anthropic Official Brand Palette:** Creamy & warm terracotta styling (`#FAF9F5`, `#141413`, `#D97757`, `#788C5D`, `#6A9BCC`).
-            - **Zero-Metadata E2EE Group Chats:** Group messaging using AES-256-GCM symmetric session encryption distributed pairwise via OpenPGP envelopes over shared `GroupDropId` blind relays.
-            - **Hardware-Backed Contacts & Identity Aliases:** User-friendly aliases authenticated inside OpenPGP User IDs (`Alias <ghostkey drop:ID>`) and persisted in KeyStore-encrypted `SecureStore`.
-            - **Tor & Relay Connectivity Fixes:** In-process Arti DNS lookup fallback directly sending `.onion` hosts to SOCKS5 (ATYP `0x03`), eliminating Orbot requirement.
-            - **Brave Tor / Tor Browser Alerts:** Audio chime (Web Audio API) and title blinking when browser permissions block HTML5 system notifications.
+            ### 🚀 GhostKey v2.5.1 (Standalone In-Process Arti Tor Fix & DNS Routing)
+            - **Standalone Tor Engine Fix (Zero-Orbot Dependency):**
+              - Disabled Android filesystem ownership verification (`ARTI_FS_DISABLE_PERMISSION_CHECKS`) which previously prevented Arti from starting on Android's multi-user sandbox paths (`/data/user/0/...`).
+              - Immediate SOCKS5 ephemeral port binding before background bootstrap, ensuring OkHttp never times out or drops proxy requests.
+              - Multi-threaded asynchronous Arti lifecycle managed off the Android UI thread (`Dispatchers.IO`).
+            - **Smart DNS & Onion Routing:**
+              - Selective `.onion` dummy address routing preventing DNS leaks while preserving standard direct IP connections (e.g. cloud relay servers).
+            - **New Telegram UI & Anthropic Official Cream Palette:**
+              - Complete overhaul with conversation lists, floating capsule input, navigation drawer (`☰`), and dedicated grouped Settings.
+            - **Zero-Metadata E2EE Group Chats:**
+              - Multi-recipient AES-256-GCM symmetric session keys wrapped in OpenPGP envelopes.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

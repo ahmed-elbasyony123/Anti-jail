@@ -217,6 +217,8 @@ class MainActivity : ComponentActivity() {
                         }
                         is ArtiTorState.Connected -> {
                             onOrbotPort(state.socksPort)
+                            applyNetworkConfig()
+                            myPgpKeys?.let { connectToRelayMailbox(it) }
                         }
                         is ArtiTorState.Error -> {
                             startOrbotWatcher()
@@ -226,7 +228,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (useTorSocks || relayServerUrl.contains(".onion")) {
-                ArtiTorManager.start(applicationContext)
+                CoroutineScope(Dispatchers.IO).launch {
+                    ArtiTorManager.start(applicationContext)
+                }
             }
         } else {
             startOrbotWatcher()
@@ -242,16 +246,19 @@ class MainActivity : ComponentActivity() {
     private fun applyNetworkConfig() {
         torClient.updateConfig(relayServerUrl, useTorSocks, socksPort = orbotSocksPort)
         if ((useTorSocks || relayServerUrl.contains(".onion")) && ArtiTorManager.isAvailable) {
-            ArtiTorManager.start(applicationContext)
+            CoroutineScope(Dispatchers.IO).launch {
+                ArtiTorManager.start(applicationContext)
+            }
         }
     }
 
     private fun onOrbotPort(port: Int) {
-        if (orbotSocksPort != port) {
-            orbotSocksPort = port
-            getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
-                .putInt("orbot_socks_port", port).apply()
-            applyNetworkConfig()
+        val changed = orbotSocksPort != port
+        orbotSocksPort = port
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+            .putInt("orbot_socks_port", port).apply()
+        applyNetworkConfig()
+        if (changed) {
             myPgpKeys?.let { connectToRelayMailbox(it) }
         }
     }

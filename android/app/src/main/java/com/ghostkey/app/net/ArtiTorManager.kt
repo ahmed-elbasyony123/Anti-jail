@@ -31,8 +31,8 @@ object ArtiTorManager {
         try {
             System.loadLibrary("arti_mobile")
             isLibraryLoaded = true
-        } catch (_: UnsatisfiedLinkError) {
-            // Graceful fallback to external Orbot / Tor proxy if native binary is absent
+        } catch (t: Throwable) {
+            android.util.Log.e("GhostKey-Arti", "Could not load libarti_mobile.so: ${t.message}", t)
             isLibraryLoaded = false
         }
     }
