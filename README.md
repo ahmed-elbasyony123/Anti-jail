@@ -1,6 +1,6 @@
-# GHOSTKEY // E2EE Messaging Suite (Protocol v2)
+# GHOSTKEY // E2EE Messaging Suite (v2.1.0)
 
-> **End-to-End Encrypted • Tor Onion Routing • Ed25519/X25519 • Blind Dead-Drop Relay**
+> **End-to-End Encrypted • Tor Onion Routing • Ed25519/X25519 • Blind Dead-Drop Relay • 15MB Media**
 
 ---
 
@@ -9,7 +9,7 @@
 **GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with Tor Onion Routing to minimize metadata exposure to ISPs and intermediate relays.
 
 > [!NOTE]
-> **Protocol v2 Notice:** GhostKey v2 introduces a breaking wire protocol change (random drop IDs, hashed read-tokens, signed-then-encrypted payloads, and ACK-based deletion). Client v2 requires a relay running server v2.
+> **GhostKey v2.1.0 Updates:** Features hardened modular architecture, in-memory cryptographic keyring caching (<1ms lookup), single-pass 15MB media decoding with immediate RAM Base64 stripping, and enhanced anti-forensics. Client v2.1 requires a relay running server v2.
 
 ---
 
@@ -89,11 +89,15 @@ flowchart TD
 │
 ├── android/                # Native Android Application (Kotlin + Jetpack Compose)
 │   ├── app/src/main/java/com/ghostkey/app/
-│   │   ├── MainActivity.kt # Compose UI, Auto-scroll, Collapsible Keys, App Lock
-│   │   ├── crypto/         # StandalonePgpEngine (Ed25519/X25519), WireFormat
-│   │   ├── data/           # SecureStore (Android KeyStore AES-256-GCM)
+│   │   ├── MainActivity.kt # Streamlined Entry point, Lifecycle & State coordination
+│   │   ├── crypto/         # StandalonePgpEngine (Ed25519/X25519 Keyring Cache), WireFormat
+│   │   ├── data/           # ChatMessage (@Immutable), SecureStore (Keystore AES-256-GCM)
 │   │   ├── net/            # TorRelayClient (v2 endpoints), Backoff, OrbotDiscovery
-│   │   └── service/        # TorForegroundService (optional keep-alive)
+│   │   ├── service/        # Stealth Foreground Service (Neutral Sync Service)
+│   │   └── ui/             # Modular Jetpack Compose UI
+│   │       ├── components/ # KeyBar, MessageBubble, StatusBadges
+│   │       ├── dialogs/    # KeyDialogs, SettingsDialog
+│   │       └── screens/    # LockedScreen
 │   ├── build.gradle.kts
 │   └── AndroidManifest.xml
 │
