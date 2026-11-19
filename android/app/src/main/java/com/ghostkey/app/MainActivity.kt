@@ -153,8 +153,8 @@ class MainActivity : ComponentActivity() {
         // Load network config preferences
         val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
         relayServerUrl = prefs.getString("relay_url", "http://10.0.2.2:8765") ?: "http://10.0.2.2:8765"
-        useTorSocks = prefs.getBoolean("use_tor", relayServerUrl.contains(".onion"))
-        keepAlive = prefs.getBoolean("keep_alive", false)
+        useTorSocks = prefs.getBoolean("use_tor", true)
+        keepAlive = prefs.getBoolean("keep_alive", true)
         orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
         ephemeralMode = prefs.getBoolean("ephemeral_mode", false)
         lockEnabled = prefs.getBoolean("lock_enabled", false)
@@ -211,6 +211,9 @@ class MainActivity : ComponentActivity() {
                     when (state) {
                         is ArtiTorState.Starting -> {
                             relayStatus.value = RelayStatus.BUILDING_CIRCUIT
+                            if (state.socksPort > 0) {
+                                onOrbotPort(state.socksPort)
+                            }
                         }
                         is ArtiTorState.Connected -> {
                             onOrbotPort(state.socksPort)

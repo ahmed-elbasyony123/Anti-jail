@@ -9,7 +9,7 @@ import java.io.File
 
 sealed class ArtiTorState {
     object Idle : ArtiTorState()
-    data class Starting(val progress: Int) : ArtiTorState()
+    data class Starting(val progress: Int, val socksPort: Int = 0) : ArtiTorState()
     data class Connected(val socksPort: Int) : ArtiTorState()
     data class Error(val message: String) : ArtiTorState()
 }
@@ -50,11 +50,6 @@ object ArtiTorManager {
             return true
         }
 
-        _state.value = ArtiTorState.Starting(0)
-
-        val stateDir = File(context.filesDir, "arti_state").apply { mkdirs() }.absolutePath
-        val cacheDir = File(context.cacheDir, "arti_cache").apply { mkdirs() }.absolutePath
-
         val port = startNative(stateDir, cacheDir)
         if (port <= 0) {
             _state.value = ArtiTorState.Error("Failed to bind Arti local SOCKS5 proxy")
@@ -62,6 +57,7 @@ object ArtiTorManager {
         }
 
         activePort = port
+        _state.value = ArtiTorState.Starting(0, socksPort = port)
 
         // Poll bootstrap progress until 100%
         progressJob?.cancel()
@@ -72,7 +68,7 @@ object ArtiTorManager {
                     _state.value = ArtiTorState.Connected(port)
                     break
                 } else {
-                    _state.value = ArtiTorState.Starting(progress)
+                    _state.value = ArtiTorState.Starting(progress, socksPort = port)
                 }
                 delay(300)
             }
