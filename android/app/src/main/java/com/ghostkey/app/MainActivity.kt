@@ -377,6 +377,10 @@ class MainActivity : ComponentActivity() {
                 val payload = WireFormat.buildMedia(mimeType, fileName, bytes)
 
                 var previewBitmap: ImageBitmap? = null
+                var isAudio = false
+                var audioBytes: ByteArray? = null
+                var audioDurationMs = 0L
+
                 if (mimeType.startsWith("image/")) {
                     try {
                         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -388,15 +392,29 @@ class MainActivity : ComponentActivity() {
                             previewBitmap = it.asImageBitmap()
                         }
                     } catch (_: Throwable) {}
+                } else if (mimeType.startsWith("audio/")) {
+                    isAudio = true
+                    audioBytes = bytes
+                    try {
+                        val retriever = MediaMetadataRetriever()
+                        val ds = MemoryAudioDataSource(bytes)
+                        retriever.setDataSource(ds)
+                        val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        audioDurationMs = durStr?.toLongOrNull() ?: 0L
+                        retriever.release()
+                    } catch (_: Throwable) {}
                 }
 
                 runOnUiThread {
                     sendPayload(
                         payload = payload,
                         isMedia = true,
+                        isAudio = isAudio,
                         mimeType = mimeType,
                         filename = fileName,
-                        mediaBitmap = previewBitmap
+                        mediaBitmap = previewBitmap,
+                        audioBytes = audioBytes,
+                        audioDurationMs = audioDurationMs
                     )
                 }
             } catch (e: Exception) {
@@ -423,7 +441,7 @@ class MainActivity : ComponentActivity() {
 
     private fun sendMessage(text: String) {
         if (text.isBlank()) return
-        sendPayload(payload = WireFormat.buildText(text), isMedia = false)
+        sendPayload(payload = WireFormat.buildText(text), isMedia = false, displayText = text)
     }
 
     private fun sendAudioRecordResult(result: AudioRecordResult) {
@@ -443,6 +461,7 @@ class MainActivity : ComponentActivity() {
         payload: ByteArray,
         isMedia: Boolean = false,
         isAudio: Boolean = false,
+        displayText: String? = null,
         mimeType: String = "",
         filename: String = "",
         mediaBitmap: ImageBitmap? = null,
@@ -477,10 +496,11 @@ class MainActivity : ComponentActivity() {
                 val result = torClient.sendMessage(dropId = peerDrop, ciphertext = ciphertext)
                 result.onSuccess {
                     runOnUiThread {
+                        val cleanText = if (isMedia) null else (displayText ?: WireFormat.parse(payload)?.text ?: String(payload, Charsets.UTF_8))
                         val msg = ChatMessage(
                             id = UUID.randomUUID().toString(),
                             isOutgoing = true,
-                            plaintext = if (isMedia) null else String(payload, Charsets.UTF_8),
+                            plaintext = cleanText,
                             ciphertext = ciphertext,
                             timestamp = System.currentTimeMillis(),
                             isDecrypted = true,
