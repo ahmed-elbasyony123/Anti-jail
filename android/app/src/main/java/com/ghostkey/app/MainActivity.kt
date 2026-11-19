@@ -1171,16 +1171,12 @@ class MainActivity : ComponentActivity() {
                         onStopRecording = { onStopAudioRecording() },
                         onCancelRecording = { onCancelAudioRecording() },
                         onAudioPlayPause = { msg ->
-                            if (playbackState.activeMessageId == msg.id && playbackState.isPlaying) {
-                                audioPlayerManager.pause()
-                            } else if (msg.audioBytes != null) {
+                            if (msg.audioBytes != null) {
                                 audioPlayerManager.play(msg.id, msg.audioBytes)
                             }
                         },
                         onAudioSeek = { msg, frac ->
-                            if (playbackState.activeMessageId == msg.id) {
-                                audioPlayerManager.seekToFraction(frac)
-                            }
+                            audioPlayerManager.seekTo(msg.id, frac)
                         },
                         onOpenSafetyCode = { showSafetyCodeDialog = true },
                         onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS }

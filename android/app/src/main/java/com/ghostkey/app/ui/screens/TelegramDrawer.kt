@@ -176,8 +176,8 @@ fun TelegramDrawer(
                 icon = Icons.Default.Public,
                 title = "Tor & Arti Network",
                 badge = when (artiState) {
-                    is ArtiTorState.Running -> "Arti Rust 🧅"
-                    is ArtiTorState.Starting -> "Starting..."
+                    is ArtiTorState.Connected -> "Arti Live 🧅"
+                    is ArtiTorState.Starting -> if (artiState.progress > 0) "Arti: ${artiState.progress}%" else "Booting..."
                     else -> "Ready"
                 },
                 onClick = onNavigateSettings
