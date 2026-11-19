@@ -642,33 +642,35 @@ object StandalonePgpEngine {
         val ops = onePass
         if (sig != null || ops != null) {
             status = SignatureStatus.INVALID_SIGNATURE
-            for (candArmored in candidatePeerKeysArmored) {
-                if (candArmored.isBlank()) continue
-                try {
-                    var peerRing: PGPPublicKeyRing? = null
-                    for (ring in readPublicRings(candArmored)) {
-                        if (ring.getPublicKey(ops.keyID) != null) {
-                            peerRing = ring
-                            break
-                        }
-                    }
-                    if (peerRing != null) {
-                        val signingKey = peerRing.getPublicKey(ops.keyID)
-                        if (!signingKey.isRevoked &&
-                            sig.keyID == ops.keyID &&
-                            sig.signatureType == PGPSignature.BINARY_DOCUMENT &&
-                            sig.hashAlgorithm in acceptedSignatureHashes
-                        ) {
-                            ops.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), signingKey)
-                            ops.update(literal)
-                            if (ops.verify(sig)) {
-                                status = SignatureStatus.VERIFIED
-                                signer = hex(peerRing.publicKey.fingerprint, upper = true)
+            if (sig != null && ops != null) {
+                for (candArmored in candidatePeerKeysArmored) {
+                    if (candArmored.isBlank()) continue
+                    try {
+                        var peerRing: PGPPublicKeyRing? = null
+                        for (ring in readPublicRings(candArmored)) {
+                            if (ring.getPublicKey(ops.keyID) != null) {
+                                peerRing = ring
                                 break
                             }
                         }
-                    }
-                } catch (_: Exception) {}
+                        if (peerRing != null) {
+                            val signingKey = peerRing.getPublicKey(ops.keyID)
+                            if (!signingKey.isRevoked &&
+                                sig.keyID == ops.keyID &&
+                                sig.signatureType == PGPSignature.BINARY_DOCUMENT &&
+                                sig.hashAlgorithm in acceptedSignatureHashes
+                            ) {
+                                ops.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), signingKey)
+                                ops.update(literal)
+                                if (ops.verify(sig)) {
+                                    status = SignatureStatus.VERIFIED
+                                    signer = hex(peerRing.publicKey.fingerprint, upper = true)
+                                    break
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
             }
         }
 

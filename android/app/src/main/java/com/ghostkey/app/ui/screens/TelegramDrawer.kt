@@ -164,13 +164,13 @@ fun TelegramDrawer(
                         text = if (myPgpKeys != null) "Copy Full Public Key" else "Key: Not ready",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = AnthropicTextLight
+                        color = AnthropicTextMid
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
-                        Icons.Default.Key,
+                        Icons.Default.Share,
                         contentDescription = "Copy Full Public Key",
-                        tint = AnthropicBlue,
+                        tint = AnthropicSlate,
                         modifier = Modifier.size(13.dp)
                     )
                 }
