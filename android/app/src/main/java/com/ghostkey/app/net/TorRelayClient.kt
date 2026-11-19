@@ -82,6 +82,7 @@ class TorRelayClient(
 
     private var activeDropId: String? = null
     private var activeReadToken: String? = null
+    private val activeSubscriptions = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var messageListener: ((EncryptedMessageRecord) -> Unit)? = null
     private var statusListener: ((RelayStatus) -> Unit)? = null
 
@@ -102,12 +103,12 @@ class TorRelayClient(
         }
 
         // With a SOCKS proxy OkHttp hands the host name to the proxy (Tor resolves it). This
-        // resolver is a second line of defence: while Tor is on, any attempt to resolve a name
-        // locally fails instead of leaking a DNS query outside Tor.
+        // resolver is a second line of defence: while Tor is on, returning a dummy address
+        // prevents any local DNS leak and forces OkHttp to pass the hostname directly to SOCKS5.
         builder.dns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
                 if (torActive) {
-                    throw UnknownHostException("Local DNS lookups are disabled while the Tor proxy is on")
+                    return listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
                 }
                 return Dns.SYSTEM.lookup(hostname)
             }
@@ -255,6 +256,7 @@ class TorRelayClient(
     ) {
         this.activeDropId = dropId
         this.activeReadToken = readToken
+        this.activeSubscriptions[dropId] = readToken
         this.messageListener = onMessageReceived
         this.statusListener = onStatusChanged
         this.isSubscribed = true
@@ -263,24 +265,41 @@ class TorRelayClient(
         startWebSocketConnection()
     }
 
+    /** Add an extra mailbox (e.g. for group chats) to listen to on the same live connection. */
+    fun addSubscription(dropId: String, readToken: String) {
+        activeSubscriptions[dropId] = readToken
+        val ws = currentWebSocket
+        if (ws != null && subscriptionConfirmed) {
+            ws.send(
+                JSONObject()
+                    .put("type", "SUBSCRIBE")
+                    .put("dropId", dropId)
+                    .put("readToken", readToken)
+                    .toString()
+            )
+            val gen = socketGeneration.get()
+            pollPending(gen, dropId, readToken)
+        }
+    }
+
     /**
      * Confirm receipt. Uses the open WebSocket when possible, otherwise HTTP. If the ACK is
      * lost the relay simply delivers the message again, which the caller de-duplicates.
      */
-    fun ack(messageIds: List<String>) {
-        val dropId = activeDropId ?: return
-        val token = activeReadToken ?: return
+    fun ack(messageIds: List<String>, dropId: String? = null) {
+        val targetDropId = dropId ?: activeDropId ?: return
+        val token = activeSubscriptions[targetDropId] ?: activeReadToken ?: return
         if (messageIds.isEmpty()) return
         val ws = currentWebSocket
         if (ws != null && subscriptionConfirmed) {
             val ids = JSONArray()
             messageIds.forEach { ids.put(it) }
             val sent = ws.send(
-                JSONObject().put("type", "ACK").put("dropId", dropId).put("messageIds", ids).toString()
+                JSONObject().put("type", "ACK").put("dropId", targetDropId).put("messageIds", ids).toString()
             )
             if (sent) return
         }
-        scope.launch { ackMessages(dropId, token, messageIds) }
+        scope.launch { ackMessages(targetDropId, token, messageIds) }
     }
 
     /** Stop everything: no further reconnects. */
@@ -337,17 +356,16 @@ class TorRelayClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!isCurrent(generation)) return
                 reconnectAttempt = 0                   // success resets the backoff to 4 s
-                webSocket.send(
-                    JSONObject()
-                        .put("type", "SUBSCRIBE")
-                        .put("dropId", dropId)
-                        .put("readToken", token)
-                        .toString()
-                )
-                // The relay also pushes its backlog after SUBSCRIBE; polling as well makes sure
-                // nothing queued while we were offline is missed. Duplicates are de-duplicated
-                // by id on the caller side.
-                pollPending(generation, dropId, token)
+                for ((dId, rToken) in activeSubscriptions) {
+                    webSocket.send(
+                        JSONObject()
+                            .put("type", "SUBSCRIBE")
+                            .put("dropId", dId)
+                            .put("readToken", rToken)
+                            .toString()
+                    )
+                    pollPending(generation, dId, rToken)
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -361,8 +379,9 @@ class TorRelayClient(
                         }
                         "AUTH_FAILED" -> handleAuthFailed()
                         "MESSAGE" -> {
+                            val msgDropId = json.optString("dropId", dropId)
                             val obj = json.optJSONObject("message") ?: return
-                            messageListener?.invoke(parseMessage(dropId, obj))
+                            messageListener?.invoke(parseMessage(msgDropId, obj))
                         }
                         else -> { /* ACKED, PONG, ERROR: nothing to do */ }
                     }

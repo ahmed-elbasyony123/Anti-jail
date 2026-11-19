@@ -24,6 +24,10 @@ data class ChatMessage(
     val showRawArmor: Boolean = false,
     val signatureStatus: SignatureStatus? = null,
     val signerFingerprint: String? = null,
+    val senderAlias: String? = null,
+    val chatId: String = "",
+    val groupId: String? = null,
+    val isGroup: Boolean = false,
     val isMedia: Boolean = false,
     val isAudio: Boolean = false,
     val mimeType: String = "",
@@ -47,6 +51,10 @@ data class ChatMessage(
         if (showRawArmor != other.showRawArmor) return false
         if (signatureStatus != other.signatureStatus) return false
         if (signerFingerprint != other.signerFingerprint) return false
+        if (senderAlias != other.senderAlias) return false
+        if (chatId != other.chatId) return false
+        if (groupId != other.groupId) return false
+        if (isGroup != other.isGroup) return false
         if (isMedia != other.isMedia) return false
         if (isAudio != other.isAudio) return false
         if (mimeType != other.mimeType) return false
@@ -71,6 +79,10 @@ data class ChatMessage(
         result = 31 * result + showRawArmor.hashCode()
         result = 31 * result + (signatureStatus?.hashCode() ?: 0)
         result = 31 * result + (signerFingerprint?.hashCode() ?: 0)
+        result = 31 * result + (senderAlias?.hashCode() ?: 0)
+        result = 31 * result + chatId.hashCode()
+        result = 31 * result + (groupId?.hashCode() ?: 0)
+        result = 31 * result + isGroup.hashCode()
         result = 31 * result + isMedia.hashCode()
         result = 31 * result + isAudio.hashCode()
         result = 31 * result + mimeType.hashCode()

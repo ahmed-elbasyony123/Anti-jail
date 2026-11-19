@@ -641,9 +641,66 @@ export function startApp(env) {
         newIdentity();
     }
 
-    // ------------------------------------------------------------------ desktop notifications
+    // ------------------------------------------------------------------ desktop notifications & Tor tab alerts
+
+    let titleBlinkTimer = null;
+    let unreadCount = 0;
+    const originalTitle = doc.title || 'GhostKey // Secure Relay';
+
+    function playIncomingChime() {
+        try {
+            const AudioContext = win.AudioContext || win.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            const now = ctx.currentTime;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(587.33, now);       // D5
+            osc.frequency.setValueAtTime(880, now + 0.08);     // A5
+            gain.gain.setValueAtTime(0.18, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(now);
+            osc.stop(now + 0.35);
+        } catch (_) { /* audio restricted */ }
+    }
+
+    function triggerTitleAlert() {
+        unreadCount++;
+        if (titleBlinkTimer) clearInterval(titleBlinkTimer);
+        let toggle = false;
+        titleBlinkTimer = setInterval(() => {
+            if (doc.visibilityState === 'visible') {
+                clearInterval(titleBlinkTimer);
+                titleBlinkTimer = null;
+                unreadCount = 0;
+                doc.title = originalTitle;
+                return;
+            }
+            doc.title = toggle ? `(${unreadCount}) 💬 NEW MESSAGE!` : 'GhostKey // [ENCRYPTED]';
+            toggle = !toggle;
+        }, 900);
+    }
+
+    if (doc.addEventListener) {
+        doc.addEventListener('visibilitychange', () => {
+            if (doc.visibilityState === 'visible' && titleBlinkTimer) {
+                clearInterval(titleBlinkTimer);
+                titleBlinkTimer = null;
+                unreadCount = 0;
+                doc.title = originalTitle;
+            }
+        });
+    }
 
     function notifyIncoming(payload) {
+        if (doc.visibilityState !== 'visible') {
+            playIncomingChime();
+            triggerTitleAlert();
+        }
+
         if (typeof win === 'undefined' || !('Notification' in win)) return;
         if (win.Notification.permission !== 'granted') return;
         if (doc.visibilityState === 'visible') return;
@@ -676,15 +733,16 @@ export function startApp(env) {
         const btn = $('notif-btn');
         if (!btn) return;
         if (typeof win === 'undefined' || !('Notification' in win)) {
-            btn.classList.add('hidden');
+            btn.textContent = '🔔 CHIME & TAB ALERT';
+            btn.classList.remove('ghost');
             return;
         }
         if (win.Notification.permission === 'granted') {
             btn.textContent = '🔔 NOTIF ON';
             btn.classList.remove('ghost');
         } else if (win.Notification.permission === 'denied') {
-            btn.textContent = '🔕 NOTIF BLOCKED';
-            btn.classList.add('ghost');
+            btn.textContent = '🔔 CHIME & TAB ALERT';
+            btn.classList.remove('ghost');
         } else {
             btn.textContent = '🔔 NOTIFICATIONS';
             btn.classList.add('ghost');
@@ -692,17 +750,26 @@ export function startApp(env) {
     }
 
     async function toggleNotifications() {
-        if (typeof win === 'undefined' || !('Notification' in win)) return;
+        if (typeof win === 'undefined' || !('Notification' in win)) {
+            log('[ALERTS] Tor / Brave environment: alerts via audio chime and tab blinking are active.', 'info');
+            return;
+        }
         if (win.Notification.permission === 'default') {
             try {
                 const res = await win.Notification.requestPermission();
                 updateNotifBtn();
                 if (res === 'granted') {
                     log('[NOTIF] Desktop notifications enabled.', 'success');
+                } else {
+                    log('[ALERTS] Tor Browser / Brave Tor blocks system notifications. GhostKey will use tab blinking and audio chime.', 'info');
                 }
-            } catch (_) {}
+            } catch (_) {
+                log('[ALERTS] Alerts via tab blinking and audio chime are active.', 'info');
+            }
         } else if (win.Notification.permission === 'granted') {
             log('[NOTIF] Desktop notifications are active.', 'info');
+        } else {
+            log('[ALERTS] Tor Browser / Brave Tor blocks system notifications for privacy. Audio chime and tab title alerts are fully active!', 'info');
         }
     }
 

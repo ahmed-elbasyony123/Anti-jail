@@ -6,29 +6,35 @@ import java.util.Base64
 
 /** A decoded v2 plaintext message (the thing that travels inside the OpenPGP envelope). */
 class WireMessage(
-    val type: String,           // "text" | "media"
-    val text: String?,          // for type == "text"
-    val mimeType: String?,      // for type == "media"
-    val filename: String?,      // for type == "media"
-    val data: String?,          // for type == "media": standard base64 (no data: prefix)
+    val type: String,                   // "text" | "media" | "group_invite"
+    val text: String?,                  // for type == "text"
+    val mimeType: String?,              // for type == "media"
+    val filename: String?,              // for type == "media"
+    val data: String?,                  // for type == "media": standard base64 (no data: prefix)
     val timestamp: Long? = null,
-    val nonce: String? = null
+    val nonce: String? = null,
+    val senderAlias: String? = null,    // sender pseudonym (e.g. "Shadow")
+    val groupId: String? = null,        // target group ID if group message
+    val groupName: String? = null,      // group name for invites
+    val groupDropId: String? = null,    // group mailbox for invites
+    val groupReadToken: String? = null, // group mailbox read token for invites
+    val sharedKey: String? = null       // group AES-256 key for invites
 ) {
     val isMedia: Boolean get() = type == TYPE_MEDIA
+    val isGroupInvite: Boolean get() = type == TYPE_GROUP_INVITE
 
     companion object {
         const val TYPE_TEXT = "text"
         const val TYPE_MEDIA = "media"
+        const val TYPE_GROUP_INVITE = "group_invite"
     }
 }
 
 /**
  * Unified v2 plaintext JSON, identical on Android and Web:
- *   { "v": 2, "type": "text" | "media", "text": "...", "mimeType": "...", "filename": "...",
- *     "data": "<base64>", "ts": 1234567890, "nonce": "...", "pad": "<random base64url>" }
- *
- * `pad` is random filler that rounds the plaintext up to a size bucket so the exact message
- * length is not directly visible in the ciphertext size (it does not hide it completely).
+ *   { "v": 2, "type": "text" | "media" | "group_invite", "text": "...", "mimeType": "...",
+ *     "filename": "...", "data": "<base64>", "ts": 1234567890, "nonce": "...",
+ *     "senderAlias": "...", "groupId": "...", "pad": "<random base64url>" }
  */
 object WireFormat {
 
@@ -46,17 +52,25 @@ object WireFormat {
         return b.joinToString("") { "%02x".format(it) }
     }
 
-    fun buildText(text: String): ByteArray {
+    fun buildText(text: String, senderAlias: String? = null, groupId: String? = null): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
         obj.put("type", WireMessage.TYPE_TEXT)
         obj.put("text", text)
         obj.put("ts", System.currentTimeMillis())
         obj.put("nonce", randomHex16())
+        if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
+        if (!groupId.isNullOrBlank()) obj.put("groupId", groupId.trim())
         return withPad(obj)
     }
 
-    fun buildMedia(mimeType: String, filename: String, bytes: ByteArray): ByteArray {
+    fun buildMedia(
+        mimeType: String,
+        filename: String,
+        bytes: ByteArray,
+        senderAlias: String? = null,
+        groupId: String? = null
+    ): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
         obj.put("type", WireMessage.TYPE_MEDIA)
@@ -65,6 +79,30 @@ object WireFormat {
         obj.put("data", Base64.getEncoder().encodeToString(bytes))
         obj.put("ts", System.currentTimeMillis())
         obj.put("nonce", randomHex16())
+        if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
+        if (!groupId.isNullOrBlank()) obj.put("groupId", groupId.trim())
+        return withPad(obj)
+    }
+
+    fun buildGroupInvite(
+        groupId: String,
+        groupName: String,
+        groupDropId: String,
+        groupReadToken: String,
+        sharedKey: String,
+        senderAlias: String? = null
+    ): ByteArray {
+        val obj = JSONObject()
+        obj.put("v", VERSION)
+        obj.put("type", WireMessage.TYPE_GROUP_INVITE)
+        obj.put("groupId", groupId.trim())
+        obj.put("groupName", groupName.trim())
+        obj.put("groupDropId", groupDropId.trim())
+        obj.put("groupReadToken", groupReadToken.trim())
+        obj.put("sharedKey", sharedKey.trim())
+        obj.put("ts", System.currentTimeMillis())
+        obj.put("nonce", randomHex16())
+        if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
         return withPad(obj)
     }
 
@@ -92,20 +130,53 @@ object WireFormat {
             if (obj.optInt("v", -1) != VERSION) return null
             val ts = if (obj.has("ts")) obj.getLong("ts") else null
             val nonce = obj.optString("nonce", null)
+            val senderAlias = obj.optString("senderAlias", null)?.ifBlank { null }
+            val groupId = obj.optString("groupId", null)?.ifBlank { null }
+
             when (val type = obj.optString("type")) {
                 WireMessage.TYPE_TEXT -> {
                     if (!obj.has("text")) return null
-                    WireMessage(type, obj.getString("text"), null, null, null, ts, nonce)
+                    WireMessage(
+                        type = type,
+                        text = obj.getString("text"),
+                        mimeType = null,
+                        filename = null,
+                        data = null,
+                        timestamp = ts,
+                        nonce = nonce,
+                        senderAlias = senderAlias,
+                        groupId = groupId
+                    )
                 }
                 WireMessage.TYPE_MEDIA -> {
                     if (!obj.has("data")) return null
                     WireMessage(
-                        type, null,
-                        obj.optString("mimeType", "application/octet-stream"),
-                        obj.optString("filename", "file"),
-                        obj.getString("data"),
-                        ts,
-                        nonce
+                        type = type,
+                        text = null,
+                        mimeType = obj.optString("mimeType", "application/octet-stream"),
+                        filename = obj.optString("filename", "file"),
+                        data = obj.getString("data"),
+                        timestamp = ts,
+                        nonce = nonce,
+                        senderAlias = senderAlias,
+                        groupId = groupId
+                    )
+                }
+                WireMessage.TYPE_GROUP_INVITE -> {
+                    WireMessage(
+                        type = type,
+                        text = null,
+                        mimeType = null,
+                        filename = null,
+                        data = null,
+                        timestamp = ts,
+                        nonce = nonce,
+                        senderAlias = senderAlias,
+                        groupId = obj.optString("groupId", null),
+                        groupName = obj.optString("groupName", null),
+                        groupDropId = obj.optString("groupDropId", null),
+                        groupReadToken = obj.optString("groupReadToken", null),
+                        sharedKey = obj.optString("sharedKey", null)
                     )
                 }
                 else -> null
