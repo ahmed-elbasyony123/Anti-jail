@@ -15,3 +15,6 @@ local.properties
 # OS files
 .DS_Store
 Thumbs.db
+
+# Web client build output
+web-client/dist/

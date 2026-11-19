@@ -2,7 +2,7 @@ name: Build GhostKey APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "feat/**" ]
     paths-ignore:
       - 'README.md'
       - 'docs/**'
@@ -52,22 +52,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Publish v2 preview pre-release (feature branches only)
+        if: startsWith(github.ref, 'refs/heads/feat/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2-preview
+          name: "GhostKey v2 preview (debug build)"
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            Preview build from branch `${{ github.ref_name }}` (commit `${{ github.sha }}`).
+            Debug-signed APK, not independently audited. Uses wire protocol v2, so it only
+            works with a relay running the matching v2 server code.
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create or Update GitHub Release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.3-standalone
-          name: "GhostKey v1.1.3 Standalone APK"
+          tag_name: v2.0.0
+          name: "GhostKey v2.0.0 (Protocol v2 & Security Hardening)"
           body: |
-            ### 🛡️ GhostKey v1.1.3 Standalone (Crash Fix & URL Sanitization)
-            - **URL Sanitization Crash Fix:** Automatically prepends http:// and trims .onion addresses so clicking Save Config never crashes
-            - **Tor SOCKS5 DNS Leak Fix:** Remote DNS resolution for .onion addresses
-            - **Auto-Reconnect & Circuit Resiliency:** 60s timeout + exponential backoff auto-reconnect
-            - **Persistent Network Preferences:** Saved relay URL & Tor toggle in SharedPreferences
-            - **No External Apps Required:** Built-in in-memory OpenPGP engine (BouncyCastle 1.78)
-            - **Instant Peer Paste:** Paste your peer's public key directly in the app
-            - **Deterministic 30-Digit Safety Code:** True PGP fingerprint MITM defense
-            - **Anti-Forensics:** Android FLAG_SECURE & Emergency Panic Wipe
+            ### 🛡️ GhostKey v2.0.0 (Protocol v2 & Security Hardening)
+            - **Wire Protocol v2:** Random drop IDs, hashed read-tokens, and ACK-based message deletion
+            - **Modern Cryptography:** Ed25519 (sign/certify) + X25519 (encryption) OpenPGP v4 (BouncyCastle 1.78)
+            - **Signed-then-Encrypted Messages:** Payloads are signed with sender's key; recipient UI shows verified/invalid status
+            - **Hardware-Backed Storage:** Identity saved via AndroidKeyStore AES-256-GCM; messages remain RAM-only
+            - **Anti-Forensics:** Android FLAG_SECURE, Ephemeral mode, App lock (biometric/PIN), and one-tap Burn Identity
+            - **Traffic Analysis Defense:** Uniform bucket padding (512 B / 16 KB)
+            - **Tor Integration:** SOCKS5 proxy with remote DNS leak protection, Orbot auto-discovery, exponential backoff
+            - **UI Polish:** Auto-scroll on new messages & keyboard show; collapsible key bar into bottom sheet
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
