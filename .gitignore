@@ -18,3 +18,8 @@ Thumbs.db
 
 # Web client build output
 web-client/dist/
+
+# Patches & temporary work directories
+*.patch
+relay-v2-files/
+decisions/
