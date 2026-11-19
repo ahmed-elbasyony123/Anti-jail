@@ -52,7 +52,7 @@ jobs:
         working-directory: ./rust/arti-mobile
         run: |
           mkdir -p ../../android/app/src/main/jniLibs
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o ../../android/app/src/main/jniLibs build --release
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -p 26 -o ../../android/app/src/main/jniLibs build --release
 
       - name: Build Debug APK with Gradle
         working-directory: ./android
@@ -77,8 +77,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           body: |
             Preview build from branch `${{ github.ref_name }}` (commit `${{ github.sha }}`).
-            Debug-signed APK, not independently audited. Uses wire protocol v2, so it only
-            works with a relay running the matching v2 server code.
+            Debug-signed APK with Embedded Arti Tor engine. Uses wire protocol v2.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,16 +86,17 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.2.0
-          name: "GhostKey v2.2.0 (Encrypted Opus PTT Voice Notes & Clean UI)"
+          tag_name: v2.3.0
+          name: "GhostKey v2.3.0 (Embedded Arti Tor Engine - Zero Config Onion Routing)"
           body: |
-            ### 🎙️ GhostKey v2.2.0 (Encrypted PTT Voice Notes & Clean UI)
-            - **Opus Encrypted PTT Voice Messaging:** High-fidelity voice notes using native Opus encoding (`.ogg`) at 32 kbps / 48 kHz.
-            - **RAM-Only Zero-Footprint Audio:** Instant temporary file shredding (zero-fill on disk); playback handled 100% in volatile RAM via `MemoryAudioDataSource` with no disk writes.
-            - **Panic Wipe Audio Sanitization:** Instant purge and memory zeroing of all audio buffers upon emergency panic wipe.
-            - **Clean Outgoing Bubble Rendering:** Eliminated the raw wire JSON envelope (`{"v":2, "pad":...}`) from outgoing message bubbles, showing clean text only.
-            - **Modular Stealth UI:** Dedicated `AudioBubble.kt` player widget with glowing progress slider, duration timers, and live `REC` recording indicator.
-            - **Cryptographic Envelope:** Audio payloads are signed with Ed25519 and encrypted using AES-256 + X25519 over Tor Onion Routing.
+            ### 🧅 GhostKey v2.3.0 (Embedded Arti Tor Engine & Zero-Config Privacy)
+            - **Embedded Arti Tor Engine (Rust):** Official Tor Project Next-Gen Rust engine (`arti-client`) running completely in-process. Eliminates the requirement to install Orbot or third-party VPN apps!
+            - **Zero Local DNS Leaks:** DNS resolution for `.onion` and relay targets is performed strictly inside isolated Tor memory circuits.
+            - **In-Process SOCKS5 Proxy:** Seamlessly bridges OkHttp and WebSocket connections to embedded Tor Onion circuits.
+            - **Live Tor Bootstrap Monitor:** Real-time bootstrap progress (`ARTI: XX%` / `ARTI: READY`) directly in the app status header.
+            - **Encrypted Opus PTT Voice Messaging:** Instant RAM-only Push-to-Talk voice notes with zero disk persistence and panic wipe sanitization.
+            - **Clean Outgoing Bubble Rendering:** Polished message bubbles without wire wrapper leakage.
+            - **Fallback Support:** Graceful backward-compatible fallback to external Orbot on unsupported platforms.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

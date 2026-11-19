@@ -49,7 +49,7 @@ fun StatusBadge(label: String, isActive: Boolean) {
 fun RelayStatusBanner(status: RelayStatus) {
     val (text, color) = when (status) {
         RelayStatus.ORBOT_NOT_RUNNING ->
-            "Orbot is not running. Start Orbot and connect it to Tor, then return here." to AlertCrimson
+            "Tor engine initializing. Establishing secure circuit..." to StealthTextSecondary
         RelayStatus.BUILDING_CIRCUIT ->
             "Connecting through Tor. This can take a minute." to StealthTextSecondary
         RelayStatus.TIMED_OUT ->

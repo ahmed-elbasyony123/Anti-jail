@@ -73,7 +73,7 @@ fun SettingsDialog(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        "Route via Tor SOCKS5 (Orbot, port auto-detected, default 9050)",
+                        "Route via Tor (Built-in Arti Rust engine; Orbot is optional)",
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
                         color = StealthTextPrimary

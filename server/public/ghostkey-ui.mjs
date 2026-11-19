@@ -69,7 +69,8 @@ function renderMedia(doc, payload, ctx) {
         audio.className = 'media-audio';
         audio.controls = true;
         audio.src = ctx.createObjectUrl(bytes, mime.trim().toLowerCase());
-        wrap.appendChild(el(doc, 'div', 'media-name', filename));
+        const label = filename.startsWith('voice_') ? `🎙️ ENCRYPTED OPUS VOICE NOTE (${filename})` : `🎙️ ${filename}`;
+        wrap.appendChild(el(doc, 'div', 'media-name', label));
         wrap.appendChild(audio);
         return wrap;
     }

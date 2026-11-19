@@ -1,15 +1,15 @@
-# GHOSTKEY // E2EE Messaging Suite (v2.2.0)
+# GHOSTKEY // E2EE Messaging Suite (v2.3.0)
 
-> **End-to-End Encrypted • Tor Onion Routing • Ed25519/X25519 • Blind Dead-Drop Relay • 15MB Media • Opus PTT Voice**
+> **End-to-End Encrypted • Embedded Tor (Arti Rust Engine) • Ed25519/X25519 • Blind Dead-Drop Relay • 15MB Media • Opus PTT Voice**
 
 ---
 
 ## 🎯 Overview
 
-**GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with Tor Onion Routing to minimize metadata exposure to ISPs and intermediate relays.
+**GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with an **Embedded Tor Onion Routing Engine (Arti in Rust)** to minimize metadata exposure to ISPs and intermediate relays without requiring any external apps like Orbot.
 
 > [!NOTE]
-> **GhostKey v2.2.0 Updates:** Adds end-to-end encrypted Push-to-Talk (PTT) voice notes using native Opus encoding (`.ogg`), zero disk footprint RAM-only streaming, clean bubble rendering (no raw JSON wrappers), and full anti-forensics memory wipe. Client v2.2 requires a relay running server v2.
+> **GhostKey v2.3.0 Updates:** Features the embedded **Arti Tor Engine** (The Tor Project's official Rust implementation) running completely in-process, eliminating the need for Orbot. Also features end-to-end encrypted Push-to-Talk (PTT) voice notes using native Opus encoding (`.ogg`), zero disk footprint RAM-only audio streaming, clean bubble rendering, and full anti-forensics memory wipe.
 
 ---
 
@@ -21,7 +21,7 @@ flowchart TD
         UI_A["Stealth UI (FLAG_SECURE)"]
         CRYPTO_A["Embedded Crypto (Ed25519 / X25519)"]
         STORE_A["Android Keystore (AES-256-GCM)"]
-        NET_A["Orbot SOCKS5 Proxy"]
+        NET_A["Embedded Arti Tor Engine (Rust)\n(In-Process SOCKS5 & Circuits)"]
     end
 
     subgraph TorNet["Tor Anonymity Network"]
@@ -37,13 +37,13 @@ flowchart TD
     end
 
     subgraph ClientB["Recipient (Bob)"]
-        NET_B["Orbot SOCKS5 Proxy"]
+        NET_B["Embedded Arti Tor Engine (Rust)\n(In-Process SOCKS5 & Circuits)"]
         CRYPTO_B["Embedded Crypto (Signature Verify)"]
         UI_B["Stealth UI (Verified Badge)"]
     end
 
     UI_A -->|1. Sign & Encrypt| CRYPTO_A
-    CRYPTO_A -->|2. Dispatch via SOCKS5| NET_A
+    CRYPTO_A -->|2. Dispatch via Embedded Tor| NET_A
     NET_A --> GUARD --> RELAY --> ONION
     ONION -->|3. POST /api/v2/send| MEM
     MEM -->|4. Push / Long-Poll| NET_B
@@ -55,24 +55,28 @@ flowchart TD
 
 ### Core Security Properties
 
-1. **Transport Protection via Tor Onion Services (v3):**
-   * Traffic is routed through Tor SOCKS5 (`127.0.0.1:9050` or Orbot auto-detected port).
-   * Local DNS leaks for `.onion` addresses are blocked by delegating resolution to the SOCKS5 proxy.
-   * ISPs observe encrypted cells to Tor Entry Guards, hiding destination `.onion` services.
+1. **Transport Protection via Embedded Tor Engine (Arti in Rust):**
+   * Tor runs in-process inside the application using The Tor Project's official Rust implementation (**Arti**).
+   * **Zero External Dependencies:** No need to install or run Orbot or third-party VPN apps; onion routing is 100% self-contained.
+   * Local DNS leaks for `.onion` addresses are completely eliminated via in-memory stream routing.
+   * ISPs only observe encrypted TLS connections to Tor Entry Guards, hiding destination `.onion` services.
 2. **Modern Cryptographic Primitives:**
    * Embedded Bouncy Castle 1.78 engine (Android) and OpenPGP.js v6 (Web) — **no external apps required**.
    * Keys: **Ed25519** (sign/certify primary key) + **X25519** (encryption subkey).
    * **Sign-then-Encrypt:** Payloads are signed with the sender's private key before being wrapped in the recipient's encryption envelope. The relay cannot see who signed a message.
-3. **Blind Dead-Drop Relay (Protocol v2):**
+3. **Encrypted Push-to-Talk (PTT) Voice Notes (Opus):**
+   * Encoded using native **Opus** (`.ogg`) at 32 kbps / 48 kHz for human voice clarity and lightweight payloads over Tor.
+   * **Zero Disk Footprint:** Immediate temporary file shredding (zero-overwrite on disk); playback streams directly from volatile RAM (`MediaDataSource`) with zero disk writes.
+4. **Blind Dead-Drop Relay (Protocol v2):**
    * Mailboxes use random 32-byte hex `dropId`s and secret 32-byte hex `readToken`s.
    * The server only stores `SHA-256(readToken)` in volatile RAM. Senders only need the `dropId`.
    * **ACK-Based Deletion:** Messages remain queued in memory until the recipient explicitly acknowledges receipt via `/api/v2/ack` or WebSocket ACK, preventing data loss on unstable circuits.
-4. **Traffic Analysis Mitigation:**
+5. **Traffic Analysis Mitigation:**
    * Messages are padded using fixed bucket sizes (512 B for small messages, 16 KB for large messages) with cryptographically random filler to mask raw message lengths.
-5. **Local Anti-Forensics & Storage Security:**
+6. **Local Anti-Forensics & Storage Security:**
    * **Identity Persistence:** Private keys and peer configuration can be saved locally, encrypted with **AES-256-GCM** using keys backed by the **Android Keystore** (hardware TEE/StrongBox where available).
    * **Ephemeral Mode:** Toggle to run strictly in RAM without writing any identity data to disk.
-   * **Panic Wipe & Burn Identity:** Destroys local Keystore aliases, deletes encrypted files, closes active sockets, and terminates memory.
+   * **Panic Wipe & Burn Identity:** Destroys local Keystore aliases, purges audio buffers, deletes encrypted files, closes active sockets, and terminates memory.
    * **`FLAG_SECURE`:** Enforced on Android to block screenshots, video capture, and recent-app previews.
 
 ---
@@ -82,20 +86,26 @@ flowchart TD
 ```text
 ├── server/                 # Blind Relay Server (Node.js + WebSockets)
 │   ├── server.js           # Ephemeral, zero-log in-memory relay (v2 protocol)
-│   ├── public/             # Static web companion (zero external CDNs, XSS-hardened)
+│   ├── public/             # Static web companion (Opus PTT, zero CDNs, XSS-hardened)
 │   ├── test/               # Node.js test suite (crypto, relay, web-e2e)
 │   ├── torrc               # Tor v3 Onion Service configuration template
 │   └── package.json
 │
+├── rust/                   # Embedded Tor Engine (Arti in Rust)
+│   └── arti-mobile/        # In-process Tor client, SOCKS5 proxy & onion routing
+│       ├── Cargo.toml      # arti-client (rustls + onion-service-client)
+│       └── src/lib.rs      # JNI bridge for Android
+│
 ├── android/                # Native Android Application (Kotlin + Jetpack Compose)
 │   ├── app/src/main/java/com/ghostkey/app/
 │   │   ├── MainActivity.kt # Streamlined Entry point, Lifecycle & State coordination
+│   │   ├── audio/          # AudioRecorderManager (Opus), AudioPlayerManager (RAM-only)
 │   │   ├── crypto/         # StandalonePgpEngine (Ed25519/X25519 Keyring Cache), WireFormat
 │   │   ├── data/           # ChatMessage (@Immutable), SecureStore (Keystore AES-256-GCM)
-│   │   ├── net/            # TorRelayClient (v2 endpoints), Backoff, OrbotDiscovery
+│   │   ├── net/            # ArtiTorManager (Embedded Rust Tor), TorRelayClient
 │   │   ├── service/        # Stealth Foreground Service (Neutral Sync Service)
 │   │   └── ui/             # Modular Jetpack Compose UI
-│   │       ├── components/ # KeyBar, MessageBubble, StatusBadges
+│   │       ├── components/ # AudioBubble, KeyBar, MessageBubble, StatusBadges
 │   │       ├── dialogs/    # KeyDialogs, SettingsDialog
 │   │       └── screens/    # LockedScreen
 │   ├── build.gradle.kts
@@ -149,10 +159,9 @@ cd android
 ## 📱 Mobile Step-by-Step Guide (دليل التشغيل الكامل على الهواتف)
 
 ### 🧩 المتطلبات:
-1. **تطبيق GhostKey APK:** قم بتحميله من صفحة [GitHub Releases](https://github.com/ahmed-elbasyony123/Anti-jail/releases).
-2. **تطبيق Orbot:** حمّله من [Google Play](https://play.google.com/store/apps/details?id=org.torproject.android) أو [F-Droid](https://f-droid.org/packages/org.torproject.android/) لتوجيه الحركة عبر شبكة Tor.
-
-> **ملاحظة:** لا تحتاج لتثبيت أي تطبيق خارجي للتشفير؛ محرك التشفير (Bouncy Castle) مدمج بالكامل داخل التطبيق.
+1. **تطبيق GhostKey APK:** قم بتحميل أحدث إصدار من صفحة [GitHub Releases](https://github.com/ahmed-elbasyony123/Anti-jail/releases).
+2. **لا يتطلب أي تطبيقات خارجية (Zero Config):** محرك **Tor Arti (Rust)** مدمج ذاتياً داخل التطبيق، ويقوم بإنشاء دوائر البصل والاتصال تلقائياً بدون الحاجة لتثبيت Orbot أو أي VPN (تطبيق Orbot أصبح خياراً احتياطياً فقط).
+3. **محرك التشفير مدمج بالكامل (Bouncy Castle Ed25519/X25519):** التشفير والتوقيع يتم محلياً دون أي اعتماديات خارجية.
 
 ---
 
