@@ -90,7 +90,7 @@ fun SettingsDialog(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        "Keep connection alive in background (shows a notification)",
+                        "Tor Push Notifications: Keep connection active in background to receive instant alerts over Tor",
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
                         color = StealthTextPrimary
