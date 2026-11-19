@@ -86,17 +86,16 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.3.0
-          name: "GhostKey v2.3.0 (Embedded Arti Tor Engine - Zero Config Onion Routing)"
+          tag_name: v2.4.0
+          name: "GhostKey v2.4.0 (Zero-Leakage Tor Push Notifications & Background Alerts)"
           body: |
-            ### 🧅 GhostKey v2.3.0 (Embedded Arti Tor Engine & Zero-Config Privacy)
-            - **Embedded Arti Tor Engine (Rust):** Official Tor Project Next-Gen Rust engine (`arti-client`) running completely in-process. Eliminates the requirement to install Orbot or third-party VPN apps!
-            - **Zero Local DNS Leaks:** DNS resolution for `.onion` and relay targets is performed strictly inside isolated Tor memory circuits.
-            - **In-Process SOCKS5 Proxy:** Seamlessly bridges OkHttp and WebSocket connections to embedded Tor Onion circuits.
-            - **Live Tor Bootstrap Monitor:** Real-time bootstrap progress (`ARTI: XX%` / `ARTI: READY`) directly in the app status header.
-            - **Encrypted Opus PTT Voice Messaging:** Instant RAM-only Push-to-Talk voice notes with zero disk persistence and panic wipe sanitization.
-            - **Clean Outgoing Bubble Rendering:** Polished message bubbles without wire wrapper leakage.
-            - **Fallback Support:** Graceful backward-compatible fallback to external Orbot on unsupported platforms.
+            ### 🔔 GhostKey v2.4.0 (Zero-Leakage Tor Push Notifications & Background Alerts)
+            - **Tor Push Notifications (Zero Google FCM):** 100% private, tracker-free background push notifications delivered directly over Tor Onion WebSocket circuits without Google Play Services or third-party telemetry.
+            - **Stealth Notification Policy:** Sanitized lockscreen notifications (`VISIBILITY_PRIVATE`) masking sensitive sender fingerprints and message text from shoulder surfers.
+            - **Distinct Payload Badges:** Context-aware alerts for encrypted Opus voice notes (`🎙️ Encrypted Opus voice note`), file attachments (`📎 Encrypted file attachment`), and text messages (`💬 New encrypted message`).
+            - **Web Companion Alerts:** Integrated Web Desktop Notifications API for instant background message alerts when the browser tab is hidden.
+            - **Embedded Arti Tor Engine (Rust):** Official in-process Tor routing engine (`arti-client`) with zero external app dependencies.
+            - **Encrypted Opus PTT Voice Messaging:** High-fidelity RAM-only voice notes with panic wipe sanitization.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

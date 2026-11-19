@@ -1,6 +1,6 @@
-# GHOSTKEY // E2EE Messaging Suite (v2.3.0)
+# GHOSTKEY // E2EE Messaging Suite (v2.4.0)
 
-> **End-to-End Encrypted • Embedded Tor (Arti Rust Engine) • Ed25519/X25519 • Blind Dead-Drop Relay • 15MB Media • Opus PTT Voice**
+> **End-to-End Encrypted • Embedded Tor (Arti Rust Engine) • Ed25519/X25519 • Blind Dead-Drop Relay • Tor Push Notifications • Opus PTT Voice**
 
 ---
 
@@ -9,7 +9,7 @@
 **GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with an **Embedded Tor Onion Routing Engine (Arti in Rust)** to minimize metadata exposure to ISPs and intermediate relays without requiring any external apps like Orbot.
 
 > [!NOTE]
-> **GhostKey v2.3.0 Updates:** Features the embedded **Arti Tor Engine** (The Tor Project's official Rust implementation) running completely in-process, eliminating the need for Orbot. Also features end-to-end encrypted Push-to-Talk (PTT) voice notes using native Opus encoding (`.ogg`), zero disk footprint RAM-only audio streaming, clean bubble rendering, and full anti-forensics memory wipe.
+> **GhostKey v2.4.0 Updates:** Features **Zero-Leakage Tor Push Notifications** delivered directly over Tor Onion WebSocket circuits without Google Play Services (FCM) or third-party telemetry, stealth lockscreen privacy (`VISIBILITY_PRIVATE`), web desktop notification alerts, embedded **Arti Tor Engine** in Rust, encrypted Push-to-Talk (PTT) voice notes (Opus), and zero disk footprint RAM-only audio streaming.
 
 ---
 

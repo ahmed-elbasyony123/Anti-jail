@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.WindowManager
@@ -61,6 +62,7 @@ import com.ghostkey.app.net.OrbotPortWatcher
 import com.ghostkey.app.net.RelayHttpException
 import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.net.TorRelayClient
+import com.ghostkey.app.notify.PushNotificationManager
 import com.ghostkey.app.service.TorForegroundService
 import com.ghostkey.app.ui.*
 import com.ghostkey.app.ui.components.*
@@ -127,6 +129,20 @@ class MainActivity : ComponentActivity() {
     // Embedded Arti Tor Engine (Rust) State
     private var artiState by mutableStateOf<ArtiTorState>(ArtiTorState.Idle)
 
+    // Foreground / Background Tracking for Tor Push Notifications
+    private var isForeground = false
+
+    override fun onResume() {
+        super.onResume()
+        isForeground = true
+        PushNotificationManager.clearMessageNotifications(this)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isForeground = false
+    }
+
     private val unlockLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -167,6 +183,12 @@ class MainActivity : ComponentActivity() {
 
         // Initialize Embedded Arti Tor (Rust engine) or fallback to external Orbot
         initTorNetworkEngine()
+        PushNotificationManager.init(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 102)
+            }
+        }
         if (keepAlive) TorForegroundService.start(this)
 
         setContent {
@@ -656,9 +678,26 @@ class MainActivity : ComponentActivity() {
                         )
                         torClient.ack(listOf(msg.id))
                     }
+                    if (!isForeground) {
+                        PushNotificationManager.postMessageNotification(
+                            context = this@MainActivity,
+                            isAudio = isAudio,
+                            hasMedia = isMedia,
+                            previewText = if (!isAudio && !isMedia) displayText else null
+                        )
+                    }
                 }
             } catch (_: Exception) {
-                // Keep as ciphertext for manual retry
+                if (!isForeground) {
+                    runOnUiThread {
+                        PushNotificationManager.postMessageNotification(
+                            context = this@MainActivity,
+                            isAudio = false,
+                            hasMedia = false,
+                            previewText = null
+                        )
+                    }
+                }
             }
         }
     }

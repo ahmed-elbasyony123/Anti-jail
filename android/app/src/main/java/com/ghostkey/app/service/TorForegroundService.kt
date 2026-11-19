@@ -14,6 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.ghostkey.app.MainActivity
+import com.ghostkey.app.notify.PushNotificationManager
 
 /**
  * Optional keep-alive: shows a persistent notification and runs as a foreground service so
@@ -24,7 +25,6 @@ import com.ghostkey.app.MainActivity
 class TorForegroundService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "ghostkey_connection"
         private const val NOTIFICATION_ID = 4711
 
         fun start(context: Context) {
@@ -39,7 +39,7 @@ class TorForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureChannel()
+        PushNotificationManager.init(this)
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
@@ -49,20 +49,6 @@ class TorForegroundService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < 26) return
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Connection",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            channel.setShowBadge(false)
-            manager.createNotificationChannel(channel)
-        }
-    }
-
     private fun buildNotification(): Notification {
         val open = PendingIntent.getActivity(
             this,
@@ -70,7 +56,7 @@ class TorForegroundService : Service() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, PushNotificationManager.CHANNEL_CONNECTION)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle("Sync Service")
             .setContentText("Background sync active")

@@ -238,6 +238,7 @@ export function startApp(env) {
             state.seen.set(record.id, 'done');
             log(`[RECV] Message decrypted (${result.signatureStatus}).`, result.signatureStatus === 'VERIFIED' ? 'success' : 'warn');
             renderMessages(false);
+            notifyIncoming(payload);
             ackMessages([record.id]);                                  // only after it is stored and shown
         } catch (e) {
             if (state.identity !== identity) return;
@@ -640,6 +641,71 @@ export function startApp(env) {
         newIdentity();
     }
 
+    // ------------------------------------------------------------------ desktop notifications
+
+    function notifyIncoming(payload) {
+        if (typeof win === 'undefined' || !('Notification' in win)) return;
+        if (win.Notification.permission !== 'granted') return;
+        if (doc.visibilityState === 'visible') return;
+
+        let body = 'New encrypted message received';
+        if (payload && payload.isMedia) {
+            if (payload.mimeType && payload.mimeType.startsWith('audio/')) {
+                body = '🎙️ Encrypted Opus voice note';
+            } else {
+                body = `📎 Encrypted file (${payload.filename || 'attachment'})`;
+            }
+        } else if (payload && payload.text) {
+            body = payload.text.length > 50 ? payload.text.slice(0, 47) + '...' : payload.text;
+        }
+
+        try {
+            const notif = new win.Notification('GhostKey // Secure Relay', {
+                body: body,
+                tag: 'ghostkey-incoming',
+                renotify: true
+            });
+            notif.onclick = () => {
+                win.focus();
+                notif.close();
+            };
+        } catch (_) {}
+    }
+
+    function updateNotifBtn() {
+        const btn = $('notif-btn');
+        if (!btn) return;
+        if (typeof win === 'undefined' || !('Notification' in win)) {
+            btn.classList.add('hidden');
+            return;
+        }
+        if (win.Notification.permission === 'granted') {
+            btn.textContent = '🔔 NOTIF ON';
+            btn.classList.remove('ghost');
+        } else if (win.Notification.permission === 'denied') {
+            btn.textContent = '🔕 NOTIF BLOCKED';
+            btn.classList.add('ghost');
+        } else {
+            btn.textContent = '🔔 NOTIFICATIONS';
+            btn.classList.add('ghost');
+        }
+    }
+
+    async function toggleNotifications() {
+        if (typeof win === 'undefined' || !('Notification' in win)) return;
+        if (win.Notification.permission === 'default') {
+            try {
+                const res = await win.Notification.requestPermission();
+                updateNotifBtn();
+                if (res === 'granted') {
+                    log('[NOTIF] Desktop notifications enabled.', 'success');
+                }
+            } catch (_) {}
+        } else if (win.Notification.permission === 'granted') {
+            log('[NOTIF] Desktop notifications are active.', 'info');
+        }
+    }
+
     // ------------------------------------------------------------------ wiring
 
     on('chat-form', 'submit', handleSend);
@@ -657,9 +723,11 @@ export function startApp(env) {
     on('safety-close', 'click', closeSafetyModal);
     on('safety-close-x', 'click', closeSafetyModal);
     on('clear-logs-btn', 'click', () => { $('logs-container').textContent = ''; });
+    if ($('notif-btn')) on('notif-btn', 'click', toggleNotifications);
 
     renderMessages(true);
     renderPeer();
+    updateNotifBtn();
     setStatus('OFFLINE');
     const ready = newIdentity();
 
