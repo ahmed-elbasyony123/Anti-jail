@@ -1,5 +1,6 @@
 package com.ghostkey.app
 
+import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -19,8 +20,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,6 +38,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +50,9 @@ import com.ghostkey.app.crypto.SignatureStatus
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.crypto.WireFormat
 import androidx.core.content.ContextCompat
+import com.ghostkey.app.data.PeerIdentity
+import com.ghostkey.app.data.SecureStore
+import com.ghostkey.app.data.StoredIdentity
 import com.ghostkey.app.net.EncryptedMessageRecord
 import com.ghostkey.app.net.OrbotPortWatcher
 import com.ghostkey.app.net.RelayHttpException
@@ -53,7 +62,12 @@ import com.ghostkey.app.service.TorForegroundService
 import com.ghostkey.app.ui.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.util.concurrent.Executors
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.system.exitProcess
@@ -95,6 +109,23 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* the service runs either way */ }
 
+    // Encrypted identity persistence (AndroidKeyStore), ephemeral mode and app lock
+    private lateinit var secureStore: SecureStore
+    private val persistDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private var ephemeralMode by mutableStateOf(false)
+    private var lockEnabled by mutableStateOf(false)
+    private var isLocked by mutableStateOf(false)
+    private var keyBarCollapsed by mutableStateOf(false)
+    private val maxAttachmentBytes = 4 * 1024 * 1024
+
+    private val unlockLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                isLocked = false
+                bootstrapIdentity()
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -110,18 +141,27 @@ class MainActivity : ComponentActivity() {
         useTorSocks = prefs.getBoolean("use_tor", relayServerUrl.contains(".onion"))
         keepAlive = prefs.getBoolean("keep_alive", false)
         orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
+        ephemeralMode = prefs.getBoolean("ephemeral_mode", false)
+        lockEnabled = prefs.getBoolean("lock_enabled", false)
+        keyBarCollapsed = prefs.getBoolean("key_bar_collapsed", false)
+        secureStore = SecureStore(applicationContext)
 
-        // Generate ephemeral in-memory keys on startup
-        generateFreshKeys()
-
-        // Initialize network client (and listen for the SOCKS port Orbot reports, if it does)
+        // Initialize network client first, then bring up the identity
         applyNetworkConfig()
+        if (lockEnabled && !ephemeralMode && secureStore.hasIdentity()) {
+            isLocked = true
+            requestUnlock()
+        } else {
+            bootstrapIdentity()
+        }
+
+        // Listen for the SOCKS port Orbot reports, if it does
         orbotWatcher = OrbotPortWatcher(this) { port -> runOnUiThread { onOrbotPort(port) } }.also { it.start() }
         if (keepAlive) TorForegroundService.start(this)
 
         setContent {
             GhostKeyTheme {
-                MainStealthScreen()
+                if (isLocked) LockedScreen() else MainStealthScreen()
             }
         }
     }
@@ -159,6 +199,107 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestUnlock() {
+        val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        @Suppress("DEPRECATION")
+        val intent = keyguard.createConfirmDeviceCredentialIntent("GhostKey", "Unlock to open your saved identity")
+        if (intent == null) {
+            // The device no longer has a secure lock screen, so the lock cannot be enforced.
+            lockEnabled = false
+            getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("lock_enabled", false).apply()
+            isLocked = false
+            Toast.makeText(this, "No device screen lock is set, so the app lock was turned off", Toast.LENGTH_LONG).show()
+            bootstrapIdentity()
+        } else {
+            unlockLauncher.launch(intent)
+        }
+    }
+
+    /** Load the saved identity if there is one, otherwise create (and save) a new one. */
+    private fun bootstrapIdentity() {
+        if (ephemeralMode || !secureStore.hasIdentity()) {
+            generateFreshKeys()
+            return
+        }
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val stored = secureStore.load()
+                runOnUiThread { applyIdentity(stored) }
+            } catch (e: Exception) {
+                secureStore.wipe()
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "The saved identity could not be read, so a new one was created",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    generateFreshKeys()
+                }
+            }
+        }
+    }
+
+    private fun applyIdentity(stored: StoredIdentity) {
+        myPgpKeys = stored.mine
+        stored.peer?.let {
+            recipientArmoredKey = it.publicKeyArmored
+            recipientFingerprint = it.fingerprint
+            recipientDropId = it.dropId
+        }
+        connectToRelayMailbox(stored.mine)
+    }
+
+    /** Save the current identity (and peer) encrypted on disk. Does nothing in ephemeral mode. */
+    private fun persistIdentity() {
+        if (ephemeralMode) return
+        val mine = myPgpKeys ?: return
+        val peer = if (recipientArmoredKey.isNotBlank()) {
+            PeerIdentity(recipientArmoredKey, recipientFingerprint, recipientDropId)
+        } else null
+        val snapshot = StoredIdentity(mine, peer)
+        CoroutineScope(persistDispatcher).launch {
+            try {
+                secureStore.save(snapshot)
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Could not save identity: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun updateEphemeralMode(enabled: Boolean) {
+        ephemeralMode = enabled
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("ephemeral_mode", enabled).apply()
+        if (enabled) {
+            // Nothing may stay on disk: remove the saved identity and its keystore key.
+            CoroutineScope(persistDispatcher).launch { secureStore.wipe() }
+        } else {
+            persistIdentity()
+        }
+    }
+
+    private fun updateLockEnabled(enabled: Boolean) {
+        if (enabled) {
+            val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            if (!keyguard.isDeviceSecure) {
+                Toast.makeText(
+                    this,
+                    "Set a screen lock (PIN, pattern or password) in Android settings first",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+        }
+        lockEnabled = enabled
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("lock_enabled", enabled).apply()
+    }
+
+    private fun saveKeyBarPref() {
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+            .putBoolean("key_bar_collapsed", keyBarCollapsed).apply()
+    }
+
     private fun generateFreshKeys() {
         isGeneratingKey = true
         CoroutineScope(Dispatchers.Default).launch {
@@ -168,6 +309,7 @@ class MainActivity : ComponentActivity() {
                     myPgpKeys = keys
                     isGeneratingKey = false
                     connectToRelayMailbox(keys)
+                    persistIdentity()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -206,21 +348,46 @@ class MainActivity : ComponentActivity() {
         decryptMessage(msg)
     }
 
+    /** File reading and Base64/JSON building run on the IO dispatcher, never on the main thread. */
     private fun sendMedia(uri: Uri) {
-        try {
-            contentResolver.openInputStream(uri)?.use { stream ->
-                val bytes = stream.readBytes()
-                if (bytes.size > 8 * 1024 * 1024) {
-                    Toast.makeText(this, "Attachment exceeds 8 MB limit", Toast.LENGTH_SHORT).show()
-                    return
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { readLimited(it, maxAttachmentBytes) }
+                if (bytes == null) {
+                    runOnUiThread {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Attachment is unreadable or larger than 4 MB",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    return@launch
                 }
                 val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
                 val fileName = uri.lastPathSegment ?: "file"
-                sendPayload(WireFormat.buildMedia(mimeType, fileName, bytes))
+                val payload = WireFormat.buildMedia(mimeType, fileName, bytes)
+                runOnUiThread { sendPayload(payload) }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Attachment error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Attachment error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /** Reads at most [maxBytes]; returns null if the stream is larger. */
+    private fun readLimited(stream: InputStream, maxBytes: Int): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val n = stream.read(buffer)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) return null
+            out.write(buffer, 0, n)
+        }
+        return out.toByteArray()
     }
 
     private fun sendMessage(text: String) {
@@ -323,6 +490,9 @@ class MainActivity : ComponentActivity() {
      * Erases all memory objects, clears lists, closes sockets, and terminates immediately.
      */
     private fun triggerEmergencyPanicWipe() {
+        // Crypto-erase: delete the keystore key and the encrypted identity file, then all settings.
+        secureStore.wipe()
+        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().clear().commit()
         myPgpKeys = null
         recipientArmoredKey = ""
         recipientFingerprint = ""
@@ -343,6 +513,47 @@ class MainActivity : ComponentActivity() {
         var showPeerKeyDialog by remember { mutableStateOf(false) }
         var showMyKeyDialog by remember { mutableStateOf(false) }
         var isPeerVerified by remember { mutableStateOf(false) }
+        var showKeySheet by remember { mutableStateOf(false) }
+        var showNewIdentityConfirm by remember { mutableStateOf(false) }
+        var showBurnConfirm by remember { mutableStateOf(false) }
+        var showNewMessagesChip by remember { mutableStateOf(false) }
+
+        val listState = rememberLazyListState()
+        val scope = rememberCoroutineScope()
+
+        // True when the newest message is on screen or close to it (within the last 2 items).
+        fun nearBottom(): Boolean {
+            val info = listState.layoutInfo
+            val total = info.totalItemsCount
+            if (total == 0) return true
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: return true
+            return last >= total - 2
+        }
+
+        // Follow new messages only if the reader is already at the bottom (or sent the message).
+        LaunchedEffect(messagesState.size) {
+            if (messagesState.isEmpty()) return@LaunchedEffect
+            val newest = messagesState.last()
+            if (newest.isOutgoing || nearBottom()) {
+                listState.animateScrollToItem(messagesState.size - 1)
+                showNewMessagesChip = false
+            } else {
+                showNewMessagesChip = true
+            }
+        }
+        LaunchedEffect(listState) {
+            snapshotFlow { nearBottom() }.collect { atBottom ->
+                if (atBottom) showNewMessagesChip = false
+            }
+        }
+
+        // Keep the newest message visible when the soft keyboard opens.
+        val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+        LaunchedEffect(imeVisible) {
+            if (imeVisible && messagesState.isNotEmpty()) {
+                listState.scrollToItem(messagesState.size - 1)
+            }
+        }
 
         val clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
@@ -385,13 +596,40 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     actions = {
-                        // Safety Code Verification Button
-                        IconButton(onClick = { showSafetyCodeDialog = true }) {
-                            Icon(
-                                Icons.Default.VerifiedUser,
-                                contentDescription = "Safety Code",
-                                tint = if (isPeerVerified) NeonEmerald else StealthTextSecondary
-                            )
+                        if (keyBarCollapsed && recipientArmoredKey.isNotBlank()) {
+                            // Compact shield chip: keys, safety code and identity actions live in a sheet
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(NeonEmerald.copy(alpha = 0.12f))
+                                    .clickable { showKeySheet = true }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Shield,
+                                        contentDescription = "Keys and identity",
+                                        tint = NeonEmerald,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(NeonEmerald)
+                                    )
+                                }
+                            }
+                        } else {
+                            // Safety Code Verification Button
+                            IconButton(onClick = { showSafetyCodeDialog = true }) {
+                                Icon(
+                                    Icons.Default.VerifiedUser,
+                                    contentDescription = "Safety Code",
+                                    tint = if (isPeerVerified) NeonEmerald else StealthTextSecondary
+                                )
+                            }
                         }
                         IconButton(onClick = { showSettingsDialog = true }) {
                             Icon(Icons.Default.Security, contentDescription = "Settings", tint = StealthTextPrimary)
@@ -419,8 +657,8 @@ class MainActivity : ComponentActivity() {
                     RelayStatusBanner(relayStatus.value)
                 }
 
-                // Key Management Quick Cards
-                Column(
+                // Key Management Quick Cards (collapsed into the shield chip once the peer key is saved)
+                if (!keyBarCollapsed || recipientArmoredKey.isBlank()) Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(StealthSurfaceVariant)
@@ -461,10 +699,21 @@ class MainActivity : ComponentActivity() {
                                 Text("COPY KEY", fontSize = 10.sp, color = NeonEmerald, fontFamily = FontFamily.Monospace)
                             }
                             TextButton(
-                                onClick = { generateFreshKeys() },
+                                onClick = { showNewIdentityConfirm = true },
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text("NEW KEY", fontSize = 10.sp, color = StealthTextSecondary, fontFamily = FontFamily.Monospace)
+                            }
+                            if (recipientArmoredKey.isNotBlank()) {
+                                TextButton(
+                                    onClick = {
+                                        keyBarCollapsed = true
+                                        saveKeyBarPref()
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("HIDE", fontSize = 10.sp, color = StealthTextSecondary, fontFamily = FontFamily.Monospace)
+                                }
                             }
                         }
                     }
@@ -513,10 +762,15 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Chat Message Stream
-                LazyColumn(
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
+                ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -543,7 +797,7 @@ class MainActivity : ComponentActivity() {
                                         fontSize = 12.sp
                                     )
                                     Text(
-                                        "Zero-disk, ephemeral PGP in-memory store.",
+                                        "Messages are kept in memory only and are gone when the app closes.",
                                         color = StealthTextSecondary.copy(alpha = 0.6f),
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 10.sp
@@ -567,6 +821,32 @@ class MainActivity : ComponentActivity() {
                             onManualDecrypt = { decryptMessage(msg) }
                         )
                     }
+                }
+
+                if (showNewMessagesChip) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 10.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(NeonEmerald)
+                            .clickable {
+                                showNewMessagesChip = false
+                                scope.launch {
+                                    if (messagesState.isNotEmpty()) listState.animateScrollToItem(messagesState.size - 1)
+                                }
+                            }
+                            .padding(horizontal = 14.dp, vertical = 7.dp)
+                    ) {
+                        Text(
+                            "New messages ↓",
+                            color = Color(0xFF002914),
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
                 }
 
                 // Input Bar
@@ -644,6 +924,115 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+            }
+
+            if (showKeySheet) {
+                ModalBottomSheet(
+                    onDismissRequest = { showKeySheet = false },
+                    containerColor = StealthSurface
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .navigationBarsPadding(),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            "KEYS & IDENTITY",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = NeonEmerald,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            "PEER: ${recipientFingerprint.take(12)}...",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            color = StealthTextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        SheetAction(Icons.Default.ContentCopy, "COPY MY KEY (includes Drop-ID)", NeonEmerald) {
+                            myPgpKeys?.let {
+                                clipboardManager.setPrimaryClip(ClipData.newPlainText("PGP Public Key", it.publicKeyArmored))
+                                Toast.makeText(this@MainActivity, "Public key copied to clipboard", Toast.LENGTH_SHORT).show()
+                            }
+                            showKeySheet = false
+                        }
+                        SheetAction(Icons.Default.Edit, "PASTE / EDIT PEER KEY", NeonEmerald) {
+                            showKeySheet = false
+                            showPeerKeyDialog = true
+                        }
+                        SheetAction(Icons.Default.VerifiedUser, "SAFETY CODE", NeonEmerald) {
+                            showKeySheet = false
+                            showSafetyCodeDialog = true
+                        }
+                        SheetAction(Icons.Default.Refresh, "NEW IDENTITY", WarningAmber) {
+                            showKeySheet = false
+                            showNewIdentityConfirm = true
+                        }
+                        SheetAction(Icons.Default.DeleteForever, "BURN IDENTITY", AlertCrimson) {
+                            showKeySheet = false
+                            showBurnConfirm = true
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                }
+            }
+
+            if (showNewIdentityConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showNewIdentityConfirm = false },
+                    containerColor = StealthSurface,
+                    title = {
+                        Text("NEW IDENTITY?", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = WarningAmber, fontSize = 15.sp)
+                    },
+                    text = {
+                        Text(
+                            "This replaces your keys and Drop-ID. Your peer needs your new public key to keep chatting with you.",
+                            color = StealthTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showNewIdentityConfirm = false
+                                generateFreshKeys()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
+                        ) { Text("CREATE", color = Color(0xFF002914), fontWeight = FontWeight.Bold) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showNewIdentityConfirm = false }) { Text("CANCEL", color = StealthTextSecondary) }
+                    }
+                )
+            }
+
+            if (showBurnConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showBurnConfirm = false },
+                    containerColor = StealthSurface,
+                    title = {
+                        Text("BURN IDENTITY?", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = AlertCrimson, fontSize = 15.sp)
+                    },
+                    text = {
+                        Text(
+                            "Deletes the saved identity and its encryption key, clears all settings and closes the app. This cannot be undone.",
+                            color = StealthTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { triggerEmergencyPanicWipe() },
+                            colors = ButtonDefaults.buttonColors(containerColor = AlertCrimson)
+                        ) { Text("BURN", color = Color.White, fontWeight = FontWeight.Bold) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showBurnConfirm = false }) { Text("CANCEL", color = StealthTextSecondary) }
+                    }
+                )
             }
 
             // Dialog: My Public Key Full View & Share
@@ -741,6 +1130,9 @@ class MainActivity : ComponentActivity() {
                                     recipientFingerprint = info.fingerprint
                                     recipientDropId = info.dropId ?: ""
                                     isPeerVerified = false
+                                    keyBarCollapsed = true
+                                    saveKeyBarPref()
+                                    persistIdentity()
                                     showPeerKeyDialog = false
                                     val note = if (info.dropId == null) " (no Drop-ID found in this key)" else ""
                                     Toast.makeText(
@@ -780,7 +1172,10 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(
+                            modifier = Modifier.verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
                             OutlinedTextField(
                                 value = relayServerUrl,
                                 onValueChange = {
@@ -822,6 +1217,40 @@ class MainActivity : ComponentActivity() {
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     "Keep connection alive in background (shows a notification)",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = StealthTextPrimary
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Checkbox(
+                                    checked = ephemeralMode,
+                                    onCheckedChange = { updateEphemeralMode(it) },
+                                    colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Ephemeral mode (RAM only): the identity is not saved and a new one is created at every launch",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = StealthTextPrimary
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Checkbox(
+                                    checked = lockEnabled,
+                                    onCheckedChange = { updateLockEnabled(it) },
+                                    colors = CheckboxDefaults.colors(checkedColor = NeonEmerald)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "Require the device screen lock (PIN, pattern, password) to open the app",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
                                     color = StealthTextPrimary
@@ -885,7 +1314,7 @@ class MainActivity : ComponentActivity() {
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(
-                                "Compare these 30 security digits with your peer (by voice call or in person). If they match, your connection is 100% genuine and safe from interception:",
+                                "Compare these 30 security digits with your peer (by voice call or in person). If they match, the key you saved is very likely your peer's real key and was not swapped on the way. A mismatch means do not trust the key:",
                                 color = StealthTextSecondary,
                                 fontSize = 11.sp
                             )
@@ -942,6 +1371,66 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
+        }
+    }
+
+    @Composable
+    fun LockedScreen() {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(StealthBackground),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(Icons.Default.Lock, contentDescription = null, tint = NeonEmerald, modifier = Modifier.size(40.dp))
+                Text("LOCKED", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = NeonEmerald, fontSize = 16.sp)
+                Button(
+                    onClick = { requestUnlock() },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
+                ) {
+                    Text("UNLOCK", color = Color(0xFF002914), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun SheetAction(icon: ImageVector, label: String, color: Color, onClick: () -> Unit) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { onClick() }
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(label, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = color)
+        }
+    }
+
+    @Composable
+    fun SignatureWarning(text: String) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .background(AlertCrimson.copy(alpha = 0.22f))
+                .border(1.dp, AlertCrimson.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                .padding(horizontal = 8.dp, vertical = 5.dp)
+        ) {
+            Text(
+                text,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                color = AlertCrimson
+            )
         }
     }
 
@@ -1039,7 +1528,7 @@ class MainActivity : ComponentActivity() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (message.isOutgoing) "OUTGOING (E2EE)" else "INCOMING (BURN-ON-READ)",
+                            text = if (message.isOutgoing) "OUTGOING (E2EE)" else "INCOMING",
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 9.sp,
@@ -1055,6 +1544,39 @@ class MainActivity : ComponentActivity() {
 
                     Spacer(modifier = Modifier.height(6.dp))
 
+                    if (!message.isOutgoing && message.isDecrypted) {
+                        when (message.signatureStatus) {
+                            SignatureStatus.VERIFIED -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.VerifiedUser,
+                                        contentDescription = null,
+                                        tint = NeonEmerald,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        "VERIFIED SIGNATURE" + (message.signerFingerprint?.let { " · ${it.take(8)}" } ?: ""),
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 9.sp,
+                                        color = NeonEmerald
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            SignatureStatus.UNSIGNED -> {
+                                SignatureWarning("UNSIGNED MESSAGE")
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            SignatureStatus.INVALID_SIGNATURE -> {
+                                SignatureWarning("INVALID SIGNATURE — UNVERIFIED SENDER")
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            null -> {}
+                        }
+                    }
+
                     if (message.isDecrypted && message.plaintext != null) {
                         val text = message.plaintext!!
 
@@ -1065,27 +1587,13 @@ class MainActivity : ComponentActivity() {
                         var displayText by remember(message.id) { mutableStateOf<String?>(null) }
 
                         LaunchedEffect(text) {
-                            val wire = WireFormat.parse(text.toByteArray(Charsets.UTF_8))
-                            if (wire == null) {
-                                displayText = text            // not a v2 envelope: show as-is
-                            } else if (wire.isMedia) {
-                                isMedia = true
-                                mimeType = wire.mimeType ?: ""
-                                filename = wire.filename ?: ""
-                                if (mimeType.startsWith("image/")) {
-                                    try {
-                                        val imageBytes = WireFormat.decodeMediaData(wire)
-                                        val bmp = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                                        if (bmp != null) {
-                                            bitmapImage = bmp.asImageBitmap()
-                                        }
-                                    } catch (e: Exception) {
-                                        // keep the file card
-                                    }
-                                }
-                            } else {
-                                displayText = wire.text ?: ""
-                            }
+                            // Parsing, Base64 and bitmap decoding can be heavy: keep them off the main thread.
+                            val decoded = withContext(Dispatchers.Default) { decodeBubble(text) }
+                            isMedia = decoded.isMedia
+                            mimeType = decoded.mimeType
+                            filename = decoded.filename
+                            bitmapImage = decoded.bitmap
+                            displayText = decoded.text
                         }
 
                         if (isMedia) {
@@ -1178,4 +1686,49 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+/** What a message bubble shows, computed off the main thread. */
+class DecodedBubble(
+    val isMedia: Boolean,
+    val mimeType: String,
+    val filename: String,
+    val bitmap: ImageBitmap?,
+    val text: String?
+)
+
+private const val MAX_BUBBLE_IMAGE_EDGE = 1024
+
+/** Largest power-of-two sample size that keeps both edges at or below [maxEdge]. */
+internal fun calculateInSampleSize(width: Int, height: Int, maxEdge: Int): Int {
+    if (width <= 0 || height <= 0) return 1
+    var sample = 1
+    while ((width / sample) > maxEdge || (height / sample) > maxEdge) sample *= 2
+    return sample
+}
+
+private fun decodeBubble(text: String): DecodedBubble {
+    val wire = WireFormat.parse(text.toByteArray(Charsets.UTF_8))
+        ?: return DecodedBubble(false, "", "", null, text)       // not a v2 envelope: show as-is
+    if (!wire.isMedia) return DecodedBubble(false, "", "", null, wire.text ?: "")
+
+    val mime = wire.mimeType ?: ""
+    val name = wire.filename ?: ""
+    var bitmap: ImageBitmap? = null
+    if (mime.startsWith("image/")) {
+        try {
+            val bytes = WireFormat.decodeMediaData(wire)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, MAX_BUBBLE_IMAGE_EDGE)
+            }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.let { bitmap = it.asImageBitmap() }
+        } catch (e: Exception) {
+            // keep the file card
+        } catch (e: OutOfMemoryError) {
+            // keep the file card
+        }
+    }
+    return DecodedBubble(true, mime, name, bitmap, null)
 }
