@@ -50,6 +50,9 @@ object ArtiTorManager {
             return true
         }
 
+        val stateDir = File(context.filesDir, "arti_state").apply { mkdirs() }.absolutePath
+        val cacheDir = File(context.cacheDir, "arti_cache").apply { mkdirs() }.absolutePath
+
         val port = startNative(stateDir, cacheDir)
         if (port <= 0) {
             _state.value = ArtiTorState.Error("Failed to bind Arti local SOCKS5 proxy")
