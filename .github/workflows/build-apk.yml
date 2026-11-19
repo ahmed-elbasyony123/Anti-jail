@@ -73,18 +73,16 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.1.0
-          name: "GhostKey v2.1.0 (Security Hardening & 15MB Media)"
+          tag_name: v2.2.0
+          name: "GhostKey v2.2.0 (Encrypted Opus PTT Voice Notes & Clean UI)"
           body: |
-            ### 🛡️ GhostKey v2.1.0 (Protocol v2.1 Hardening & Optimization)
-            - **Drop-ID Cryptographic Derivation:** `dropId = SHA-256("drop:" + readToken)` prevents mailbox squatting and front-running
-            - **Replay Attack Defense:** Monotonic timestamp window and nonce deduplication in signed wire format
-            - **Media Capacity Upgrade:** Raised uncompressed attachment limit to 15 MB with streaming server pipeline (25 MB cap)
-            - **Forensic Hardening:** Cleartext relay URL removed from disk in Ephemeral mode; system clipboard automatically cleared after 45s and on panic wipe
-            - **Stealth Notifications:** Renamed foreground service to neutral system task to prevent lock-screen eavesdropping
-            - **Web Client Security:** Eliminated `dangerouslySetInnerHTML` in React companion; strictly sandboxed inline media
-            - **Server Crash Resilience:** Added global unhandled rejection & exception handlers with rate-limited auth protection
-            - **ProGuard / R8 Hardening:** Removed wildcard keep rules for maximum binary obfuscation and footprint minimization
+            ### 🎙️ GhostKey v2.2.0 (Encrypted PTT Voice Notes & Clean UI)
+            - **Opus Encrypted PTT Voice Messaging:** High-fidelity voice notes using native Opus encoding (`.ogg`) at 32 kbps / 48 kHz.
+            - **RAM-Only Zero-Footprint Audio:** Instant temporary file shredding (zero-fill on disk); playback handled 100% in volatile RAM via `MemoryAudioDataSource` with no disk writes.
+            - **Panic Wipe Audio Sanitization:** Instant purge and memory zeroing of all audio buffers upon emergency panic wipe.
+            - **Clean Outgoing Bubble Rendering:** Eliminated the raw wire JSON envelope (`{"v":2, "pad":...}`) from outgoing message bubbles, showing clean text only.
+            - **Modular Stealth UI:** Dedicated `AudioBubble.kt` player widget with glowing progress slider, duration timers, and live `REC` recording indicator.
+            - **Cryptographic Envelope:** Audio payloads are signed with Ed25519 and encrypted using AES-256 + X25519 over Tor Onion Routing.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
