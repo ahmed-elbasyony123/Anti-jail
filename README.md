@@ -1,6 +1,6 @@
-# GHOSTKEY // E2EE Messaging Suite (v2.1.0)
+# GHOSTKEY // E2EE Messaging Suite (v2.2.0)
 
-> **End-to-End Encrypted • Tor Onion Routing • Ed25519/X25519 • Blind Dead-Drop Relay • 15MB Media**
+> **End-to-End Encrypted • Tor Onion Routing • Ed25519/X25519 • Blind Dead-Drop Relay • 15MB Media • Opus PTT Voice**
 
 ---
 
@@ -9,7 +9,7 @@
 **GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with Tor Onion Routing to minimize metadata exposure to ISPs and intermediate relays.
 
 > [!NOTE]
-> **GhostKey v2.1.0 Updates:** Features hardened modular architecture, in-memory cryptographic keyring caching (<1ms lookup), single-pass 15MB media decoding with immediate RAM Base64 stripping, and enhanced anti-forensics. Client v2.1 requires a relay running server v2.
+> **GhostKey v2.2.0 Updates:** Adds end-to-end encrypted Push-to-Talk (PTT) voice notes using native Opus encoding (`.ogg`), zero disk footprint RAM-only streaming, clean bubble rendering (no raw JSON wrappers), and full anti-forensics memory wipe. Client v2.2 requires a relay running server v2.
 
 ---
 

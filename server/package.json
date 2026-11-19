@@ -1,6 +1,6 @@
 {
   "name": "ghostkey-blind-relay",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Blind store-and-forward relay for OpenPGP messages (RAM-only queues), designed to run behind a Tor onion service",
   "main": "server.js",
   "scripts": {
