@@ -1,0 +1,17 @@
+[package]
+name = "arti-mobile"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+arti-client = { version = "0.48.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "compression"] }
+tor-rtcompat = { version = "0.48.0", default-features = false, features = ["tokio", "rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros"] }
+futures = "0.3"
+jni = { version = "0.21", default-features = false }
+log = "0.4"
+android_logger = "0.14"
+anyhow = "1.0"
