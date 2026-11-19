@@ -73,10 +73,20 @@
                 <span id="attachment-size" class="muted"></span>
                 <button id="attachment-clear" class="link-btn" type="button">remove</button>
             </div>
+            <div id="recording-bar" class="hidden">
+                <div class="rec-indicator">
+                    <span class="rec-dot"></span>
+                    <span id="rec-timer">00:00</span>
+                    <span class="muted">• OPUS PTT (RAM-ONLY)</span>
+                </div>
+                <button id="cancel-rec-btn" class="btn small danger" type="button">CANCEL</button>
+                <button id="stop-send-rec-btn" class="btn small" type="button">STOP &amp; SEND</button>
+            </div>
             <form id="chat-form" autocomplete="off">
                 <input type="file" id="media-file-input" class="hidden" accept="image/*,audio/*,video/*,.pdf,.zip,.txt,.doc,.docx">
                 <button id="attach-btn" class="btn ghost" type="button" title="Attach a file (max 15 MB)">ATTACH</button>
                 <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off">
+                <button id="ptt-btn" class="btn ghost" type="button" title="Record Voice Note (Opus PTT)">🎙️ REC</button>
                 <button id="send-btn" class="btn" type="submit">SEND</button>
             </form>
         </footer>

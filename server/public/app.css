@@ -81,6 +81,12 @@ body { background: var(--bg); color: var(--text); font-family: var(--mono); font
 #composer { background: var(--surface); border-top: 1px solid var(--border); padding: 12px 14px; }
 #attachment-bar { display: flex; gap: 10px; align-items: center; padding: 6px 8px; margin-bottom: 8px; border: 1px solid rgba(0,255,157,.4); border-radius: 6px; background: var(--panel); font-size: 11px; }
 .attachment-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+#recording-bar { display: flex; gap: 10px; align-items: center; padding: 6px 10px; border: 1px solid var(--crimson); border-radius: 6px; background: var(--panel); margin-bottom: 8px; }
+.rec-indicator { display: flex; align-items: center; gap: 8px; flex: 1; font-family: var(--mono); font-weight: 700; font-size: 12px; color: var(--crimson); }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--crimson); animation: ptt-pulse 1s infinite alternate; }
+@keyframes ptt-pulse { 0% { opacity: 0.3; transform: scale(0.85); } 100% { opacity: 1; transform: scale(1.15); } }
+.btn.danger { background: rgba(255, 60, 60, 0.15); border-color: var(--crimson); color: var(--crimson); }
+.btn.danger:hover { background: var(--crimson); color: #fff; }
 #chat-form { display: flex; gap: 8px; }
 #message-input { flex: 1; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font: 12px var(--mono); }
 #message-input:focus, .key-box:focus { outline: 0; border-color: var(--accent); }

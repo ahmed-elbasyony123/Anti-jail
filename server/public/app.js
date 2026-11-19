@@ -436,6 +436,114 @@ export function startApp(env) {
         showPeerError('');
     }
 
+    // ------------------------------------------------------------------ ptt audio recording
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recTimerInterval = null;
+    let recStartTime = 0;
+
+    function showRecordingUI(isRecording) {
+        const bar = $('recording-bar');
+        const form = $('chat-form');
+        if (isRecording) {
+            bar.classList.remove('hidden');
+            form.classList.add('hidden');
+        } else {
+            bar.classList.add('hidden');
+            form.classList.remove('hidden');
+            if (recTimerInterval) {
+                win.clearInterval(recTimerInterval);
+                recTimerInterval = null;
+            }
+        }
+    }
+
+    function updateRecTimer() {
+        const elapsed = Math.floor((Date.now() - recStartTime) / 1000);
+        const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const ss = String(elapsed % 60).padStart(2, '0');
+        const timer = $('rec-timer');
+        if (timer) timer.textContent = `${mm}:${ss}`;
+    }
+
+    async function startRecording() {
+        if (!state.peer || !state.peer.dropId) {
+            showPeerError('Save your peer\'s public key first. It must include a Drop-ID.');
+            return;
+        }
+        const nav = win.navigator;
+        if (!nav || !nav.mediaDevices || !nav.mediaDevices.getUserMedia || typeof win.MediaRecorder === 'undefined') {
+            log('Microphone recording is not supported in this browser.', 'error');
+            alert('Microphone recording is not supported in this browser context (or requires localhost / HTTPS).');
+            return;
+        }
+
+        try {
+            const stream = await nav.mediaDevices.getUserMedia({ audio: true });
+            const MR = win.MediaRecorder;
+            let mimeType = 'audio/webm;codecs=opus';
+            let ext = 'webm';
+            if (MR.isTypeSupported && MR.isTypeSupported('audio/ogg;codecs=opus')) {
+                mimeType = 'audio/ogg;codecs=opus';
+                ext = 'ogg';
+            } else if (MR.isTypeSupported && MR.isTypeSupported('audio/webm;codecs=opus')) {
+                mimeType = 'audio/webm;codecs=opus';
+                ext = 'webm';
+            } else if (MR.isTypeSupported && MR.isTypeSupported('audio/mp4')) {
+                mimeType = 'audio/mp4';
+                ext = 'm4a';
+            }
+
+            mediaRecorder = new MR(stream, { mimeType, audioBitsPerSecond: 32000 });
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+                stream.getTracks().forEach((t) => t.stop());
+                if (audioChunks.length === 0) return;
+                const BlobClass = env.Blob || win.Blob;
+                const blob = new BlobClass(audioChunks, { type: mimeType });
+                if (blob.size < 500) {
+                    log('Voice note was too short or empty.', 'warn');
+                    return;
+                }
+                const buffer = await blob.arrayBuffer();
+                const bytes = new Uint8Array(buffer);
+                const rawMime = mimeType.split(';')[0];
+                log(`[PTT] Encrypting voice note (${(bytes.length / 1024).toFixed(1)} KB)...`, 'info');
+                await queueSend(() => sendPayload(core.buildMedia(rawMime, `voice_${Date.now()}.${ext}`, bytes)));
+            };
+
+            mediaRecorder.start(200);
+            recStartTime = Date.now();
+            showRecordingUI(true);
+            updateRecTimer();
+            recTimerInterval = win.setInterval(updateRecTimer, 200);
+            log('Recording PTT voice note (Opus)...', 'info');
+        } catch (err) {
+            log(`Microphone error: ${err.message}`, 'error');
+        }
+    }
+
+    function cancelRecording() {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            audioChunks = [];
+            mediaRecorder.stop();
+        }
+        showRecordingUI(false);
+        log('Recording cancelled.', 'warn');
+    }
+
+    function stopAndSendRecording() {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+        }
+        showRecordingUI(false);
+    }
+
     // ------------------------------------------------------------------ identity / peer
 
     async function newIdentity() {
@@ -502,6 +610,7 @@ export function startApp(env) {
     }
 
     function wipeSession() {
+        cancelRecording();
         if (state.reconnectTimer) { win.clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
         closeSocketOnly();
         state.identity = null;
@@ -537,6 +646,9 @@ export function startApp(env) {
     on('attach-btn', 'click', () => $('media-file-input').click());
     on('media-file-input', 'change', handleFileSelected);
     on('attachment-clear', 'click', clearAttachment);
+    on('ptt-btn', 'click', startRecording);
+    on('cancel-rec-btn', 'click', cancelRecording);
+    on('stop-send-rec-btn', 'click', stopAndSendRecording);
     on('save-peer-btn', 'click', savePeerKey);
     on('copy-key-btn', 'click', copyKey);
     on('new-identity-btn', 'click', onNewIdentityClick);
