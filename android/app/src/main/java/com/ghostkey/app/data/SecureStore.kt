@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import com.ghostkey.app.crypto.PgpKeyPairArmored
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
@@ -21,16 +22,17 @@ data class PeerIdentity(
 
 data class StoredIdentity(
     val mine: PgpKeyPairArmored,
-    val peer: PeerIdentity?
+    val peer: PeerIdentity? = null,
+    val userAlias: String = "",
+    val contacts: List<Contact> = emptyList(),
+    val groups: List<GroupChat> = emptyList()
 )
 
 /**
- * Keeps the identity (my keys, Drop-ID, read token, and the saved peer key) on disk, encrypted
- * with an AES-256-GCM key that lives in the AndroidKeyStore. The key never leaves the keystore
- * (on devices with a secure element or TEE it is hardware-backed), so the file in filesDir is
- * useless without it. Deleting the key alias therefore also makes the file unreadable.
+ * Keeps the identity (my keys, Drop-ID, read token, user alias, contacts, and groups) on disk,
+ * encrypted with an AES-256-GCM key that lives in the AndroidKeyStore.
  *
- * Messages are NOT stored here; they stay in memory only.
+ * Messages are NOT stored here; they stay in memory (RAM) only.
  */
 class SecureStore(private val context: Context) {
 
@@ -74,11 +76,56 @@ class SecureStore(private val context: Context) {
             .put("fingerprint", identity.mine.fingerprint)
             .put("dropId", identity.mine.dropId)
             .put("readToken", identity.mine.readToken)
+            .put("userAlias", identity.userAlias)
+
         identity.peer?.let {
             json.put("peerPublicKeyArmored", it.publicKeyArmored)
             json.put("peerFingerprint", it.fingerprint)
             json.put("peerDropId", it.dropId)
         }
+
+        // Serialize contacts
+        val contactsArray = JSONArray()
+        for (c in identity.contacts) {
+            contactsArray.put(
+                JSONObject()
+                    .put("id", c.id)
+                    .put("alias", c.alias)
+                    .put("dropId", c.dropId)
+                    .put("publicKeyArmored", c.publicKeyArmored)
+                    .put("fingerprint", c.fingerprint)
+                    .put("addedAt", c.addedAt)
+            )
+        }
+        json.put("contacts", contactsArray)
+
+        // Serialize groups
+        val groupsArray = JSONArray()
+        for (g in identity.groups) {
+            val membersArray = JSONArray()
+            for (m in g.members) {
+                membersArray.put(
+                    JSONObject()
+                        .put("dropId", m.dropId)
+                        .put("alias", m.alias)
+                        .put("publicKeyArmored", m.publicKeyArmored)
+                        .put("fingerprint", m.fingerprint)
+                )
+            }
+            groupsArray.put(
+                JSONObject()
+                    .put("id", g.id)
+                    .put("name", g.name)
+                    .put("groupDropId", g.groupDropId)
+                    .put("groupReadToken", g.groupReadToken)
+                    .put("sharedKeyBase64", g.sharedKeyBase64)
+                    .put("members", membersArray)
+                    .put("createdAt", g.createdAt)
+                    .put("isAdmin", g.isAdmin)
+            )
+        }
+        json.put("groups", groupsArray)
+
         val plain = json.toString().toByteArray(Charsets.UTF_8)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -127,7 +174,63 @@ class SecureStore(private val context: Context) {
                 dropId = json.optString("peerDropId", "")
             )
         } else null
-        return StoredIdentity(mine, peer)
+
+        val userAlias = json.optString("userAlias", "")
+
+        val contactsList = mutableListOf<Contact>()
+        val contactsArray = json.optJSONArray("contacts")
+        if (contactsArray != null) {
+            for (i in 0 until contactsArray.length()) {
+                val c = contactsArray.getJSONObject(i)
+                contactsList.add(
+                    Contact(
+                        id = c.optString("id", c.optString("dropId")),
+                        alias = c.optString("alias", "Peer"),
+                        dropId = c.getString("dropId"),
+                        publicKeyArmored = c.getString("publicKeyArmored"),
+                        fingerprint = c.optString("fingerprint", ""),
+                        addedAt = c.optLong("addedAt", System.currentTimeMillis())
+                    )
+                )
+            }
+        }
+
+        val groupsList = mutableListOf<GroupChat>()
+        val groupsArray = json.optJSONArray("groups")
+        if (groupsArray != null) {
+            for (i in 0 until groupsArray.length()) {
+                val g = groupsArray.getJSONObject(i)
+                val membersList = mutableListOf<GroupMember>()
+                val membersArray = g.optJSONArray("members")
+                if (membersArray != null) {
+                    for (j in 0 until membersArray.length()) {
+                        val m = membersArray.getJSONObject(j)
+                        membersList.add(
+                            GroupMember(
+                                dropId = m.getString("dropId"),
+                                alias = m.optString("alias", "Member"),
+                                publicKeyArmored = m.optString("publicKeyArmored", ""),
+                                fingerprint = m.optString("fingerprint", "")
+                            )
+                        )
+                    }
+                }
+                groupsList.add(
+                    GroupChat(
+                        id = g.getString("id"),
+                        name = g.getString("name"),
+                        groupDropId = g.getString("groupDropId"),
+                        groupReadToken = g.getString("groupReadToken"),
+                        sharedKeyBase64 = g.getString("sharedKeyBase64"),
+                        members = membersList,
+                        createdAt = g.optLong("createdAt", System.currentTimeMillis()),
+                        isAdmin = g.optBoolean("isAdmin", false)
+                    )
+                )
+            }
+        }
+
+        return StoredIdentity(mine, peer, userAlias, contactsList, groupsList)
     }
 
     /** Delete the keystore key and the encrypted files. Safe to call when nothing exists. */

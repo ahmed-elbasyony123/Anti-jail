@@ -18,43 +18,25 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.ghostkey.app.audio.AudioPlayerManager
 import com.ghostkey.app.audio.AudioRecorderManager
 import com.ghostkey.app.audio.AudioRecordResult
 import com.ghostkey.app.audio.MemoryAudioDataSource
+import com.ghostkey.app.crypto.GroupCrypto
 import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.crypto.WireFormat
-import com.ghostkey.app.data.ChatMessage
-import com.ghostkey.app.data.PeerIdentity
-import com.ghostkey.app.data.SecureStore
-import com.ghostkey.app.data.StoredIdentity
+import com.ghostkey.app.crypto.WireMessage
+import com.ghostkey.app.data.*
 import com.ghostkey.app.net.ArtiTorManager
 import com.ghostkey.app.net.ArtiTorState
 import com.ghostkey.app.net.EncryptedMessageRecord
@@ -65,9 +47,8 @@ import com.ghostkey.app.net.TorRelayClient
 import com.ghostkey.app.notify.PushNotificationManager
 import com.ghostkey.app.service.TorForegroundService
 import com.ghostkey.app.ui.*
-import com.ghostkey.app.ui.components.*
 import com.ghostkey.app.ui.dialogs.*
-import com.ghostkey.app.ui.screens.LockedScreen
+import com.ghostkey.app.ui.screens.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -88,9 +69,19 @@ internal fun calculateInSampleSize(width: Int, height: Int, maxEdge: Int): Int {
     return sample
 }
 
+enum class AppNavScreen { CHATS_LIST, CHAT_VIEW, SETTINGS }
+
 class MainActivity : ComponentActivity() {
 
     private val torClient = TorRelayClient()
+
+    // Navigation and Multi-Chat State
+    private var currentNavScreen by mutableStateOf(AppNavScreen.CHATS_LIST)
+    private var activeChatContact by mutableStateOf<Contact?>(null)
+    private var activeChatGroup by mutableStateOf<GroupChat?>(null)
+    private val contacts = mutableStateListOf<Contact>()
+    private val groups = mutableStateListOf<GroupChat>()
+    private var userAlias by mutableStateOf("")
 
     // Volatile in-memory state - Never saved to SQLite or disk
     private val messagesState = mutableStateListOf<ChatMessage>()
@@ -116,7 +107,6 @@ class MainActivity : ComponentActivity() {
     private var ephemeralMode by mutableStateOf(false)
     private var lockEnabled by mutableStateOf(false)
     private var isLocked by mutableStateOf(false)
-    private var keyBarCollapsed by mutableStateOf(false)
     private val maxAttachmentBytes = 15 * 1024 * 1024
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
 
@@ -168,7 +158,8 @@ class MainActivity : ComponentActivity() {
         orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
         ephemeralMode = prefs.getBoolean("ephemeral_mode", false)
         lockEnabled = prefs.getBoolean("lock_enabled", false)
-        keyBarCollapsed = prefs.getBoolean("key_bar_collapsed", false)
+        userAlias = prefs.getString("user_alias", "") ?: ""
+
         secureStore = SecureStore(applicationContext)
         audioRecorderManager = AudioRecorderManager(applicationContext)
 
@@ -185,8 +176,8 @@ class MainActivity : ComponentActivity() {
         initTorNetworkEngine()
         PushNotificationManager.init(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 102)
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 102)
             }
         }
         if (keepAlive) TorForegroundService.start(this)
@@ -196,7 +187,7 @@ class MainActivity : ComponentActivity() {
                 if (isLocked) {
                     LockedScreen(onUnlock = { requestUnlock() })
                 } else {
-                    MainStealthScreen()
+                    MainModernApp()
                 }
             }
         }
@@ -313,12 +304,33 @@ class MainActivity : ComponentActivity() {
 
     private fun applyIdentity(stored: StoredIdentity) {
         myPgpKeys = stored.mine
+        userAlias = stored.userAlias
+        contacts.clear()
+        contacts.addAll(stored.contacts)
+        groups.clear()
+        groups.addAll(stored.groups)
+
         stored.peer?.let {
             recipientArmoredKey = it.publicKeyArmored
             recipientFingerprint = it.fingerprint
             recipientDropId = it.dropId
+            if (contacts.none { c -> c.dropId == it.dropId }) {
+                contacts.add(
+                    Contact(
+                        id = it.dropId,
+                        alias = "Peer ${it.fingerprint.take(6)}",
+                        dropId = it.dropId,
+                        publicKeyArmored = it.publicKeyArmored,
+                        fingerprint = it.fingerprint
+                    )
+                )
+            }
         }
+
         connectToRelayMailbox(stored.mine)
+        for (g in groups) {
+            torClient.addSubscription(g.groupDropId, g.groupReadToken)
+        }
     }
 
     private fun persistIdentity() {
@@ -327,7 +339,13 @@ class MainActivity : ComponentActivity() {
         val peer = if (recipientArmoredKey.isNotBlank()) {
             PeerIdentity(recipientArmoredKey, recipientFingerprint, recipientDropId)
         } else null
-        val snapshot = StoredIdentity(mine, peer)
+        val snapshot = StoredIdentity(
+            mine = mine,
+            peer = peer,
+            userAlias = userAlias,
+            contacts = contacts.toList(),
+            groups = groups.toList()
+        )
         CoroutineScope(persistDispatcher).launch {
             try {
                 secureStore.save(snapshot)
@@ -345,10 +363,13 @@ class MainActivity : ComponentActivity() {
         editor.putBoolean("ephemeral_mode", enabled)
         if (enabled) {
             editor.remove("relay_url")
+            editor.remove("user_alias")
             editor.apply()
             CoroutineScope(persistDispatcher).launch { secureStore.wipe() }
         } else {
-            editor.putString("relay_url", relayServerUrl).apply()
+            editor.putString("relay_url", relayServerUrl)
+            editor.putString("user_alias", userAlias)
+            editor.apply()
             persistIdentity()
         }
     }
@@ -369,27 +390,22 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("lock_enabled", enabled).apply()
     }
 
-    private fun saveKeyBarPref() {
-        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
-            .putBoolean("key_bar_collapsed", keyBarCollapsed).apply()
-    }
-
     private fun generateFreshKeys() {
         isGeneratingKey = true
-        StandalonePgpEngine.clearCache()
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                val keys = StandalonePgpEngine.generateKeyPair()
+                val pair = StandalonePgpEngine.generateKeyPair(userAlias.ifBlank { null })
                 runOnUiThread {
-                    myPgpKeys = keys
+                    myPgpKeys = pair
                     isGeneratingKey = false
-                    connectToRelayMailbox(keys)
+                    messagesState.clear()
                     persistIdentity()
+                    connectToRelayMailbox(pair)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     isGeneratingKey = false
-                    Toast.makeText(this@MainActivity, "Keygen failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Key generation failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -402,12 +418,15 @@ class MainActivity : ComponentActivity() {
             onMessageReceived = { record -> runOnUiThread { handleIncoming(record) } },
             onStatusChanged = { status -> runOnUiThread { relayStatus.value = status } }
         )
+        for (g in groups) {
+            torClient.addSubscription(g.groupDropId, g.groupReadToken)
+        }
     }
 
     private fun handleIncoming(record: EncryptedMessageRecord) {
         val existing = messagesState.firstOrNull { it.id == record.id }
         if (existing != null) {
-            if (existing.isDecrypted) torClient.ack(listOf(existing.id))
+            if (existing.isDecrypted) torClient.ack(listOf(existing.id), dropId = record.dropId)
             return
         }
         val msg = ChatMessage(
@@ -416,86 +435,71 @@ class MainActivity : ComponentActivity() {
             plaintext = null,
             ciphertext = record.ciphertext,
             timestamp = record.createdAt,
-            isDecrypted = false
+            isDecrypted = false,
+            chatId = record.dropId
         )
         messagesState.add(msg)
-        decryptMessage(msg)
+        decryptMessage(msg, record.dropId)
     }
 
-    private fun sendMedia(uri: Uri) {
+    private fun sendMedia(uri: Uri, targetChatId: String = "") {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val bytes = contentResolver.openInputStream(uri)?.use { readLimited(it, maxAttachmentBytes) }
                 if (bytes == null) {
                     runOnUiThread {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Attachment is unreadable or larger than 15 MB",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        Toast.makeText(this@MainActivity, "File exceeds 15 MB limit", Toast.LENGTH_SHORT).show()
                     }
                     return@launch
                 }
-                val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
-                val fileName = uri.lastPathSegment ?: "file"
-                val payload = WireFormat.buildMedia(mimeType, fileName, bytes)
-
-                var previewBitmap: ImageBitmap? = null
-                var isAudio = false
-                var audioBytes: ByteArray? = null
-                var audioDurationMs = 0L
-
-                if (mimeType.startsWith("image/")) {
-                    try {
-                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                        val options = BitmapFactory.Options().apply {
-                            inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, MAX_BUBBLE_IMAGE_EDGE)
-                        }
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.let {
-                            previewBitmap = it.asImageBitmap()
-                        }
-                    } catch (_: Throwable) {}
-                } else if (mimeType.startsWith("audio/")) {
-                    isAudio = true
-                    audioBytes = bytes
-                    try {
-                        val retriever = MediaMetadataRetriever()
-                        val ds = MemoryAudioDataSource(bytes)
-                        retriever.setDataSource(ds)
-                        val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                        audioDurationMs = durStr?.toLongOrNull() ?: 0L
-                        retriever.release()
-                    } catch (_: Throwable) {}
+                val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+                val name = queryFilename(uri) ?: "file"
+                var preview: ImageBitmap? = null
+                if (mime.startsWith("image/")) {
+                    val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, b)
+                    val opt = BitmapFactory.Options().apply {
+                        inSampleSize = calculateInSampleSize(b.outWidth, b.outHeight, MAX_BUBBLE_IMAGE_EDGE)
+                    }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opt)?.let {
+                        preview = it.asImageBitmap()
+                    }
                 }
-
+                val payload = WireFormat.buildMedia(mime, name, bytes, senderAlias = userAlias)
                 runOnUiThread {
                     sendPayload(
                         payload = payload,
                         isMedia = true,
-                        isAudio = isAudio,
-                        mimeType = mimeType,
-                        filename = fileName,
-                        mediaBitmap = previewBitmap,
-                        audioBytes = audioBytes,
-                        audioDurationMs = audioDurationMs
+                        mimeType = mime,
+                        filename = name,
+                        mediaBitmap = preview,
+                        targetChatId = targetChatId
                     )
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Attachment error: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Could not read file: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    private fun readLimited(stream: InputStream, maxBytes: Int): ByteArray? {
+    private fun queryFilename(uri: Uri): String? {
+        val cursor = contentResolver.query(uri, null, null, null, null) ?: return null
+        cursor.use {
+            val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && it.moveToFirst()) return it.getString(idx)
+        }
+        return null
+    }
+
+    private fun readLimited(input: InputStream, maxBytes: Int): ByteArray? {
         val out = ByteArrayOutputStream()
-        val buffer = ByteArray(16 * 1024)
+        val buffer = ByteArray(8192)
         var total = 0
         while (true) {
-            val n = stream.read(buffer)
-            if (n < 0) break
+            val n = input.read(buffer)
+            if (n == -1) break
             total += n
             if (total > maxBytes) return null
             out.write(buffer, 0, n)
@@ -503,13 +507,13 @@ class MainActivity : ComponentActivity() {
         return out.toByteArray()
     }
 
-    private fun sendMessage(text: String) {
+    private fun sendMessage(text: String, targetChatId: String = "") {
         if (text.isBlank()) return
-        sendPayload(payload = WireFormat.buildText(text), isMedia = false, displayText = text)
+        sendPayload(payload = WireFormat.buildText(text, senderAlias = userAlias), isMedia = false, displayText = text, targetChatId = targetChatId)
     }
 
-    private fun sendAudioRecordResult(result: AudioRecordResult) {
-        val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes)
+    private fun sendAudioRecordResult(result: AudioRecordResult, targetChatId: String = "") {
+        val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes, senderAlias = userAlias)
         sendPayload(
             payload = payload,
             isMedia = true,
@@ -517,7 +521,8 @@ class MainActivity : ComponentActivity() {
             mimeType = result.mimeType,
             filename = result.filename,
             audioBytes = result.bytes,
-            audioDurationMs = result.durationMs
+            audioDurationMs = result.durationMs,
+            targetChatId = targetChatId
         )
     }
 
@@ -530,7 +535,8 @@ class MainActivity : ComponentActivity() {
         filename: String = "",
         mediaBitmap: ImageBitmap? = null,
         audioBytes: ByteArray? = null,
-        audioDurationMs: Long = 0L
+        audioDurationMs: Long = 0L,
+        targetChatId: String = ""
     ) {
         val keys = myPgpKeys
         if (keys == null) {
@@ -539,14 +545,14 @@ class MainActivity : ComponentActivity() {
         }
 
         if (recipientArmoredKey.isBlank()) {
-            Toast.makeText(this, "Please paste your peer's public key first!", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Please select or paste your peer's public key first!", Toast.LENGTH_LONG).show()
             return
         }
 
         if (recipientDropId.isBlank()) {
             Toast.makeText(
                 this,
-                "Peer key has no Drop-ID. Ask your peer to copy their key again from GhostKey v2.",
+                "Peer key has no Drop-ID.",
                 Toast.LENGTH_LONG
             ).show()
             return
@@ -554,6 +560,8 @@ class MainActivity : ComponentActivity() {
 
         val peerKey = recipientArmoredKey
         val peerDrop = recipientDropId
+        val finalChatId = targetChatId.ifBlank { peerDrop }
+
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val ciphertext = StandalonePgpEngine.encrypt(payload, peerKey, keys.privateKeyArmored)
@@ -574,14 +582,16 @@ class MainActivity : ComponentActivity() {
                             filename = filename,
                             mediaBitmap = mediaBitmap,
                             audioBytes = audioBytes,
-                            audioDurationMs = audioDurationMs
+                            audioDurationMs = audioDurationMs,
+                            chatId = finalChatId,
+                            senderAlias = userAlias
                         )
                         messagesState.add(msg)
                     }
                 }.onFailure { err ->
                     runOnUiThread {
                         val reason = when ((err as? RelayHttpException)?.code) {
-                            429 -> "rate limit reached or the peer's mailbox is full, try again shortly"
+                            429 -> "rate limit reached, try again shortly"
                             503 -> "the relay is at capacity"
                             413 -> "message is too large for the relay"
                             else -> err.message
@@ -597,18 +607,66 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun decryptMessage(msg: ChatMessage) {
+    private fun decryptMessage(msg: ChatMessage, dropId: String) {
         val keys = myPgpKeys ?: return
+
+        // Check if message belongs to a known group
+        val group = groups.find { it.groupDropId == dropId || it.id == dropId }
+        if (group != null) {
+            CoroutineScope(Dispatchers.Default).launch {
+                try {
+                    val plainBytes = GroupCrypto.decrypt(msg.ciphertext, group.sharedKeyBase64)
+                    val wire = WireFormat.parse(plainBytes)
+                    runOnUiThread {
+                        val index = messagesState.indexOfFirst { it.id == msg.id }
+                        if (index != -1) {
+                            messagesState[index] = messagesState[index].copy(
+                                plaintext = wire?.text ?: String(plainBytes, Charsets.UTF_8),
+                                isDecrypted = true,
+                                chatId = group.id,
+                                groupId = group.id,
+                                isGroup = true,
+                                senderAlias = wire?.senderAlias
+                            )
+                            torClient.ack(listOf(msg.id), dropId = group.groupDropId)
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            return
+        }
+
+        // Direct 1-to-1 PGP message
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val peerKey = recipientArmoredKey.ifBlank { null }
                 val result = StandalonePgpEngine.decrypt(msg.ciphertext, keys.privateKeyArmored, peerKey)
                 val wire = WireFormat.parse(result.bytes)
 
-                // Anti-replay check: verify timestamp window and deduplicate nonce
+                // Handle Group Invites
+                if (wire != null && wire.isGroupInvite && wire.groupId != null && wire.groupDropId != null) {
+                    val newGroup = GroupChat(
+                        id = wire.groupId,
+                        name = wire.groupName ?: "Encrypted Group",
+                        groupDropId = wire.groupDropId,
+                        groupReadToken = wire.groupReadToken ?: "",
+                        sharedKeyBase64 = wire.sharedKey ?: "",
+                        members = emptyList()
+                    )
+                    if (!groups.any { it.id == newGroup.id }) {
+                        groups.add(newGroup)
+                        torClient.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
+                        persistIdentity()
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "Invited to group: ${newGroup.name} 👥", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+
+                // Anti-replay check
                 if (wire != null && wire.nonce != null) {
                     if (seenNonces.contains(wire.nonce)) {
-                        torClient.ack(listOf(msg.id))
+                        torClient.ack(listOf(msg.id), dropId = dropId)
                         return@launch
                     }
                     seenNonces.add(wire.nonce)
@@ -660,6 +718,10 @@ class MainActivity : ComponentActivity() {
                     displayText = wire?.text ?: String(result.bytes, Charsets.UTF_8)
                 }
 
+                val senderFp = result.signerFingerprint
+                val matchedContact = contacts.find { it.fingerprint == senderFp }
+                val targetChat = matchedContact?.dropId ?: dropId
+
                 runOnUiThread {
                     val index = messagesState.indexOfFirst { it.id == msg.id }
                     if (index != -1) {
@@ -674,9 +736,11 @@ class MainActivity : ComponentActivity() {
                             audioBytes = audioBytes,
                             audioDurationMs = audioDurationMs,
                             signatureStatus = result.signatureStatus,
-                            signerFingerprint = result.signerFingerprint
+                            signerFingerprint = result.signerFingerprint,
+                            chatId = targetChat,
+                            senderAlias = wire?.senderAlias ?: matchedContact?.alias
                         )
-                        torClient.ack(listOf(msg.id))
+                        torClient.ack(listOf(msg.id), dropId = dropId)
                     }
                     if (!isForeground) {
                         PushNotificationManager.postMessageNotification(
@@ -702,18 +766,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun copyKeyToClipboard(keyText: String) {
+    private fun copyToClipboard(label: String, value: String) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("", keyText))
-        Toast.makeText(this, "Public Key copied! (auto-clears in 45s) 📋", Toast.LENGTH_SHORT).show()
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+        Toast.makeText(this, "$label copied! (auto-clears in 45s) 📋", Toast.LENGTH_SHORT).show()
         CoroutineScope(Dispatchers.Main).launch {
-            kotlinx.coroutines.delay(45_000L)
+            delay(45_000L)
             try {
-                if (clipboard.hasPrimaryClip() && clipboard.primaryClip?.getItemAt(0)?.text?.toString() == keyText) {
+                if (clipboard.hasPrimaryClip() && clipboard.primaryClip?.getItemAt(0)?.text?.toString() == value) {
                     clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    private fun copyKeyToClipboard(keyText: String) {
+        copyToClipboard("Public Key", keyText)
     }
 
     private fun triggerEmergencyPanicWipe() {
@@ -729,6 +797,9 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {}
         seenNonces.clear()
         myPgpKeys = null
+        contacts.clear()
+        groups.clear()
+        userAlias = ""
         recipientArmoredKey = ""
         recipientFingerprint = ""
         recipientDropId = ""
@@ -739,98 +810,279 @@ class MainActivity : ComponentActivity() {
         exitProcess(0)
     }
 
+    private fun saveAllSettings(
+        newUrl: String,
+        newTor: Boolean,
+        newKeepAlive: Boolean,
+        newEphemeral: Boolean,
+        newLock: Boolean,
+        newAlias: String
+    ) {
+        var cleanUrl = newUrl.trim().trimEnd('/')
+        if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            cleanUrl = "http://$cleanUrl"
+        }
+        relayServerUrl = cleanUrl
+        useTorSocks = newTor
+        userAlias = newAlias.trim()
+        updateKeepAlive(newKeepAlive)
+        updateEphemeralMode(newEphemeral)
+        updateLockEnabled(newLock)
+
+        val p = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
+        val editor = p.edit()
+        if (!newEphemeral) {
+            editor.putString("relay_url", relayServerUrl)
+            editor.putString("user_alias", userAlias)
+        } else {
+            editor.remove("relay_url")
+            editor.remove("user_alias")
+        }
+        editor.putBoolean("use_tor", useTorSocks).apply()
+        applyNetworkConfig()
+        persistIdentity()
+        myPgpKeys?.let { connectToRelayMailbox(it) }
+    }
+
+    private fun computeChatSummaries(): List<ChatSummary> {
+        val list = mutableListOf<ChatSummary>()
+        for (g in groups) {
+            val lastMsg = messagesState.filter { it.chatId == g.id }.lastOrNull()
+            list.add(
+                ChatSummary(
+                    chatId = g.id,
+                    title = g.name,
+                    subtitle = "${g.members.size} members",
+                    isGroup = true,
+                    lastMessageText = lastMsg?.plaintext ?: if (lastMsg?.isAudio == true) "🎙️ Voice note" else if (lastMsg?.isMedia == true) "📎 Attachment" else "Group session ready",
+                    lastMessageTime = lastMsg?.timestamp ?: g.createdAt,
+                    avatarLetter = g.name.take(1)
+                )
+            )
+        }
+        for (c in contacts) {
+            val lastMsg = messagesState.filter { it.chatId == c.dropId }.lastOrNull()
+            list.add(
+                ChatSummary(
+                    chatId = c.dropId,
+                    title = c.alias,
+                    subtitle = "Peer ${c.fingerprint.take(8)}",
+                    isGroup = false,
+                    lastMessageText = lastMsg?.plaintext ?: if (lastMsg?.isAudio == true) "🎙️ Voice note" else if (lastMsg?.isMedia == true) "📎 Attachment" else "Direct E2EE session",
+                    lastMessageTime = lastMsg?.timestamp ?: c.addedAt,
+                    avatarLetter = c.alias.take(1)
+                )
+            )
+        }
+        return list.sortedByDescending { it.lastMessageTime }
+    }
+
+    private fun sendMessageToActiveChat(text: String) {
+        val group = activeChatGroup
+        val contact = activeChatContact
+        if (group != null) {
+            sendGroupTextMessage(group, text)
+        } else if (contact != null) {
+            recipientArmoredKey = contact.publicKeyArmored
+            recipientFingerprint = contact.fingerprint
+            recipientDropId = contact.dropId
+            sendMessage(text, targetChatId = contact.dropId)
+        } else {
+            sendMessage(text)
+        }
+    }
+
+    private fun sendMediaToActiveChat(uri: Uri) {
+        val group = activeChatGroup
+        val contact = activeChatContact
+        if (group != null) {
+            sendGroupMedia(group, uri)
+        } else if (contact != null) {
+            recipientArmoredKey = contact.publicKeyArmored
+            recipientFingerprint = contact.fingerprint
+            recipientDropId = contact.dropId
+            sendMedia(uri, targetChatId = contact.dropId)
+        } else {
+            sendMedia(uri)
+        }
+    }
+
+    private fun sendGroupTextMessage(group: GroupChat, text: String) {
+        val payload = WireFormat.buildText(text, senderAlias = userAlias, groupId = group.id)
+        val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val res = torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
+                res.onSuccess {
+                    runOnUiThread {
+                        val msg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isOutgoing = true,
+                            plaintext = text,
+                            ciphertext = ciphertext,
+                            timestamp = System.currentTimeMillis(),
+                            isDecrypted = true,
+                            chatId = group.id,
+                            groupId = group.id,
+                            isGroup = true,
+                            senderAlias = userAlias
+                        )
+                        messagesState.add(msg)
+                    }
+                }.onFailure { err ->
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "Failed to send to group: ${err.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Group encrypt error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun sendGroupMedia(group: GroupChat, uri: Uri) {
+        val cr = contentResolver
+        val mimeType = cr.getType(uri) ?: "application/octet-stream"
+        val filename = queryFilename(uri) ?: "attachment"
+        val rawBytes = contentResolver.openInputStream(uri)?.use { readLimited(it, maxAttachmentBytes) } ?: return
+        val isAudio = mimeType.startsWith("audio/")
+        val payload = WireFormat.buildMedia(mimeType, filename, rawBytes, senderAlias = userAlias, groupId = group.id)
+        val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val res = torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
+                res.onSuccess {
+                    runOnUiThread {
+                        val msg = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            isOutgoing = true,
+                            ciphertext = ciphertext,
+                            timestamp = System.currentTimeMillis(),
+                            isDecrypted = true,
+                            isMedia = true,
+                            isAudio = isAudio,
+                            mimeType = mimeType,
+                            filename = filename,
+                            audioBytes = if (isAudio) rawBytes else null,
+                            chatId = group.id,
+                            groupId = group.id,
+                            isGroup = true,
+                            senderAlias = userAlias
+                        )
+                        messagesState.add(msg)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun inviteMembersToGroup(group: GroupChat) {
+        val keys = myPgpKeys ?: return
+        for (member in group.members) {
+            val invitePayload = WireFormat.buildGroupInvite(
+                groupId = group.id,
+                groupName = group.name,
+                groupDropId = group.groupDropId,
+                groupReadToken = group.groupReadToken,
+                sharedKey = group.sharedKeyBase64,
+                senderAlias = userAlias
+            )
+            CoroutineScope(Dispatchers.Default).launch {
+                try {
+                    val ciphertext = StandalonePgpEngine.encrypt(invitePayload, member.publicKeyArmored, keys.privateKeyArmored)
+                    torClient.sendMessage(dropId = member.dropId, ciphertext = ciphertext)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun onMicClicked() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            val ok = audioRecorderManager.startRecording()
+            if (ok) {
+                isRecordingAudio = true
+                recordElapsedMs = 0L
+            } else {
+                Toast.makeText(this, "Failed to start recording", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private val recordAudioLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val ok = audioRecorderManager.startRecording()
+            if (ok) {
+                isRecordingAudio = true
+                recordElapsedMs = 0L
+            }
+        } else {
+            Toast.makeText(this, "Microphone permission required for voice notes", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun onStopAudioRecording() {
+        isRecordingAudio = false
+        val result = audioRecorderManager.stopRecording() ?: return
+        val group = activeChatGroup
+        val contact = activeChatContact
+        if (group != null) {
+            val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes, senderAlias = userAlias, groupId = group.id)
+            val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+            CoroutineScope(Dispatchers.Default).launch {
+                torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
+                runOnUiThread {
+                    val msg = ChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        isOutgoing = true,
+                        ciphertext = ciphertext,
+                        timestamp = System.currentTimeMillis(),
+                        isDecrypted = true,
+                        isMedia = true,
+                        isAudio = true,
+                        mimeType = result.mimeType,
+                        filename = result.filename,
+                        audioBytes = result.bytes,
+                        audioDurationMs = result.durationMs,
+                        chatId = group.id,
+                        groupId = group.id,
+                        isGroup = true,
+                        senderAlias = userAlias
+                    )
+                    messagesState.add(msg)
+                }
+            }
+        } else if (contact != null) {
+            recipientArmoredKey = contact.publicKeyArmored
+            recipientFingerprint = contact.fingerprint
+            recipientDropId = contact.dropId
+            sendAudioRecordResult(result, targetChatId = contact.dropId)
+        } else {
+            sendAudioRecordResult(result)
+        }
+    }
+
+    private fun onCancelAudioRecording() {
+        isRecordingAudio = false
+        audioRecorderManager.cancelRecording()
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    fun MainStealthScreen() {
-        var inputText by remember { mutableStateOf("") }
-        var showSettingsDialog by remember { mutableStateOf(false) }
-        var showSafetyCodeDialog by remember { mutableStateOf(false) }
-        var showPeerKeyDialog by remember { mutableStateOf(false) }
-        var showMyKeyDialog by remember { mutableStateOf(false) }
-        var isPeerVerified by remember { mutableStateOf(false) }
-        var showKeySheet by remember { mutableStateOf(false) }
-        var showNewIdentityConfirm by remember { mutableStateOf(false) }
-        var showBurnConfirm by remember { mutableStateOf(false) }
-        var showNewMessagesChip by remember { mutableStateOf(false) }
-
-        val listState = rememberLazyListState()
+    fun MainModernApp() {
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
-
-        fun nearBottom(): Boolean {
-            val info = listState.layoutInfo
-            val total = info.totalItemsCount
-            if (total == 0) return true
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: return true
-            return last >= total - 2
-        }
-
-        LaunchedEffect(messagesState.size) {
-            if (messagesState.isEmpty()) return@LaunchedEffect
-            val newest = messagesState.last()
-            if (newest.isOutgoing || nearBottom()) {
-                listState.animateScrollToItem(messagesState.size - 1)
-                showNewMessagesChip = false
-            } else {
-                showNewMessagesChip = true
-            }
-        }
-        LaunchedEffect(listState) {
-            snapshotFlow { nearBottom() }.collect { atBottom ->
-                if (atBottom) showNewMessagesChip = false
-            }
-        }
-
-        val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-        LaunchedEffect(imeVisible) {
-            if (imeVisible && messagesState.isNotEmpty()) {
-                listState.scrollToItem(messagesState.size - 1)
-            }
-        }
-
-        val filePicker = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
-        ) { uri: Uri? ->
-            if (uri != null) {
-                sendMedia(uri)
-            }
-        }
+        var showAddDirectChatDialog by remember { mutableStateOf(false) }
+        var showCreateGroupDialog by remember { mutableStateOf(false) }
+        var showSafetyCodeDialog by remember { mutableStateOf(false) }
+        var showNewIdentityConfirm by remember { mutableStateOf(false) }
 
         val playbackState by audioPlayerManager.playbackState.collectAsState()
-
-        val recordAudioLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.RequestPermission()
-        ) { isGranted ->
-            if (isGranted) {
-                val ok = audioRecorderManager.startRecording()
-                if (ok) {
-                    isRecordingAudio = true
-                    recordElapsedMs = 0L
-                } else {
-                    Toast.makeText(this@MainActivity, "Failed to start recording", Toast.LENGTH_SHORT).show()
-                }
-            } else {
-                Toast.makeText(this@MainActivity, "Microphone permission required for voice notes", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        fun onMicClicked() {
-            if (recipientArmoredKey.isBlank()) {
-                showPeerKeyDialog = true
-                Toast.makeText(this@MainActivity, "Please set recipient key first", Toast.LENGTH_SHORT).show()
-                return
-            }
-            if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                val ok = audioRecorderManager.startRecording()
-                if (ok) {
-                    isRecordingAudio = true
-                    recordElapsedMs = 0L
-                } else {
-                    Toast.makeText(this@MainActivity, "Failed to start recording", Toast.LENGTH_SHORT).show()
-                }
-            } else {
-                recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }
-        }
 
         LaunchedEffect(isRecordingAudio) {
             if (isRecordingAudio) {
@@ -842,538 +1094,173 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = StealthSurface,
-                        titleContentColor = NeonEmerald
-                    ),
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "GHOSTKEY",
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 2.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 18.sp,
-                                color = NeonEmerald
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            StatusBadge(
-                                label = if (myPgpKeys != null) "PGP: READY" else if (isGeneratingKey) "PGP: GEN..." else "PGP: WIPED",
-                                isActive = myPgpKeys != null
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            StatusBadge(
-                                label = relayBadgeLabel(relayStatus.value),
-                                isActive = relayStatus.value == RelayStatus.CONNECTED
-                            )
-                        }
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                TelegramDrawer(
+                    userAlias = userAlias,
+                    myPgpKeys = myPgpKeys,
+                    relayStatus = relayStatus.value,
+                    artiState = artiState,
+                    onNavigateChats = {
+                        currentNavScreen = AppNavScreen.CHATS_LIST
+                        scope.launch { drawerState.close() }
                     },
-                    actions = {
-                        if (keyBarCollapsed && recipientArmoredKey.isNotBlank()) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(NeonEmerald.copy(alpha = 0.12f))
-                                    .clickable { showKeySheet = true }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Shield,
-                                        contentDescription = "Keys and identity",
-                                        tint = NeonEmerald,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(NeonEmerald)
-                                    )
-                                }
-                            }
-                        } else {
-                            IconButton(onClick = { showSafetyCodeDialog = true }) {
-                                Icon(
-                                    Icons.Default.VerifiedUser,
-                                    contentDescription = "Safety Code",
-                                    tint = if (isPeerVerified) NeonEmerald else StealthTextSecondary
-                                )
-                            }
-                        }
-                        IconButton(onClick = { showSettingsDialog = true }) {
-                            Icon(Icons.Default.Security, contentDescription = "Settings", tint = StealthTextPrimary)
-                        }
-                        IconButton(
-                            onClick = { triggerEmergencyPanicWipe() },
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(AlertCrimson.copy(alpha = 0.2f))
-                        ) {
-                            Icon(Icons.Default.DeleteForever, contentDescription = "Panic Wipe", tint = AlertCrimson)
-                        }
+                    onNavigateSettings = {
+                        currentNavScreen = AppNavScreen.SETTINGS
+                        scope.launch { drawerState.close() }
+                    },
+                    onCopyDropId = {
+                        myPgpKeys?.dropId?.let { copyToClipboard("Drop ID", it) }
+                    },
+                    onCopyFingerprint = {
+                        myPgpKeys?.fingerprint?.let { copyToClipboard("PGP Fingerprint", it) }
+                    },
+                    onEmergencyPanic = {
+                        triggerEmergencyPanicWipe()
                     }
                 )
-            },
-            containerColor = StealthBackground
-        ) { innerPadding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                if (relayStatus.value != RelayStatus.CONNECTED) {
-                    RelayStatusBanner(relayStatus.value)
-                }
-
-                if (!keyBarCollapsed || recipientArmoredKey.isBlank()) {
-                    KeyBar(
-                        myPgpKeys = myPgpKeys,
-                        recipientArmoredKey = recipientArmoredKey,
-                        recipientFingerprint = recipientFingerprint,
-                        onOpenMyKey = { showMyKeyDialog = true },
-                        onCopyMyKey = { myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) } },
-                        onNewKey = { showNewIdentityConfirm = true },
-                        onHideKeyBar = {
-                            keyBarCollapsed = true
-                            saveKeyBarPref()
+            }
+        ) {
+            when (currentNavScreen) {
+                AppNavScreen.CHATS_LIST -> {
+                    ChatsListScreen(
+                        chats = computeChatSummaries(),
+                        relayStatus = relayStatus.value,
+                        onOpenDrawer = { scope.launch { drawerState.open() } },
+                        onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS },
+                        onSelectChat = { summary ->
+                            activeChatContact = contacts.find { it.dropId == summary.chatId }
+                            activeChatGroup = groups.find { it.id == summary.chatId }
+                            currentNavScreen = AppNavScreen.CHAT_VIEW
                         },
-                        onOpenPeerKey = { showPeerKeyDialog = true }
+                        onNewDirectChat = { showAddDirectChatDialog = true },
+                        onNewGroupChat = { showCreateGroupDialog = true }
                     )
                 }
+                AppNavScreen.CHAT_VIEW -> {
+                    val title = activeChatGroup?.name ?: activeChatContact?.alias ?: "Encrypted Chat"
+                    val subtitle = if (activeChatGroup != null) {
+                        "${activeChatGroup?.members?.size ?: 1} members · AES-256 E2EE"
+                    } else {
+                        "Peer ${(activeChatContact?.fingerprint ?: "").take(8)} · E2EE PGP"
+                    }
+                    val activeChatId = activeChatGroup?.id ?: activeChatContact?.dropId ?: ""
+                    val chatMessages = messagesState.filter { it.chatId == activeChatId || (activeChatId.isBlank() && it.chatId.isBlank()) }
 
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (messagesState.isEmpty()) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 40.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(
-                                            Icons.Default.Lock,
-                                            contentDescription = null,
-                                            tint = StealthTextSecondary,
-                                            modifier = Modifier.size(36.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            "No messages in RAM memory.",
-                                            color = StealthTextSecondary,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.sp
-                                        )
-                                        Text(
-                                            "Messages are kept in memory only and are gone when the app closes.",
-                                            color = StealthTextSecondary.copy(alpha = 0.6f),
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.sp
-                                        )
-                                    }
-                                }
+                    CleanChatScreen(
+                        chatTitle = title,
+                        chatSubtitle = subtitle,
+                        isGroup = activeChatGroup != null,
+                        messages = chatMessages,
+                        playbackState = playbackState,
+                        relayStatus = relayStatus.value,
+                        isRecordingAudio = isRecordingAudio,
+                        recordElapsedMs = recordElapsedMs,
+                        onBack = { currentNavScreen = AppNavScreen.CHATS_LIST },
+                        onSendMessage = { text ->
+                            sendMessageToActiveChat(text)
+                        },
+                        onSendMedia = { uri ->
+                            sendMediaToActiveChat(uri)
+                        },
+                        onMicClick = { onMicClicked() },
+                        onStopRecording = { onStopAudioRecording() },
+                        onCancelRecording = { onCancelAudioRecording() },
+                        onAudioPlayPause = { msg ->
+                            if (playbackState.activeMessageId == msg.id && playbackState.isPlaying) {
+                                audioPlayerManager.pause()
+                            } else if (msg.audioBytes != null) {
+                                audioPlayerManager.play(msg.id, msg.audioBytes)
                             }
-                        }
-
-                        items(messagesState, key = { it.id }) { msg ->
-                            MessageBubble(
-                                message = msg,
-                                playbackState = playbackState,
-                                onToggleArmor = {
-                                    val idx = messagesState.indexOfFirst { it.id == msg.id }
-                                    if (idx != -1) {
-                                        messagesState[idx] = messagesState[idx].copy(
-                                            showRawArmor = !messagesState[idx].showRawArmor
-                                        )
-                                    }
-                                },
-                                onManualDecrypt = { decryptMessage(msg) },
-                                onAudioPlayPause = { targetMsg ->
-                                    targetMsg.audioBytes?.let { bytes ->
-                                        audioPlayerManager.play(targetMsg.id, bytes)
-                                    }
-                                },
-                                onAudioSeek = { targetMsg, fraction ->
-                                    audioPlayerManager.seekTo(targetMsg.id, fraction)
-                                }
-                            )
-                        }
-                    }
-
-                    if (showNewMessagesChip) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 10.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(NeonEmerald)
-                            .clickable {
-                                showNewMessagesChip = false
-                                scope.launch {
-                                    if (messagesState.isNotEmpty()) listState.animateScrollToItem(messagesState.size - 1)
-                                }
+                        },
+                        onAudioSeek = { msg, frac ->
+                            if (playbackState.activeMessageId == msg.id) {
+                                audioPlayerManager.seekToFraction(frac)
                             }
-                            .padding(horizontal = 14.dp, vertical = 7.dp)
-                    ) {
-                        Text(
-                            "New messages ↓",
-                            color = Color(0xFF002914),
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
-                        )
-                    }
+                        },
+                        onOpenSafetyCode = { showSafetyCodeDialog = true },
+                        onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS }
+                    )
                 }
+                AppNavScreen.SETTINGS -> {
+                    SettingsScreen(
+                        initialRelayUrl = relayServerUrl,
+                        initialUseTorSocks = useTorSocks,
+                        initialKeepAlive = keepAlive,
+                        initialEphemeralMode = ephemeralMode,
+                        initialLockEnabled = lockEnabled,
+                        userAlias = userAlias,
+                        myPgpKeys = myPgpKeys,
+                        onBack = { currentNavScreen = AppNavScreen.CHATS_LIST },
+                        onSaveSettings = { url, tor, keep, eph, lock, alias ->
+                            saveAllSettings(url, tor, keep, eph, lock, alias)
+                        },
+                        onGenerateNewKey = { showNewIdentityConfirm = true },
+                        onCopyKey = { myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) } },
+                        onVerifySafetyCode = { showSafetyCodeDialog = true }
+                    )
                 }
-
-                if (isRecordingAudio) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(StealthSurface)
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = {
-                                audioRecorderManager.cancelRecording()
-                                isRecordingAudio = false
-                                recordElapsedMs = 0L
-                            },
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(AlertCrimson.copy(alpha = 0.2f))
-                        ) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Cancel Recording",
-                                tint = AlertCrimson
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(AlertCrimson)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "REC",
-                                color = AlertCrimson,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            val totalSec = recordElapsedMs / 1000
-                            val mm = totalSec / 60
-                            val ss = totalSec % 60
-                            Text(
-                                text = String.format(Locale.US, "%02d:%02d", mm, ss),
-                                color = StealthTextPrimary,
-                                fontSize = 13.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "• OPUS (RAM-ONLY)",
-                                color = StealthTextSecondary,
-                                fontSize = 9.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        IconButton(
-                            onClick = {
-                                isRecordingAudio = false
-                                val result = audioRecorderManager.stopRecording()
-                                if (result != null) {
-                                    sendAudioRecordResult(result)
-                                } else {
-                                    Toast.makeText(this@MainActivity, "Recording too short", Toast.LENGTH_SHORT).show()
-                                }
-                                recordElapsedMs = 0L
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(NeonEmerald)
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send Voice Note",
-                                tint = Color(0xFF002914)
-                            )
-                        }
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(StealthSurface)
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = { filePicker.launch("*/*") },
-                            modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(StealthSurfaceVariant)
-                        ) {
-                            Icon(
-                                Icons.Default.AttachFile,
-                                contentDescription = "Attach File",
-                                tint = NeonEmerald
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(6.dp))
-
-                        TextField(
-                            value = inputText,
-                            onValueChange = { inputText = it },
-                            placeholder = {
-                                Text(
-                                    if (recipientArmoredKey.isBlank()) "Paste peer key above first..." else "Type secret message...",
-                                    color = StealthTextSecondary,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 13.sp
-                                )
-                            },
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = StealthSurfaceVariant,
-                                unfocusedContainerColor = StealthSurfaceVariant,
-                                focusedTextColor = StealthTextPrimary,
-                                unfocusedTextColor = StealthTextPrimary,
-                                cursorColor = NeonEmerald,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp)),
-                            maxLines = 4
-                        )
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        if (inputText.isNotBlank()) {
-                            IconButton(
-                                onClick = {
-                                    if (recipientArmoredKey.isBlank()) {
-                                        showPeerKeyDialog = true
-                                        Toast.makeText(this@MainActivity, "Please set recipient key first", Toast.LENGTH_SHORT).show()
-                                        return@IconButton
-                                    }
-                                    val txt = inputText
-                                    inputText = ""
-                                    sendMessage(txt)
-                                },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(CircleShape)
-                                    .background(NeonEmerald)
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.Send,
-                                    contentDescription = "Send Encrypted",
-                                    tint = Color(0xFF002914)
-                                )
-                            }
-                        } else {
-                            IconButton(
-                                onClick = { onMicClicked() },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .clip(CircleShape)
-                                    .background(NeonEmerald.copy(alpha = 0.2f))
-                                    .border(1.dp, NeonEmerald, CircleShape)
-                            ) {
-                                Icon(
-                                    Icons.Default.Mic,
-                                    contentDescription = "Record Voice Note",
-                                    tint = NeonEmerald
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (showKeySheet) {
-                KeyBottomSheet(
-                    recipientFingerprint = recipientFingerprint,
-                    onDismiss = { showKeySheet = false },
-                    onCopyMyKey = {
-                        myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) }
-                        showKeySheet = false
-                    },
-                    onEditPeerKey = {
-                        showKeySheet = false
-                        showPeerKeyDialog = true
-                    },
-                    onOpenSafetyCode = {
-                        showKeySheet = false
-                        showSafetyCodeDialog = true
-                    },
-                    onNewIdentity = {
-                        showKeySheet = false
-                        showNewIdentityConfirm = true
-                    },
-                    onBurnIdentity = {
-                        showKeySheet = false
-                        showBurnConfirm = true
-                    }
-                )
-            }
-
-            if (showNewIdentityConfirm) {
-                NewIdentityConfirmDialog(
-                    onDismiss = { showNewIdentityConfirm = false },
-                    onConfirm = {
-                        showNewIdentityConfirm = false
-                        generateFreshKeys()
-                    }
-                )
-            }
-
-            if (showBurnConfirm) {
-                BurnConfirmDialog(
-                    onDismiss = { showBurnConfirm = false },
-                    onConfirm = { triggerEmergencyPanicWipe() }
-                )
-            }
-
-            if (showMyKeyDialog && myPgpKeys != null) {
-                MyKeyDialog(
-                    myPgpKeys = myPgpKeys!!,
-                    onDismiss = { showMyKeyDialog = false },
-                    onCopyKey = {
-                        myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) }
-                        showMyKeyDialog = false
-                    }
-                )
-            }
-
-            if (showPeerKeyDialog) {
-                PeerKeyDialog(
-                    initialKeyText = recipientArmoredKey,
-                    onDismiss = { showPeerKeyDialog = false },
-                    onSaveKey = { keyText ->
-                        try {
-                            val info = StandalonePgpEngine.parsePeerKey(keyText)
-                            recipientArmoredKey = info.publicKeyArmored
-                            recipientFingerprint = info.fingerprint
-                            recipientDropId = info.dropId ?: ""
-                            isPeerVerified = false
-                            keyBarCollapsed = true
-                            saveKeyBarPref()
-                            persistIdentity()
-                            showPeerKeyDialog = false
-                            val note = if (info.dropId == null) " (no Drop-ID found in this key)" else ""
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Key saved. Fingerprint: ${info.fingerprint.take(12)}...$note",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } catch (e: Exception) {
-                            Toast.makeText(this@MainActivity, "Invalid PGP Key: ${e.message}", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                )
-            }
-
-            if (showSettingsDialog) {
-                SettingsDialog(
-                    initialRelayUrl = relayServerUrl,
-                    initialUseTorSocks = useTorSocks,
-                    initialKeepAlive = keepAlive,
-                    initialEphemeralMode = ephemeralMode,
-                    initialLockEnabled = lockEnabled,
-                    onDismiss = { showSettingsDialog = false },
-                    onSave = { newUrl, newTor, newKeepAlive, newEphemeral, newLock ->
-                        showSettingsDialog = false
-                        var cleanUrl = newUrl.trim().trimEnd('/')
-                        if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
-                            cleanUrl = "http://$cleanUrl"
-                        }
-                        relayServerUrl = cleanUrl
-                        useTorSocks = newTor
-                        updateKeepAlive(newKeepAlive)
-                        updateEphemeralMode(newEphemeral)
-                        updateLockEnabled(newLock)
-
-                        val p = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
-                        val editor = p.edit()
-                        if (!newEphemeral) {
-                            editor.putString("relay_url", relayServerUrl)
-                        } else {
-                            editor.remove("relay_url")
-                        }
-                        editor.putBoolean("use_tor", useTorSocks).apply()
-                        applyNetworkConfig()
-                        myPgpKeys?.let { connectToRelayMailbox(it) }
-                    }
-                )
-            }
-
-            if (showSafetyCodeDialog) {
-                val safetyNumber = if (myPgpKeys != null && recipientFingerprint.isNotBlank()) {
-                    StandalonePgpEngine.generateSafetyCode(myPgpKeys!!.fingerprint, recipientFingerprint)
-                } else {
-                    "PLEASE PASTE PEER KEY FIRST"
-                }
-                SafetyCodeDialog(
-                    safetyNumber = safetyNumber,
-                    recipientFingerprint = recipientFingerprint,
-                    isPeerVerified = isPeerVerified,
-                    onVerificationChanged = { isPeerVerified = it },
-                    onDismiss = { showSafetyCodeDialog = false }
-                )
             }
         }
-    }
 
-    private fun relayBadgeLabel(status: RelayStatus): String {
-        val arti = artiState
-        if (arti is ArtiTorState.Starting) {
-            return if (arti.progress > 0) "ARTI: ${arti.progress}%" else "ARTI: BOOTING"
+        if (showAddDirectChatDialog) {
+            AddDirectChatDialog(
+                onDismiss = { showAddDirectChatDialog = false },
+                onAddContact = { contact ->
+                    showAddDirectChatDialog = false
+                    if (!contacts.any { it.dropId == contact.dropId }) {
+                        contacts.add(contact)
+                        persistIdentity()
+                    }
+                    activeChatContact = contact
+                    activeChatGroup = null
+                    currentNavScreen = AppNavScreen.CHAT_VIEW
+                }
+            )
         }
-        return when (status) {
-            RelayStatus.CONNECTED -> if (ArtiTorManager.isAvailable) "ARTI: LIVE" else "RELAY: LIVE"
-            RelayStatus.BUILDING_CIRCUIT -> "TOR: CONNECTING"
-            RelayStatus.ORBOT_NOT_RUNNING -> if (ArtiTorManager.isAvailable) "ARTI: IDLE" else "NO ORBOT"
-            RelayStatus.TIMED_OUT -> "TIMED OUT"
-            RelayStatus.AUTH_FAILED -> "AUTH FAILED"
-            RelayStatus.DISCONNECTED -> "RELAY: OFF"
+
+        if (showCreateGroupDialog) {
+            CreateGroupDialog(
+                contacts = contacts.toList(),
+                onDismiss = { showCreateGroupDialog = false },
+                onCreateGroup = { group ->
+                    showCreateGroupDialog = false
+                    groups.add(group)
+                    torClient.addSubscription(group.groupDropId, group.groupReadToken)
+                    persistIdentity()
+                    inviteMembersToGroup(group)
+                    activeChatGroup = group
+                    activeChatContact = null
+                    currentNavScreen = AppNavScreen.CHAT_VIEW
+                }
+            )
+        }
+
+        if (showSafetyCodeDialog) {
+            val myFp = myPgpKeys?.fingerprint ?: ""
+            val peerFp = activeChatContact?.fingerprint ?: recipientFingerprint
+            SafetyCodeDialog(
+                safetyNumber = if (myPgpKeys != null && peerFp.isNotBlank()) {
+                    StandalonePgpEngine.generateSafetyCode(myPgpKeys!!.fingerprint, peerFp)
+                } else {
+                    "NO PEER SELECTED"
+                },
+                recipientFingerprint = peerFp,
+                isPeerVerified = false,
+                onVerificationChanged = {},
+                onDismiss = { showSafetyCodeDialog = false }
+            )
+        }
+
+        if (showNewIdentityConfirm) {
+            NewIdentityConfirmDialog(
+                onDismiss = { showNewIdentityConfirm = false },
+                onConfirm = {
+                    showNewIdentityConfirm = false
+                    generateFreshKeys()
+                }
+            )
         }
     }
 }

@@ -1,34 +1,67 @@
 package com.ghostkey.app.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-val StealthBackground = Color(0xFF090C0E)
-val StealthSurface = Color(0xFF13181D)
-val StealthSurfaceVariant = Color(0xFF1A2229)
-val NeonEmerald = Color(0xFF00FF9D)
-val NeonCyan = Color(0xFF00E5FF)
-val AlertCrimson = Color(0xFFFF3366)
-val WarningAmber = Color(0xFFFFB800)
-val StealthTextPrimary = Color(0xFFE6EDF3)
-val StealthTextSecondary = Color(0xFF8B949E)
-val StealthBorder = Color(0xFF30363D)
+/**
+ * Anthropic Official Palette Tokens (Brand Design Tokens)
+ *
+ * Grounded in warm paper (parchment/cream) and warm obsidian (Anthropic Near Black),
+ * paired with Anthropic's signature terracotta accent and earthy sage.
+ */
+
+// Dark Canvas & Warm Charcoal
+val AnthropicDarkBg = Color(0xFF141413)         // Anthropic Near Black (#141413)
+val AnthropicSurface = Color(0xFF1E1C1A)        // Card / TopBar Surface (#1E1C1A)
+val AnthropicSurfaceVariant = Color(0xFF262421) // Group / Bubble / List item container (#262421)
+val AnthropicBorder = Color(0xFF363632)         // Soft warm border (#363632)
+val AnthropicBorderSubtle = Color(0xFF2B2B27)   // Very subtle separator (#2B2B27)
+
+// Anthropic Terracotta & Functional Accents
+val AnthropicTerracotta = Color(0xFFD97757)     // Primary Action & Accent (#D97757)
+val AnthropicTerracottaDark = Color(0xFFC96442) // Pressed / Dark Terracotta (#C96442)
+val AnthropicSage = Color(0xFF788C5D)           // Earthy Green: Tor / Verified status (#788C5D)
+val AnthropicSlate = Color(0xFF6A9BCC)          // Secondary Slate Blue (#6A9BCC)
+val AnthropicCrimson = Color(0xFFC84B4B)        // Muted Crimson: Panic wipe / Errors (#C84B4B)
+
+// Anthropic Cream Typography & Neutrals
+val AnthropicCream = Color(0xFFFAF9F5)          // Paper Cream (Primary Text, #FAF9F5)
+val AnthropicParchment = Color(0xFFF5F4ED)      // Soft Parchment (#F5F4ED)
+val AnthropicTextMuted = Color(0xFF87867F)      // Secondary Text / Timestamps (#87867F)
+val AnthropicTextMid = Color(0xFFB0AEA5)        // Mid Neutral (#B0AEA5)
+val AnthropicDarkNeutral = Color(0xFF3D3D3A)    // Inactive elements (#3D3D3A)
+
+// Telegram-Style Chat Bubbles (Anthropic Warm Tone)
+val AnthropicBubbleIncoming = Color(0xFF242220) // Deep warm charcoal
+val AnthropicBubbleOutgoing = Color(0xFF382A22) // Terracotta-tinted warm espresso
+
+// Backward-compatibility aliases mapped to Anthropic warm tokens
+val StealthBackground = AnthropicDarkBg
+val StealthSurface = AnthropicSurface
+val StealthSurfaceVariant = AnthropicSurfaceVariant
+val NeonEmerald = AnthropicTerracotta
+val NeonCyan = AnthropicSlate
+val AlertCrimson = AnthropicCrimson
+val WarningAmber = AnthropicTerracotta
+val StealthTextPrimary = AnthropicCream
+val StealthTextSecondary = AnthropicTextMuted
+val StealthBorder = AnthropicBorder
 
 private val DarkColorScheme = darkColorScheme(
-    primary = NeonEmerald,
-    secondary = NeonCyan,
-    background = StealthBackground,
-    surface = StealthSurface,
-    surfaceVariant = StealthSurfaceVariant,
-    error = AlertCrimson,
-    onPrimary = Color(0xFF002914),
-    onSecondary = Color(0xFF002B33),
-    onBackground = StealthTextPrimary,
-    onSurface = StealthTextPrimary,
-    onError = Color.White
+    primary = AnthropicTerracotta,
+    secondary = AnthropicSlate,
+    tertiary = AnthropicSage,
+    background = AnthropicDarkBg,
+    surface = AnthropicSurface,
+    surfaceVariant = AnthropicSurfaceVariant,
+    error = AnthropicCrimson,
+    onPrimary = Color(0xFF1E1C1A),
+    onSecondary = Color(0xFF141413),
+    onBackground = AnthropicCream,
+    onSurface = AnthropicCream,
+    onError = AnthropicCream
 )
 
 @Composable
