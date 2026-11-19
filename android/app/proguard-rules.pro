@@ -7,3 +7,9 @@
 # Standard Kotlin & Coroutines reflection metadata
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 -dontwarn java.lang.invoke.**
+
+# Preserve JNI native bindings for embedded Arti Tor Engine
+-keepclassmembers class * {
+    native <methods>;
+}
+-keep class com.ghostkey.app.net.ArtiTorManager { *; }

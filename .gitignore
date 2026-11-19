@@ -19,6 +19,11 @@ Thumbs.db
 # Web client build output
 web-client/dist/
 
+# Rust
+target/
+**/target/
+Cargo.lock
+
 # Patches & temporary work directories
 *.patch
 relay-v2-files/

@@ -54,6 +54,8 @@ import com.ghostkey.app.data.ChatMessage
 import com.ghostkey.app.data.PeerIdentity
 import com.ghostkey.app.data.SecureStore
 import com.ghostkey.app.data.StoredIdentity
+import com.ghostkey.app.net.ArtiTorManager
+import com.ghostkey.app.net.ArtiTorState
 import com.ghostkey.app.net.EncryptedMessageRecord
 import com.ghostkey.app.net.OrbotPortWatcher
 import com.ghostkey.app.net.RelayHttpException
@@ -122,6 +124,9 @@ class MainActivity : ComponentActivity() {
     private var isRecordingAudio by mutableStateOf(false)
     private var recordElapsedMs by mutableStateOf(0L)
 
+    // Embedded Arti Tor Engine (Rust) State
+    private var artiState by mutableStateOf<ArtiTorState>(ArtiTorState.Idle)
+
     private val unlockLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -160,8 +165,8 @@ class MainActivity : ComponentActivity() {
             bootstrapIdentity()
         }
 
-        // Listen for the SOCKS port Orbot reports, if it does
-        orbotWatcher = OrbotPortWatcher(this) { port -> runOnUiThread { onOrbotPort(port) } }.also { it.start() }
+        // Initialize Embedded Arti Tor (Rust engine) or fallback to external Orbot
+        initTorNetworkEngine()
         if (keepAlive) TorForegroundService.start(this)
 
         setContent {
@@ -177,6 +182,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        ArtiTorManager.stop()
         audioRecorderManager.cancelRecording()
         audioPlayerManager.stop()
         orbotWatcher?.stop()
@@ -184,8 +190,44 @@ class MainActivity : ComponentActivity() {
         if (isFinishing) TorForegroundService.stop(this)
     }
 
+    private fun initTorNetworkEngine() {
+        if (ArtiTorManager.isAvailable) {
+            CoroutineScope(Dispatchers.Main).launch {
+                ArtiTorManager.state.collect { state ->
+                    artiState = state
+                    when (state) {
+                        is ArtiTorState.Starting -> {
+                            relayStatus.value = RelayStatus.BUILDING_CIRCUIT
+                        }
+                        is ArtiTorState.Connected -> {
+                            onOrbotPort(state.socksPort)
+                        }
+                        is ArtiTorState.Error -> {
+                            startOrbotWatcher()
+                        }
+                        is ArtiTorState.Idle -> {}
+                    }
+                }
+            }
+            if (useTorSocks || relayServerUrl.contains(".onion")) {
+                ArtiTorManager.start(applicationContext)
+            }
+        } else {
+            startOrbotWatcher()
+        }
+    }
+
+    private fun startOrbotWatcher() {
+        if (orbotWatcher == null) {
+            orbotWatcher = OrbotPortWatcher(this) { port -> runOnUiThread { onOrbotPort(port) } }.also { it.start() }
+        }
+    }
+
     private fun applyNetworkConfig() {
         torClient.updateConfig(relayServerUrl, useTorSocks, socksPort = orbotSocksPort)
+        if ((useTorSocks || relayServerUrl.contains(".onion")) && ArtiTorManager.isAvailable) {
+            ArtiTorManager.start(applicationContext)
+        }
     }
 
     private fun onOrbotPort(port: Int) {
@@ -636,6 +678,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun triggerEmergencyPanicWipe() {
+        ArtiTorManager.stop()
         audioPlayerManager.wipe()
         audioRecorderManager.cancelRecording()
         StandalonePgpEngine.clearCache()
@@ -1280,12 +1323,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun relayBadgeLabel(status: RelayStatus): String = when (status) {
-        RelayStatus.CONNECTED -> "RELAY: LIVE"
-        RelayStatus.BUILDING_CIRCUIT -> "TOR: CONNECTING"
-        RelayStatus.ORBOT_NOT_RUNNING -> "NO ORBOT"
-        RelayStatus.TIMED_OUT -> "TIMED OUT"
-        RelayStatus.AUTH_FAILED -> "AUTH FAILED"
-        RelayStatus.DISCONNECTED -> "RELAY: OFF"
+    private fun relayBadgeLabel(status: RelayStatus): String {
+        val arti = artiState
+        if (arti is ArtiTorState.Starting) {
+            return if (arti.progress > 0) "ARTI: ${arti.progress}%" else "ARTI: BOOTING"
+        }
+        return when (status) {
+            RelayStatus.CONNECTED -> if (ArtiTorManager.isAvailable) "ARTI: LIVE" else "RELAY: LIVE"
+            RelayStatus.BUILDING_CIRCUIT -> "TOR: CONNECTING"
+            RelayStatus.ORBOT_NOT_RUNNING -> if (ArtiTorManager.isAvailable) "ARTI: IDLE" else "NO ORBOT"
+            RelayStatus.TIMED_OUT -> "TIMED OUT"
+            RelayStatus.AUTH_FAILED -> "AUTH FAILED"
+            RelayStatus.DISCONNECTED -> "RELAY: OFF"
+        }
     }
 }
