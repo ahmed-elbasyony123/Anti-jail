@@ -35,6 +35,7 @@ fun TelegramDrawer(
     onNavigateSettings: () -> Unit,
     onCopyDropId: () -> Unit,
     onCopyFingerprint: () -> Unit,
+    onCopyPublicKey: () -> Unit = {},
     onEmergencyPanic: () -> Unit
 ) {
     ModalDrawerSheet(
@@ -148,6 +149,28 @@ fun TelegramDrawer(
                         Icons.Default.VpnKey,
                         contentDescription = "Copy Fingerprint",
                         tint = AnthropicSage,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+
+                // Copy Full Public Key row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clickable { onCopyPublicKey() }
+                        .padding(vertical = 2.dp)
+                ) {
+                    Text(
+                        text = if (myPgpKeys != null) "Copy Full Public Key" else "Key: Not ready",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AnthropicTextLight
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(
+                        Icons.Default.Key,
+                        contentDescription = "Copy Full Public Key",
+                        tint = AnthropicBlue,
                         modifier = Modifier.size(13.dp)
                     )
                 }

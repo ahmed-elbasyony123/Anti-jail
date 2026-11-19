@@ -95,7 +95,7 @@ class MainActivity : ComponentActivity() {
     private var isGeneratingKey by mutableStateOf(false)
 
     // Configuration state
-    private var relayServerUrl by mutableStateOf("http://10.0.2.2:8765")
+    private var relayServerUrl by mutableStateOf("http://68.210.150.165:8765")
     private var useTorSocks by mutableStateOf(false)
     private var keepAlive by mutableStateOf(false)
     private var orbotSocksPort = OrbotPortWatcher.DEFAULT_SOCKS_PORT
@@ -109,6 +109,7 @@ class MainActivity : ComponentActivity() {
     private var isLocked by mutableStateOf(false)
     private val maxAttachmentBytes = 15 * 1024 * 1024
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
+    private val sentCiphertexts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     // Encrypted PTT Audio Voice Notes (Opus in RAM)
     private lateinit var audioRecorderManager: AudioRecorderManager
@@ -152,7 +153,7 @@ class MainActivity : ComponentActivity() {
 
         // Load network config preferences
         val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
-        relayServerUrl = prefs.getString("relay_url", "http://10.0.2.2:8765") ?: "http://10.0.2.2:8765"
+        relayServerUrl = prefs.getString("relay_url", "http://68.210.150.165:8765") ?: "http://68.210.150.165:8765"
         useTorSocks = prefs.getBoolean("use_tor", true)
         keepAlive = prefs.getBoolean("keep_alive", true)
         orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
@@ -434,6 +435,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncoming(record: EncryptedMessageRecord) {
+        if (sentCiphertexts.contains(record.ciphertext)) {
+            // Echo of our own outgoing message on shared groupDropId
+            torClient.ack(listOf(record.id), dropId = record.dropId)
+            return
+        }
         val existing = messagesState.firstOrNull { it.id == record.id }
         if (existing != null) {
             if (existing.isDecrypted) torClient.ack(listOf(existing.id), dropId = record.dropId)
@@ -627,12 +633,62 @@ class MainActivity : ComponentActivity() {
                 try {
                     val plainBytes = GroupCrypto.decrypt(msg.ciphertext, group.sharedKeyBase64)
                     val wire = WireFormat.parse(plainBytes)
+
+                    var isMedia = false
+                    var isAudio = false
+                    var mimeType = ""
+                    var filename = ""
+                    var previewBitmap: ImageBitmap? = null
+                    var audioBytes: ByteArray? = null
+                    var audioDurationMs = 0L
+                    var displayText: String? = null
+
+                    if (wire != null && wire.isMedia) {
+                        isMedia = true
+                        mimeType = wire.mimeType ?: ""
+                        filename = wire.filename ?: ""
+                        if (mimeType.startsWith("image/")) {
+                            try {
+                                val mediaBytes = WireFormat.decodeMediaData(wire)
+                                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                BitmapFactory.decodeByteArray(mediaBytes, 0, mediaBytes.size, bounds)
+                                val options = BitmapFactory.Options().apply {
+                                    inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, MAX_BUBBLE_IMAGE_EDGE)
+                                }
+                                BitmapFactory.decodeByteArray(mediaBytes, 0, mediaBytes.size, options)?.let {
+                                    previewBitmap = it.asImageBitmap()
+                                }
+                            } catch (_: Throwable) {}
+                        } else if (mimeType.startsWith("audio/")) {
+                            isAudio = true
+                            try {
+                                val rawBytes = WireFormat.decodeMediaData(wire)
+                                audioBytes = rawBytes
+                                val retriever = MediaMetadataRetriever()
+                                val ds = MemoryAudioDataSource(rawBytes)
+                                retriever.setDataSource(ds)
+                                val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                audioDurationMs = durStr?.toLongOrNull() ?: 0L
+                                retriever.release()
+                            } catch (_: Throwable) {}
+                        }
+                    } else {
+                        displayText = wire?.text ?: String(plainBytes, Charsets.UTF_8)
+                    }
+
                     runOnUiThread {
                         val index = messagesState.indexOfFirst { it.id == msg.id }
                         if (index != -1) {
                             messagesState[index] = messagesState[index].copy(
-                                plaintext = wire?.text ?: String(plainBytes, Charsets.UTF_8),
+                                plaintext = displayText,
                                 isDecrypted = true,
+                                isMedia = isMedia,
+                                isAudio = isAudio,
+                                mimeType = mimeType,
+                                filename = filename,
+                                mediaBitmap = previewBitmap,
+                                audioBytes = audioBytes,
+                                audioDurationMs = audioDurationMs,
                                 chatId = group.id,
                                 groupId = group.id,
                                 isGroup = true,
@@ -640,6 +696,15 @@ class MainActivity : ComponentActivity() {
                             )
                             torClient.ack(listOf(msg.id), dropId = group.groupDropId)
                         }
+                    }
+
+                    if (!isForeground) {
+                        PushNotificationManager.postMessageNotification(
+                            context = this@MainActivity,
+                            isAudio = isAudio,
+                            hasMedia = isMedia,
+                            previewText = if (!isAudio && !isMedia) displayText else null
+                        )
                     }
                 } catch (_: Exception) {}
             }
@@ -649,8 +714,9 @@ class MainActivity : ComponentActivity() {
         // Direct 1-to-1 PGP message
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                val peerKey = recipientArmoredKey.ifBlank { null }
-                val result = StandalonePgpEngine.decrypt(msg.ciphertext, keys.privateKeyArmored, peerKey)
+                val candidateKeys = (contacts.mapNotNull { it.publicKeyArmored.ifBlank { null } } +
+                    listOfNotNull(recipientArmoredKey.ifBlank { null })).distinct()
+                val result = StandalonePgpEngine.decryptMulti(msg.ciphertext, keys.privateKeyArmored, candidateKeys)
                 val wire = WireFormat.parse(result.bytes)
 
                 // Handle Group Invites
@@ -830,7 +896,11 @@ class MainActivity : ComponentActivity() {
     ) {
         var cleanUrl = newUrl.trim().trimEnd('/')
         if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
-            cleanUrl = "http://$cleanUrl"
+            cleanUrl = if (cleanUrl.contains(".onion", ignoreCase = true) || cleanUrl.startsWith("127.0.0.1") || cleanUrl.startsWith("localhost") || cleanUrl.startsWith("10.0.2.2")) {
+                "http://$cleanUrl"
+            } else {
+                "https://$cleanUrl"
+            }
         }
         relayServerUrl = cleanUrl
         useTorSocks = newTor
@@ -920,6 +990,7 @@ class MainActivity : ComponentActivity() {
     private fun sendGroupTextMessage(group: GroupChat, text: String) {
         val payload = WireFormat.buildText(text, senderAlias = userAlias, groupId = group.id)
         val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+        sentCiphertexts.add(ciphertext)
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val res = torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
@@ -960,6 +1031,7 @@ class MainActivity : ComponentActivity() {
         val isAudio = mimeType.startsWith("audio/")
         val payload = WireFormat.buildMedia(mimeType, filename, rawBytes, senderAlias = userAlias, groupId = group.id)
         val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+        sentCiphertexts.add(ciphertext)
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val res = torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
@@ -1044,6 +1116,7 @@ class MainActivity : ComponentActivity() {
         if (group != null) {
             val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes, senderAlias = userAlias, groupId = group.id)
             val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+            sentCiphertexts.add(ciphertext)
             CoroutineScope(Dispatchers.Default).launch {
                 torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
                 runOnUiThread {
@@ -1126,6 +1199,9 @@ class MainActivity : ComponentActivity() {
                     onCopyFingerprint = {
                         myPgpKeys?.fingerprint?.let { copyToClipboard("PGP Fingerprint", it) }
                     },
+                    onCopyPublicKey = {
+                        myPgpKeys?.publicKeyArmored?.let { copyToClipboard("Armored Public Key", it) }
+                    },
                     onEmergencyPanic = {
                         triggerEmergencyPanicWipe()
                     }
@@ -1184,6 +1260,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onAudioSeek = { msg, frac ->
                             audioPlayerManager.seekTo(msg.id, frac)
+                        },
+                        onManualDecrypt = { msg ->
+                            decryptMessage(msg, msg.chatId.ifBlank { recipientDropId })
                         },
                         onOpenSafetyCode = { showSafetyCodeDialog = true },
                         onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS }

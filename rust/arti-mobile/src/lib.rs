@@ -16,7 +16,7 @@ use tor_rtcompat::PreferredRuntime;
 static BOOTSTRAP_PERCENT: AtomicI32 = AtomicI32::new(0);
 static SOCKS_PORT: AtomicU16 = AtomicU16::new(0);
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
-static mut SHUTDOWN_TX: Option<oneshot::Sender<()>> = None;
+static SHUTDOWN_TX: std::sync::Mutex<Option<oneshot::Sender<()>>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "android")]
 fn init_logging() {
@@ -153,7 +153,7 @@ async fn run_arti_daemon(
     let tor_client: Arc<TorClient<PreferredRuntime>> = match TorClient::builder()
         .config(config)
         .create_unbootstrapped() {
-        Ok(tc) => Arc::new(tc),
+        Ok(tc) => tc,
         Err(e) => {
             log::error!("Arti TorClient create_unbootstrapped error: {}", e);
             IS_RUNNING.store(false, Ordering::Relaxed);
@@ -237,8 +237,8 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
     let (port_tx, port_rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-    unsafe {
-        SHUTDOWN_TX = Some(shutdown_tx);
+    if let Ok(mut lock) = SHUTDOWN_TX.lock() {
+        *lock = Some(shutdown_tx);
     }
 
     std::thread::spawn(move || {
@@ -280,8 +280,8 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_stopNative(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    unsafe {
-        if let Some(tx) = SHUTDOWN_TX.take() {
+    if let Ok(mut lock) = SHUTDOWN_TX.lock() {
+        if let Some(tx) = lock.take() {
             let _ = tx.send(());
         }
     }

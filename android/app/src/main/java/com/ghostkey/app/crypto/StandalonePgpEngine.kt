@@ -512,10 +512,141 @@ object StandalonePgpEngine {
         val ops = onePass
         if (sig != null || ops != null) {
             status = SignatureStatus.INVALID_SIGNATURE
-            if (sig != null && ops != null && peerPublicKeyArmored != null) {
+            val candidateKeys = listOfNotNull(peerPublicKeyArmored?.ifBlank { null })
+            if (sig != null && ops != null && candidateKeys.isNotEmpty()) {
+                for (candArmored in candidateKeys) {
+                    try {
+                        var peerRing: PGPPublicKeyRing? = null
+                        for (ring in readPublicRings(candArmored)) {
+                            if (ring.getPublicKey(ops.keyID) != null) {
+                                peerRing = ring
+                                break
+                            }
+                        }
+                        if (peerRing != null) {
+                            val signingKey = peerRing.getPublicKey(ops.keyID)
+                            if (!signingKey.isRevoked &&
+                                sig.keyID == ops.keyID &&
+                                sig.signatureType == PGPSignature.BINARY_DOCUMENT &&
+                                sig.hashAlgorithm in acceptedSignatureHashes
+                            ) {
+                                ops.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), signingKey)
+                                ops.update(literal)
+                                if (ops.verify(sig)) {
+                                    status = SignatureStatus.VERIFIED
+                                    signer = hex(peerRing.publicKey.fingerprint, upper = true)
+                                    break
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        return DecryptedMessage(literal, status, signer)
+    }
+
+    /**
+     * Decrypt and verify against a list of candidate public keys (e.g. from all saved contacts).
+     */
+    fun decryptMulti(
+        armoredMessage: String,
+        privateKeyArmored: String,
+        candidatePeerKeysArmored: List<String>
+    ): DecryptedMessage {
+        val privRingCollection = secretRingCollectionCache.getOrPut(privateKeyArmored) {
+            val privStream = PGPUtil.getDecoderStream(ByteArrayInputStream(privateKeyArmored.toByteArray(Charsets.UTF_8)))
+            PGPSecretKeyRingCollection(privStream, fingerprintCalc())
+        }
+
+        val msgStream = PGPUtil.getDecoderStream(ByteArrayInputStream(armoredMessage.toByteArray(Charsets.UTF_8)))
+        val pgpFact = PGPObjectFactory(msgStream, fingerprintCalc())
+
+        var obj = pgpFact.nextObject()
+        var encList: PGPEncryptedDataList? = null
+        while (obj != null) {
+            if (obj is PGPEncryptedDataList) {
+                encList = obj
+                break
+            }
+            obj = pgpFact.nextObject()
+        }
+        if (encList == null) {
+            throw IllegalArgumentException("No encrypted data found in message")
+        }
+
+        val decryptor = JcePBESecretKeyDecryptorBuilder().setProvider(bcProvider).build("".toCharArray())
+
+        var privKey: PGPPrivateKey? = null
+        var pbe: PGPPublicKeyEncryptedData? = null
+        for (item in encList) {
+            if (item is PGPPublicKeyEncryptedData) {
+                val secKey = privRingCollection.getSecretKey(item.keyID)
+                if (secKey != null) {
+                    try {
+                        privKey = secKey.extractPrivateKey(decryptor)
+                        pbe = item
+                        break
+                    } catch (_: Exception) {
+                        // keep looking
+                    }
+                }
+            }
+        }
+        if (pbe == null || privKey == null) {
+            throw IllegalArgumentException("Could not find matching private key to decrypt payload")
+        }
+
+        val clearStream: InputStream = pbe.getDataStream(
+            JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
+        )
+
+        var plainFact = PGPObjectFactory(clearStream, fingerprintCalc())
+        var onePass: PGPOnePassSignature? = null
+        var signature: PGPSignature? = null
+        var literal: ByteArray? = null
+
+        // Walk the decrypted packet stream: [compressed] -> [one-pass sig] -> literal -> [signature]
+        var plainObj = plainFact.nextObject()
+        while (plainObj != null) {
+            when (plainObj) {
+                is PGPCompressedData -> {
+                    plainFact = PGPObjectFactory(plainObj.dataStream, fingerprintCalc())
+                }
+                is PGPOnePassSignatureList -> {
+                    if (plainObj.size() > 0) onePass = plainObj.get(0)
+                }
+                is PGPLiteralData -> {
+                    literal = plainObj.inputStream.readBytes()
+                }
+                is PGPSignatureList -> {
+                    if (plainObj.size() > 0) signature = plainObj.get(0)
+                }
+            }
+            plainObj = plainFact.nextObject()
+        }
+
+        if (literal == null) {
+            throw IllegalArgumentException("Expected literal data in decrypted stream")
+        }
+
+        if (pbe.isIntegrityProtected && !pbe.verify()) {
+            throw IllegalArgumentException("Message integrity check failed (modified or corrupted)")
+        }
+
+        var status = SignatureStatus.UNSIGNED
+        var signer: String? = null
+
+        val sig = signature
+        val ops = onePass
+        if (sig != null || ops != null) {
+            status = SignatureStatus.INVALID_SIGNATURE
+            for (candArmored in candidatePeerKeysArmored) {
+                if (candArmored.isBlank()) continue
                 try {
                     var peerRing: PGPPublicKeyRing? = null
-                    for (ring in readPublicRings(peerPublicKeyArmored)) {
+                    for (ring in readPublicRings(candArmored)) {
                         if (ring.getPublicKey(ops.keyID) != null) {
                             peerRing = ring
                             break
@@ -533,13 +664,11 @@ object StandalonePgpEngine {
                             if (ops.verify(sig)) {
                                 status = SignatureStatus.VERIFIED
                                 signer = hex(peerRing.publicKey.fingerprint, upper = true)
+                                break
                             }
                         }
                     }
-                } catch (_: Exception) {
-                    status = SignatureStatus.INVALID_SIGNATURE
-                    signer = null
-                }
+                } catch (_: Exception) {}
             }
         }
 

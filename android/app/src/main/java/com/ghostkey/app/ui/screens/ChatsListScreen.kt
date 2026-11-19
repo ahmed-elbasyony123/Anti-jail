@@ -54,15 +54,29 @@ fun ChatsListScreen(
                                 color = AnthropicCream
                             )
                             Spacer(modifier = Modifier.width(8.dp))
+                            val dotColor = when (relayStatus) {
+                                RelayStatus.CONNECTED -> AnthropicSage
+                                RelayStatus.BUILDING_CIRCUIT -> AnthropicTerracotta
+                                RelayStatus.AUTH_FAILED, RelayStatus.ORBOT_NOT_RUNNING -> Color(0xFFD32F2F)
+                                else -> AnthropicTextMuted
+                            }
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
-                                    .background(if (relayStatus == RelayStatus.CONNECTED) AnthropicSage else AnthropicTextMuted)
+                                    .background(dotColor)
                             )
                         }
+                        val statusText = when (relayStatus) {
+                            RelayStatus.CONNECTED -> "Connected over Tor 🧅"
+                            RelayStatus.BUILDING_CIRCUIT -> "Establishing Tor circuit..."
+                            RelayStatus.ORBOT_NOT_RUNNING -> "Orbot / Tor not running"
+                            RelayStatus.TIMED_OUT -> "Connection timed out"
+                            RelayStatus.AUTH_FAILED -> "Mailbox auth failed"
+                            RelayStatus.DISCONNECTED -> "Disconnected"
+                        }
                         Text(
-                            text = if (relayStatus == RelayStatus.CONNECTED) "Connected over Tor 🧅" else "Establishing Tor Circuit...",
+                            text = statusText,
                             fontSize = 11.sp,
                             color = AnthropicTextMuted
                         )

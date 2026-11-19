@@ -152,8 +152,8 @@ class AudioPlayerManager {
      * Emergency Panic Wipe: Purges all active audio buffers and zeroizes memory.
      */
     fun wipe() {
-        stop()
         currentDataSource?.zeroOut()
         currentDataSource = null
+        stop()
     }
 }

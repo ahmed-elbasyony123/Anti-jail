@@ -86,20 +86,26 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.5.1
-          name: "GhostKey v2.5.1 (Standalone In-Process Arti Tor Fix & DNS Routing)"
+          tag_name: v2.5.2
+          name: "GhostKey v2.5.2 (Critical Security & Architecture Hardening)"
           body: |
-            ### 🚀 GhostKey v2.5.1 (Standalone In-Process Arti Tor Fix & DNS Routing)
-            - **Standalone Tor Engine Fix (Zero-Orbot Dependency):**
-              - Disabled Android filesystem ownership verification (`ARTI_FS_DISABLE_PERMISSION_CHECKS`) which previously prevented Arti from starting on Android's multi-user sandbox paths (`/data/user/0/...`).
-              - Immediate SOCKS5 ephemeral port binding before background bootstrap, ensuring OkHttp never times out or drops proxy requests.
-              - Multi-threaded asynchronous Arti lifecycle managed off the Android UI thread (`Dispatchers.IO`).
-            - **Smart DNS & Onion Routing:**
-              - Selective `.onion` dummy address routing preventing DNS leaks while preserving standard direct IP connections (e.g. cloud relay servers).
-            - **New Telegram UI & Anthropic Official Cream Palette:**
-              - Complete overhaul with conversation lists, floating capsule input, navigation drawer (`☰`), and dedicated grouped Settings.
-            - **Zero-Metadata E2EE Group Chats:**
-              - Multi-recipient AES-256-GCM symmetric session keys wrapped in OpenPGP envelopes.
+            ### 🛡️ GhostKey v2.5.2 (Critical Security & Architecture Hardening)
+            - **Contact Message Routing & Signature Verification:**
+              - Decryption now verifies OpenPGP signatures against all saved contacts, eliminating message routing failures and preventing messages from landing in the user's own drop ID.
+            - **Group Messaging Fixes:**
+              - De-duplicated group message echo using outbound ciphertext tracking.
+              - Full media and voice note rendering in groups (images, attachments, and Opus waveforms).
+              - Background push notifications for group messages.
+            - **Tor & Network Engine Hardening:**
+              - Fixed Arti Tor compilation: replaced `static mut` with thread-safe `Mutex<Option<oneshot::Sender<()>>>`.
+              - Early SOCKS5 listener bind with `ARTI_FS_DISABLE_PERMISSION_CHECKS` bypass for Android container sandbox.
+              - Smart DNS routing: dummy IP for `.onion` hosts, native IP resolution for direct cloud relays.
+              - Safe URL scheme enforcement (`https://` for external domains, `http://` for `.onion` and loopback).
+            - **Anti-Forensics & UI Polish:**
+              - Memory zeroization before audio player release on panic wipe (`AudioPlayerManager.wipe`).
+              - Real-time descriptive connectivity status indicator in ChatsList and Chat screens.
+              - One-tap "Copy Full Public Key" button in Telegram navigation drawer.
+              - Rate limiter memory leak fixed in relay server garbage collection.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

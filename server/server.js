@@ -188,6 +188,12 @@ const gcTimer = setInterval(() => {
             drops.delete(dropId);
         }
     }
+    // Clean up expired auth failure rate-limiting records to prevent memory leak
+    for (const [dropId, rec] of authFailures.entries()) {
+        if (now > rec.lockedUntil && (now - rec.winStart) > 300000) {
+            authFailures.delete(dropId);
+        }
+    }
 }, GC_INTERVAL_MS);
 
 // ---------------------------------------------------------------------------

@@ -59,6 +59,7 @@ fun CleanChatScreen(
     onCancelRecording: () -> Unit,
     onAudioPlayPause: (ChatMessage) -> Unit,
     onAudioSeek: (ChatMessage, Float) -> Unit,
+    onManualDecrypt: (ChatMessage) -> Unit = {},
     onOpenSafetyCode: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -110,11 +111,17 @@ fun CleanChatScreen(
                                 maxLines = 1
                             )
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                val dotColor = when (relayStatus) {
+                                    RelayStatus.CONNECTED -> AnthropicSage
+                                    RelayStatus.BUILDING_CIRCUIT -> AnthropicTerracotta
+                                    RelayStatus.AUTH_FAILED, RelayStatus.ORBOT_NOT_RUNNING -> Color(0xFFD32F2F)
+                                    else -> AnthropicTextMuted
+                                }
                                 Box(
                                     modifier = Modifier
                                         .size(6.dp)
                                         .clip(CircleShape)
-                                        .background(if (relayStatus == RelayStatus.CONNECTED) AnthropicSage else AnthropicTextMuted)
+                                        .background(dotColor)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
@@ -202,7 +209,7 @@ fun CleanChatScreen(
                                 message = msg,
                                 playbackState = playbackState,
                                 onToggleArmor = {},
-                                onManualDecrypt = {},
+                                onManualDecrypt = { onManualDecrypt(msg) },
                                 onAudioPlayPause = onAudioPlayPause,
                                 onAudioSeek = onAudioSeek
                             )
