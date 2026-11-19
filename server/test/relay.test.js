@@ -10,6 +10,7 @@ const WebSocket = require('ws');
 
 const SERVER = path.join(__dirname, '..', 'server.js');
 const hex32 = () => crypto.randomBytes(32).toString('hex');
+const deriveDrop = (tok) => crypto.createHash('sha256').update('drop:' + tok, 'utf8').digest('hex');
 
 function freePort() {
     return new Promise((resolve) => {
@@ -60,10 +61,10 @@ test('defaults: binds 127.0.0.1, neutral ping, no CORS/HSTS', async () => {
     } finally { await s.stop(); }
 });
 
-test('auth: first claim, 401 on mismatch/missing, no counts leaked, ACK required for deletion', async () => {
+test('auth: dropId derived from readToken, 401 on mismatch/missing, no counts leaked, ACK required for deletion', async () => {
     const s = await start();
     try {
-        const drop = hex32(), tok = hex32();
+        const tok = hex32(), drop = deriveDrop(tok);
         const sent = await (await send(s, drop, 'hello')).json();
         assert.equal(sent.success, true);
         assert.deepEqual(Object.keys(sent).sort(), ['messageId', 'success']);
@@ -72,7 +73,7 @@ test('auth: first claim, 401 on mismatch/missing, no counts leaked, ACK required
         assert.equal(r.status, 401);
         assert.ok(!JSON.stringify(await r.json()).includes('count'));
 
-        r = await s.req('GET', `/api/v2/inbox/${drop}`, { token: tok });   // first claim
+        r = await s.req('GET', `/api/v2/inbox/${drop}`, { token: tok });   // valid owner
         assert.equal(r.status, 200);
         let j = await r.json();
         assert.equal(j.count, 1);
@@ -82,7 +83,7 @@ test('auth: first claim, 401 on mismatch/missing, no counts leaked, ACK required
         j = await (await s.req('GET', `/api/v2/inbox/${drop}`, { token: tok })).json();
         assert.equal(j.count, 1);
 
-        // other token cannot read or ACK
+        // other token cannot read or ACK (anti-squatting & anti-frontrunning)
         assert.equal((await s.req('GET', `/api/v2/inbox/${drop}`, { token: hex32() })).status, 401);
         assert.equal((await s.req('POST', '/api/v2/ack', { token: hex32(), body: { dropId: drop, messageIds: [j.messages[0].id] } })).status, 401);
         assert.equal((await s.req('GET', `/api/v2/inbox/${drop}`, { token: 'not-hex' })).status, 401);
@@ -102,7 +103,7 @@ test('auth: first claim, 401 on mismatch/missing, no counts leaked, ACK required
 test('ttlSeconds validation never drops messages silently', async () => {
     const s = await start();
     try {
-        const drop = hex32(), tok = hex32();
+        const tok = hex32(), drop = deriveDrop(tok);
         for (const ttl of [undefined, NaN, 'abc', -5, 0, null, 1e12, 5]) {
             const r = await send(s, drop, 'x', ttl === undefined ? {} : { ttlSeconds: ttl });
             assert.equal(r.status, 200, `ttl=${ttl}`);
@@ -120,7 +121,7 @@ test('input handling: bad JSON, bad ids, oversize body, odd Host, static path tr
         assert.equal((await send(s, 'zz'.repeat(32))).status, 400);
         assert.equal((await s.req('POST', '/api/v2/send', { body: { dropId: hex32() } })).status, 400);
 
-        const big = await s.req('POST', '/api/v2/send', { body: JSON.stringify({ dropId: hex32(), ciphertext: 'a'.repeat(11 * 1024 * 1024) }) });
+        const big = await s.req('POST', '/api/v2/send', { body: JSON.stringify({ dropId: hex32(), ciphertext: 'a'.repeat(26 * 1024 * 1024) }) });
         assert.equal(big.status, 413);
         assert.equal((await s.req('GET', '/api/v2/ping')).status, 200, 'server survives oversize body');
 
@@ -166,12 +167,13 @@ test('per-dropId rate limit (30/min), queue cap, active-dropId cap, global RAM c
     try {
         for (let i = 0; i < 3; i++) assert.equal((await send(s, hex32())).status, 200);
         assert.equal((await send(s, hex32())).status, 503);
-        assert.equal((await s.req('GET', `/api/v2/inbox/${hex32()}`, { token: hex32() })).status, 503);
+        const tCap = hex32(), dCap = deriveDrop(tCap);
+        assert.equal((await s.req('GET', `/api/v2/inbox/${dCap}`, { token: tCap })).status, 503);
     } finally { await s.stop(); }
 
     s = await start({ GK_MAX_TOTAL_BYTES: '1000' });
     try {
-        const drop = hex32(), tok = hex32();
+        const tok = hex32(), drop = deriveDrop(tok);
         assert.equal((await send(s, drop, 'a'.repeat(600))).status, 200);
         assert.equal((await send(s, hex32(), 'a'.repeat(600))).status, 503);
         // ACK frees accounted memory
@@ -199,15 +201,15 @@ const waitFor = async (fn, ms = 3000) => {
 test('websocket: auth, backlog + live push, ACK over WS, multi-subscription, cleanup', async () => {
     const s = await start();
     try {
-        const d1 = hex32(), t1 = hex32(), d2 = hex32(), t2 = hex32();
+        const t1 = hex32(), d1 = deriveDrop(t1), t2 = hex32(), d2 = deriveDrop(t2);
         await send(s, d1, 'backlog-1');
 
         const ws = await wsOpen(s);
-        ws.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: d1, readToken: hex32() }));   // not yet claimed -> this claims it!
+        ws.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: d1, readToken: t1 }));   // valid owner claims/subscribes
         await waitFor(() => ws.inbox.find((m) => m.type === 'SUBSCRIBED'));
-        // an impostor with a different token on the same dropId must fail
+        // an impostor with a different token on the same dropId must fail (anti-squatting)
         const imp = await wsOpen(s);
-        imp.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: d1, readToken: t1 }));
+        imp.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: d1, readToken: hex32() }));
         await waitFor(() => imp.inbox.find((m) => m.type === 'AUTH_FAILED'));
         assert.ok(!imp.inbox.some((m) => m.type === 'MESSAGE'));
         imp.close();
@@ -216,7 +218,8 @@ test('websocket: auth, backlog + live push, ACK over WS, multi-subscription, cle
         // proper flow with known tokens on two dropIds from one socket
         const c = await wsOpen(s);
         c.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: d2, readToken: t2 }));
-        c.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: hex32(), readToken: t2 }));
+        const t3 = hex32(), d3 = deriveDrop(t3);
+        c.send(JSON.stringify({ type: 'SUBSCRIBE', dropId: d3, readToken: t3 }));
         await waitFor(() => c.inbox.filter((m) => m.type === 'SUBSCRIBED').length === 2);
         const sent = await (await send(s, d2, 'live-1')).json();
         const msg = await waitFor(() => c.inbox.find((m) => m.type === 'MESSAGE'));
@@ -264,12 +267,12 @@ test('websocket: server heartbeat terminates connections that never pong', async
     } finally { await s.stop(); }
 });
 
-test('websocket: oversized frames (>10 MB) are refused', async () => {
+test('websocket: oversized frames (>25 MB) are refused', async () => {
     const s = await start();
     try {
         const ws = await wsOpen(s);
         const closed = new Promise((r) => ws.on('close', (code) => r(code)));
-        ws.send('x'.repeat(10 * 1024 * 1024 + 10));
+        ws.send('x'.repeat(25 * 1024 * 1024 + 10));
         const code = await closed;
         assert.ok(code === 1009 || code === 1006, 'connection must be closed, got ' + code);
         assert.equal((await s.req('GET', '/api/v2/ping')).status, 200, 'server survives');

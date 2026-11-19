@@ -137,12 +137,12 @@ test('attachments: whitelisted image inline, SVG as a Blob file card, no active 
     assert.ok(card.querySelector('a').getAttribute('href').startsWith('blob:'));
     assert.match(card.querySelector('.sig-ok').textContent, /VERIFIED/);
 
-    const big = { name: 'big.bin', type: 'application/octet-stream', size: 5 * 1024 * 1024, arrayBuffer: async () => new ArrayBuffer(1) };
+    const big = { name: 'big.bin', type: 'application/octet-stream', size: 16 * 1024 * 1024, arrayBuffer: async () => new ArrayBuffer(1) };
     const input = alice.$('media-file-input');
     Object.defineProperty(input, 'files', { value: [big], configurable: true });
     input.dispatchEvent(new alice.win.Event('change', { bubbles: true }));
     await sleep(200);
-    assert.ok(alice.$('attachment-bar').classList.contains('hidden'), 'files over 4 MB are refused');
+    assert.ok(alice.$('attachment-bar').classList.contains('hidden'), 'files over 15 MB are refused');
 });
 
 test('a message from someone who is not the saved peer is flagged as unverified', async () => {

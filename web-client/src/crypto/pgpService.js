@@ -13,6 +13,7 @@ export const core = createCore(openpgp)
 
 export const {
   generateIdentity,
+  deriveDropId,
   parsePeerKey,
   encryptSigned,
   decryptVerified,

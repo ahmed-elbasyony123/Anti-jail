@@ -69,6 +69,19 @@ object StandalonePgpEngine {
 
     private val secureRandom = SecureRandom()
 
+    // Thread-safe key caches for instant crypto operations (optimization 3.1)
+    private val publicKeyCache = java.util.concurrent.ConcurrentHashMap<String, PGPPublicKey>()
+    private val signingKeyCache = java.util.concurrent.ConcurrentHashMap<String, Pair<PGPSecretKey, PGPPrivateKey>>()
+    private val secretRingCollectionCache = java.util.concurrent.ConcurrentHashMap<String, PGPSecretKeyRingCollection>()
+    private val peerKeyInfoCache = java.util.concurrent.ConcurrentHashMap<String, PeerKeyInfo>()
+
+    fun clearCache() {
+        publicKeyCache.clear()
+        signingKeyCache.clear()
+        secretRingCollectionCache.clear()
+        peerKeyInfoCache.clear()
+    }
+
     init {
         try {
             Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
@@ -89,20 +102,30 @@ object StandalonePgpEngine {
 
     fun isValidHex32(value: String?): Boolean = value != null && HEX_64.matches(value)
 
+    /**
+     * Cryptographically derives a dropId from a secret readToken: dropId = SHA-256("drop:" + readToken).
+     * Eliminates dropId squatting and front-running entirely (loophole P1).
+     */
+    fun deriveDropId(readToken: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val digest = md.digest(("drop:" + readToken.lowercase()).toByteArray(Charsets.UTF_8))
+        return hex(digest)
+    }
+
     // ---------------------------------------------------------------------------------------
     // Key generation
     // ---------------------------------------------------------------------------------------
 
     /**
      * Generate a fresh identity: Ed25519 primary key + X25519 encryption subkey, plus a random
-     * 32-byte hex [PgpKeyPairArmored.dropId] and [PgpKeyPairArmored.readToken].
+     * 32-byte hex [PgpKeyPairArmored.readToken] and cryptographically derived [PgpKeyPairArmored.dropId].
      *
      * The dropId is also bound into the key's self-certified User ID, so a peer can detect a
      * swapped "Drop-ID" comment header (the armor header itself is not signed).
      */
     fun generateKeyPair(): PgpKeyPairArmored {
-        val dropId = randomHex32()
         val readToken = randomHex32()
+        val dropId = deriveDropId(readToken)
         val userId = "ghostkey drop:$dropId"
 
         val edGen = KeyPairGenerator.getInstance("EdDSA", bcProvider)
@@ -198,11 +221,17 @@ object StandalonePgpEngine {
      * are skipped; if the primary key itself is revoked or expired the whole block is rejected.
      */
     fun readPublicKey(armored: String, now: Date = Date()): PGPPublicKey {
-        for (ring in readPublicRings(armored)) {
+        val trimmed = armored.trim()
+        val cached = publicKeyCache[trimmed]
+        if (cached != null && isUsable(cached, now)) {
+            return cached
+        }
+        for (ring in readPublicRings(trimmed)) {
             val master = ring.publicKey ?: continue
             if (!isUsable(master, now)) continue
             for (key in ring) {
                 if (key.isEncryptionKey && isUsable(key, now)) {
+                    publicKeyCache[trimmed] = key
                     return key
                 }
             }
@@ -274,8 +303,10 @@ object StandalonePgpEngine {
      */
     fun parsePeerKey(armored: String): PeerKeyInfo {
         val trimmed = armored.trim()
-        readPublicKey(trimmed)                       // throws if no usable encryption key
-        return PeerKeyInfo(trimmed, getFingerprint(trimmed), extractDropId(trimmed))
+        return peerKeyInfoCache.getOrPut(trimmed) {
+            readPublicKey(trimmed)                       // throws if no usable encryption key
+            PeerKeyInfo(trimmed, getFingerprint(trimmed), extractDropId(trimmed))
+        }
     }
 
     // ---------------------------------------------------------------------------------------
@@ -283,13 +314,18 @@ object StandalonePgpEngine {
     // ---------------------------------------------------------------------------------------
 
     private fun findSigningKey(privateKeyArmored: String): Pair<PGPSecretKey, PGPPrivateKey> {
+        val cached = signingKeyCache[privateKeyArmored]
+        if (cached != null) return cached
+
         val privStream = PGPUtil.getDecoderStream(ByteArrayInputStream(privateKeyArmored.toByteArray(Charsets.UTF_8)))
         val ringCollection = PGPSecretKeyRingCollection(privStream, fingerprintCalc())
         val decryptor = JcePBESecretKeyDecryptorBuilder().setProvider(bcProvider).build("".toCharArray())
         for (ring in ringCollection) {
             for (secKey in ring) {
                 if (secKey.isSigningKey) {
-                    return Pair(secKey, secKey.extractPrivateKey(decryptor))
+                    val pair = Pair(secKey, secKey.extractPrivateKey(decryptor))
+                    signingKeyCache[privateKeyArmored] = pair
+                    return pair
                 }
             }
         }
@@ -369,8 +405,10 @@ object StandalonePgpEngine {
         privateKeyArmored: String,
         peerPublicKeyArmored: String?
     ): DecryptedMessage {
-        val privStream = PGPUtil.getDecoderStream(ByteArrayInputStream(privateKeyArmored.toByteArray(Charsets.UTF_8)))
-        val privRingCollection = PGPSecretKeyRingCollection(privStream, fingerprintCalc())
+        val privRingCollection = secretRingCollectionCache.getOrPut(privateKeyArmored) {
+            val privStream = PGPUtil.getDecoderStream(ByteArrayInputStream(privateKeyArmored.toByteArray(Charsets.UTF_8)))
+            PGPSecretKeyRingCollection(privStream, fingerprintCalc())
+        }
 
         val msgStream = PGPUtil.getDecoderStream(ByteArrayInputStream(armoredMessage.toByteArray(Charsets.UTF_8)))
         val pgpFact = PGPObjectFactory(msgStream, fingerprintCalc())

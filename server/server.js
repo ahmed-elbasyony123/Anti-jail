@@ -41,22 +41,22 @@ const PORT = envInt('PORT', 8765);
 const HOST = process.env.HOST || '127.0.0.1';
 
 // ---- Limits (the GK_* overrides exist so the test-suite can exercise them) ----
-const MAX_BODY_BYTES = 10 * 1024 * 1024;              // HTTP request body cap
-const WS_MAX_PAYLOAD = 10 * 1024 * 1024;              // WebSocket frame cap (10 MB)
+const MAX_BODY_BYTES = 25 * 1024 * 1024;              // HTTP request body cap (accommodates 15 MB raw media + base64)
+const WS_MAX_PAYLOAD = 25 * 1024 * 1024;              // WebSocket frame cap (25 MB)
 const DEFAULT_TTL_S = 3600;
 const MIN_TTL_S = 60;
 const MAX_TTL_S = 86400;
 const MAX_MESSAGES_PER_MINUTE = envInt('GK_MAX_MSG_PER_MIN', 30);   // per dropId
 const MAX_QUEUE_PER_DROP = envInt('GK_MAX_QUEUE', 100);             // per dropId
 const MAX_ACTIVE_DROPS = envInt('GK_MAX_ACTIVE_DROPS', 10000);
-const MAX_TOTAL_BYTES = envInt('GK_MAX_TOTAL_BYTES', 256 * 1024 * 1024); // all queues
+const MAX_TOTAL_BYTES = envInt('GK_MAX_TOTAL_BYTES', 512 * 1024 * 1024); // all queues (512 MB)
 const CLAIM_IDLE_MS = envInt('GK_CLAIM_IDLE_MS', 3 * 24 * 60 * 60 * 1000);
 const GC_INTERVAL_MS = envInt('GK_GC_INTERVAL_MS', 30000);
 const HEARTBEAT_MS = envInt('GK_HEARTBEAT_MS', 30000);
 const MAX_SUBS_PER_SOCKET = 8;
 const MAX_ACK_IDS = 1000;
-const INBOX_RESPONSE_BYTES = 24 * 1024 * 1024;        // soft cap per GET /inbox response
-const WS_BACKPRESSURE_BYTES = 16 * 1024 * 1024;
+const INBOX_RESPONSE_BYTES = 32 * 1024 * 1024;        // soft cap per GET /inbox response
+const WS_BACKPRESSURE_BYTES = 32 * 1024 * 1024;
 
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 const ID_RE = /^[0-9a-fA-F]{64}$/;
@@ -73,6 +73,9 @@ const ID_RE = /^[0-9a-fA-F]{64}$/;
 const drops = new Map();
 let totalBytes = 0;
 
+/** dropId -> { count: number, winStart: number, lockedUntil: number } (failed auth rate limiter) */
+const authFailures = new Map();
+
 /** dropId -> Set<WebSocket> (authenticated subscribers) */
 const activeSubscriptions = new Map();
 
@@ -82,6 +85,13 @@ function normId(value) {
 
 function sha256(buf) {
     return crypto.createHash('sha256').update(buf).digest();
+}
+
+/** Cryptographically derives a dropId from a secret readToken: dropId = SHA-256("drop:" + readToken). */
+function deriveDropId(tokenHex) {
+    const token = normId(tokenHex);
+    if (!token) return null;
+    return crypto.createHash('sha256').update('drop:' + token, 'utf8').digest('hex');
 }
 
 function toWire(m) {
@@ -128,13 +138,33 @@ function purgeExpired(drop, now) {
 }
 
 /**
- * Verify (or, for an unclaimed dropId, establish) ownership of a mailbox.
- * Returns { ok: true, drop } or { ok: false, reason: 'unauthorized' | 'capacity' }.
+ * Verify ownership of a mailbox.
+ * Cryptographically verifies that dropId == SHA-256("drop:" + readToken).
+ * Returns { ok: true, drop } or { ok: false, reason: 'unauthorized' | 'rate_limited' | 'capacity' }.
  */
 function authenticate(dropId, tokenHex) {
     const token = normId(tokenHex);
     if (!token) return { ok: false, reason: 'unauthorized' };
-    const presented = sha256(Buffer.from(token, 'hex'));
+
+    const now = Date.now();
+    const failRecord = authFailures.get(dropId);
+    if (failRecord && failRecord.lockedUntil > now) {
+        return { ok: false, reason: 'rate_limited' };
+    }
+
+    const expectedDropId = deriveDropId(token);
+    if (!expectedDropId || !crypto.timingSafeEqual(Buffer.from(expectedDropId, 'utf8'), Buffer.from(dropId, 'utf8'))) {
+        const rec = failRecord || { count: 0, winStart: now, lockedUntil: 0 };
+        if (now - rec.winStart > 60000) { rec.winStart = now; rec.count = 0; }
+        rec.count++;
+        if (rec.count >= 15) {
+            rec.lockedUntil = now + 60000;
+        }
+        authFailures.set(dropId, rec);
+        return { ok: false, reason: 'unauthorized' };
+    }
+
+    authFailures.delete(dropId);
 
     let drop = drops.get(dropId);
     if (!drop) {
@@ -143,12 +173,8 @@ function authenticate(dropId, tokenHex) {
         drops.set(dropId, drop);
     }
 
-    if (!drop.tokenHash) {
-        drop.tokenHash = presented;               // first claim
-    } else if (!crypto.timingSafeEqual(drop.tokenHash, presented)) {
-        return { ok: false, reason: 'unauthorized' };
-    }
-    drop.lastActive = Date.now();
+    drop.tokenHash = sha256(Buffer.from(token, 'hex'));
+    drop.lastActive = now;
     return { ok: true, drop };
 }
 
@@ -258,10 +284,13 @@ function mailboxToken(req) {
     return typeof h === 'string' ? h.trim() : '';
 }
 
-/** Replies with 401/503 for a failed authenticate() result. */
+/** Replies with 401/429/503 for a failed authenticate() result. */
 function replyAuthFailure(res, result) {
     if (result.reason === 'capacity') {
         return sendJson(res, 503, { error: 'Relay at capacity' });
+    }
+    if (result.reason === 'rate_limited') {
+        return sendJson(res, 429, { error: 'Too many authentication failures, try again shortly' }, { 'Retry-After': '60' });
     }
     return sendJson(res, 401, { error: 'Unauthorized' });
 }
@@ -454,18 +483,22 @@ async function serveStatic(req, res, pathname) {
     }
     if (!stat.isFile()) return sendJson(res, 404, { error: 'Not found' });
 
-    let content;
-    try {
-        content = await fs.promises.readFile(filePath);
-    } catch (e) {
-        return sendJson(res, 404, { error: 'Not found' });
-    }
-
     res.writeHead(200, Object.assign({
         'Content-Type': MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
-        'Content-Length': content.length
+        'Content-Length': stat.size
     }, BASE_HEADERS));
-    res.end(req.method === 'HEAD' ? undefined : content);
+
+    if (req.method === 'HEAD') {
+        res.end();
+        return;
+    }
+
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', () => {
+        if (!res.headersSent) sendJson(res, 500, { error: 'Internal error' });
+        else res.destroy();
+    });
+    stream.pipe(res);
 }
 
 // ---------------------------------------------------------------------------
@@ -570,9 +603,9 @@ wss.on('connection', (ws) => {
             const auth = authenticate(dropId, data.readToken);
             if (!auth.ok) {
                 return wsSend(ws, {
-                    type: auth.reason === 'capacity' ? 'ERROR' : 'AUTH_FAILED',
+                    type: auth.reason === 'capacity' ? 'ERROR' : auth.reason === 'rate_limited' ? 'RATE_LIMITED' : 'AUTH_FAILED',
                     dropId,
-                    error: auth.reason === 'capacity' ? 'Relay at capacity' : 'Unauthorized'
+                    error: auth.reason === 'capacity' ? 'Relay at capacity' : auth.reason === 'rate_limited' ? 'Too many auth failures' : 'Unauthorized'
                 });
             }
 
@@ -647,4 +680,12 @@ server.listen(PORT, HOST, () => {
     }
     console.log(`[GhostKey Relay] protocol v2 listening on http://${HOST}:${PORT}`);
     console.log(`[GhostKey Relay] messages are held in RAM only; payloads are not logged`);
+});
+
+// Process crash resilience (loophole P5): prevent unhandled exceptions/rejections from terminating the process and wiping in-RAM mailboxes
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[GhostKey Relay] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[GhostKey Relay] Uncaught Exception:', err);
 });
