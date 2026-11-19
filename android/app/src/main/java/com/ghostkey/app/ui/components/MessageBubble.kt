@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.crypto.SignatureStatus
 import com.ghostkey.app.data.ChatMessage
 import com.ghostkey.app.ui.*
@@ -29,8 +30,11 @@ import java.util.*
 @Composable
 fun MessageBubble(
     message: ChatMessage,
+    playbackState: PlaybackState = PlaybackState(),
     onToggleArmor: () -> Unit,
-    onManualDecrypt: () -> Unit
+    onManualDecrypt: () -> Unit,
+    onAudioPlayPause: (ChatMessage) -> Unit = {},
+    onAudioSeek: (ChatMessage, Float) -> Unit = { _, _ -> }
 ) {
     val align = if (message.isOutgoing) Alignment.End else Alignment.Start
     val bubbleColor = if (message.isOutgoing) StealthSurfaceVariant else StealthSurface
@@ -106,7 +110,14 @@ fun MessageBubble(
                 }
 
                 if (message.isDecrypted) {
-                    if (message.isMedia) {
+                    if (message.isAudio && message.audioBytes != null) {
+                        AudioBubble(
+                            message = message,
+                            playbackState = playbackState,
+                            onPlayPause = { onAudioPlayPause(message) },
+                            onSeek = { fraction -> onAudioSeek(message, fraction) }
+                        )
+                    } else if (message.isMedia) {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (message.mediaBitmap != null) {
                                 Image(

@@ -1,12 +1,16 @@
 package com.ghostkey.app
 
+import android.Manifest
 import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -14,6 +18,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,6 +42,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.ghostkey.app.audio.AudioPlayerManager
+import com.ghostkey.app.audio.AudioRecorderManager
+import com.ghostkey.app.audio.AudioRecordResult
+import com.ghostkey.app.audio.MemoryAudioDataSource
 import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.crypto.WireFormat
@@ -57,6 +67,7 @@ import com.ghostkey.app.ui.screens.LockedScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -105,6 +116,12 @@ class MainActivity : ComponentActivity() {
     private val maxAttachmentBytes = 15 * 1024 * 1024
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
 
+    // Encrypted PTT Audio Voice Notes (Opus in RAM)
+    private lateinit var audioRecorderManager: AudioRecorderManager
+    private val audioPlayerManager = AudioPlayerManager()
+    private var isRecordingAudio by mutableStateOf(false)
+    private var recordElapsedMs by mutableStateOf(0L)
+
     private val unlockLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -132,6 +149,7 @@ class MainActivity : ComponentActivity() {
         lockEnabled = prefs.getBoolean("lock_enabled", false)
         keyBarCollapsed = prefs.getBoolean("key_bar_collapsed", false)
         secureStore = SecureStore(applicationContext)
+        audioRecorderManager = AudioRecorderManager(applicationContext)
 
         // Initialize network client first, then bring up the identity
         applyNetworkConfig()
@@ -159,6 +177,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        audioRecorderManager.cancelRecording()
+        audioPlayerManager.stop()
         orbotWatcher?.stop()
         torClient.disconnectWebSocket()
         if (isFinishing) TorForegroundService.stop(this)
@@ -406,12 +426,28 @@ class MainActivity : ComponentActivity() {
         sendPayload(payload = WireFormat.buildText(text), isMedia = false)
     }
 
+    private fun sendAudioRecordResult(result: AudioRecordResult) {
+        val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes)
+        sendPayload(
+            payload = payload,
+            isMedia = true,
+            isAudio = true,
+            mimeType = result.mimeType,
+            filename = result.filename,
+            audioBytes = result.bytes,
+            audioDurationMs = result.durationMs
+        )
+    }
+
     private fun sendPayload(
         payload: ByteArray,
         isMedia: Boolean = false,
+        isAudio: Boolean = false,
         mimeType: String = "",
         filename: String = "",
-        mediaBitmap: ImageBitmap? = null
+        mediaBitmap: ImageBitmap? = null,
+        audioBytes: ByteArray? = null,
+        audioDurationMs: Long = 0L
     ) {
         val keys = myPgpKeys
         if (keys == null) {
@@ -449,9 +485,12 @@ class MainActivity : ComponentActivity() {
                             timestamp = System.currentTimeMillis(),
                             isDecrypted = true,
                             isMedia = isMedia,
+                            isAudio = isAudio,
                             mimeType = mimeType,
                             filename = filename,
-                            mediaBitmap = mediaBitmap
+                            mediaBitmap = mediaBitmap,
+                            audioBytes = audioBytes,
+                            audioDurationMs = audioDurationMs
                         )
                         messagesState.add(msg)
                     }
@@ -496,9 +535,12 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var isMedia = false
+                var isAudio = false
                 var mimeType = ""
                 var filename = ""
                 var previewBitmap: ImageBitmap? = null
+                var audioBytes: ByteArray? = null
+                var audioDurationMs = 0L
                 var displayText: String? = null
 
                 if (wire != null && wire.isMedia) {
@@ -517,6 +559,18 @@ class MainActivity : ComponentActivity() {
                                 previewBitmap = it.asImageBitmap()
                             }
                         } catch (_: Throwable) {}
+                    } else if (mimeType.startsWith("audio/")) {
+                        isAudio = true
+                        try {
+                            val rawBytes = WireFormat.decodeMediaData(wire)
+                            audioBytes = rawBytes
+                            val retriever = MediaMetadataRetriever()
+                            val ds = MemoryAudioDataSource(rawBytes)
+                            retriever.setDataSource(ds)
+                            val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            audioDurationMs = durStr?.toLongOrNull() ?: 0L
+                            retriever.release()
+                        } catch (_: Throwable) {}
                     }
                 } else {
                     displayText = wire?.text ?: String(result.bytes, Charsets.UTF_8)
@@ -529,9 +583,12 @@ class MainActivity : ComponentActivity() {
                             plaintext = displayText,
                             isDecrypted = true,
                             isMedia = isMedia,
+                            isAudio = isAudio,
                             mimeType = mimeType,
                             filename = filename,
                             mediaBitmap = previewBitmap,
+                            audioBytes = audioBytes,
+                            audioDurationMs = audioDurationMs,
                             signatureStatus = result.signatureStatus,
                             signerFingerprint = result.signerFingerprint
                         )
@@ -559,6 +616,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun triggerEmergencyPanicWipe() {
+        audioPlayerManager.wipe()
+        audioRecorderManager.cancelRecording()
         StandalonePgpEngine.clearCache()
         secureStore.wipe()
         getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().clear().commit()
@@ -631,6 +690,53 @@ class MainActivity : ComponentActivity() {
         ) { uri: Uri? ->
             if (uri != null) {
                 sendMedia(uri)
+            }
+        }
+
+        val playbackState by audioPlayerManager.playbackState.collectAsState()
+
+        val recordAudioLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { isGranted ->
+            if (isGranted) {
+                val ok = audioRecorderManager.startRecording()
+                if (ok) {
+                    isRecordingAudio = true
+                    recordElapsedMs = 0L
+                } else {
+                    Toast.makeText(this@MainActivity, "Failed to start recording", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this@MainActivity, "Microphone permission required for voice notes", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        fun onMicClicked() {
+            if (recipientArmoredKey.isBlank()) {
+                showPeerKeyDialog = true
+                Toast.makeText(this@MainActivity, "Please set recipient key first", Toast.LENGTH_SHORT).show()
+                return
+            }
+            if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                val ok = audioRecorderManager.startRecording()
+                if (ok) {
+                    isRecordingAudio = true
+                    recordElapsedMs = 0L
+                } else {
+                    Toast.makeText(this@MainActivity, "Failed to start recording", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+
+        LaunchedEffect(isRecordingAudio) {
+            if (isRecordingAudio) {
+                val start = SystemClock.elapsedRealtime()
+                while (isRecordingAudio) {
+                    recordElapsedMs = SystemClock.elapsedRealtime() - start
+                    delay(100)
+                }
             }
         }
 
@@ -786,6 +892,7 @@ class MainActivity : ComponentActivity() {
                         items(messagesState, key = { it.id }) { msg ->
                             MessageBubble(
                                 message = msg,
+                                playbackState = playbackState,
                                 onToggleArmor = {
                                     val idx = messagesState.indexOfFirst { it.id == msg.id }
                                     if (idx != -1) {
@@ -794,7 +901,15 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 },
-                                onManualDecrypt = { decryptMessage(msg) }
+                                onManualDecrypt = { decryptMessage(msg) },
+                                onAudioPlayPause = { targetMsg ->
+                                    targetMsg.audioBytes?.let { bytes ->
+                                        audioPlayerManager.play(targetMsg.id, bytes)
+                                    }
+                                },
+                                onAudioSeek = { targetMsg, fraction ->
+                                    audioPlayerManager.seekTo(targetMsg.id, fraction)
+                                }
                             )
                         }
                     }
@@ -825,78 +940,188 @@ class MainActivity : ComponentActivity() {
                 }
                 }
 
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(StealthSurface)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = { filePicker.launch("*/*") },
+                if (isRecordingAudio) {
+                    Row(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(StealthSurfaceVariant)
+                            .fillMaxWidth()
+                            .background(StealthSurface)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            Icons.Default.AttachFile,
-                            contentDescription = "Attach File",
-                            tint = NeonEmerald
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    TextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = {
-                            Text(
-                                if (recipientArmoredKey.isBlank()) "Paste peer key above first..." else "Type secret message...",
-                                color = StealthTextSecondary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 13.sp
+                        IconButton(
+                            onClick = {
+                                audioRecorderManager.cancelRecording()
+                                isRecordingAudio = false
+                                recordElapsedMs = 0L
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(AlertCrimson.copy(alpha = 0.2f))
+                        ) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Cancel Recording",
+                                tint = AlertCrimson
                             )
-                        },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = StealthSurfaceVariant,
-                            unfocusedContainerColor = StealthSurfaceVariant,
-                            focusedTextColor = StealthTextPrimary,
-                            unfocusedTextColor = StealthTextPrimary,
-                            cursorColor = NeonEmerald,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp)),
-                        maxLines = 4
-                    )
+                        }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
 
-                    IconButton(
-                        onClick = {
-                            if (recipientArmoredKey.isBlank()) {
-                                showPeerKeyDialog = true
-                                Toast.makeText(this@MainActivity, "Please set recipient key first", Toast.LENGTH_SHORT).show()
-                                return@IconButton
-                            }
-                            val txt = inputText
-                            inputText = ""
-                            sendMessage(txt)
-                        },
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(AlertCrimson)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "REC",
+                                color = AlertCrimson,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            val totalSec = recordElapsedMs / 1000
+                            val mm = totalSec / 60
+                            val ss = totalSec % 60
+                            Text(
+                                text = String.format(Locale.US, "%02d:%02d", mm, ss),
+                                color = StealthTextPrimary,
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "• OPUS (RAM-ONLY)",
+                                color = StealthTextSecondary,
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = {
+                                isRecordingAudio = false
+                                val result = audioRecorderManager.stopRecording()
+                                if (result != null) {
+                                    sendAudioRecordResult(result)
+                                } else {
+                                    Toast.makeText(this@MainActivity, "Recording too short", Toast.LENGTH_SHORT).show()
+                                }
+                                recordElapsedMs = 0L
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(NeonEmerald)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send Voice Note",
+                                tint = Color(0xFF002914)
+                            )
+                        }
+                    }
+                } else {
+                    Row(
                         modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(NeonEmerald)
+                            .fillMaxWidth()
+                            .background(StealthSurface)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send Encrypted",
-                            tint = Color(0xFF002914)
+                        IconButton(
+                            onClick = { filePicker.launch("*/*") },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(StealthSurfaceVariant)
+                        ) {
+                            Icon(
+                                Icons.Default.AttachFile,
+                                contentDescription = "Attach File",
+                                tint = NeonEmerald
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        TextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            placeholder = {
+                                Text(
+                                    if (recipientArmoredKey.isBlank()) "Paste peer key above first..." else "Type secret message...",
+                                    color = StealthTextSecondary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 13.sp
+                                )
+                            },
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = StealthSurfaceVariant,
+                                unfocusedContainerColor = StealthSurfaceVariant,
+                                focusedTextColor = StealthTextPrimary,
+                                unfocusedTextColor = StealthTextPrimary,
+                                cursorColor = NeonEmerald,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp)),
+                            maxLines = 4
                         )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        if (inputText.isNotBlank()) {
+                            IconButton(
+                                onClick = {
+                                    if (recipientArmoredKey.isBlank()) {
+                                        showPeerKeyDialog = true
+                                        Toast.makeText(this@MainActivity, "Please set recipient key first", Toast.LENGTH_SHORT).show()
+                                        return@IconButton
+                                    }
+                                    val txt = inputText
+                                    inputText = ""
+                                    sendMessage(txt)
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(NeonEmerald)
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send Encrypted",
+                                    tint = Color(0xFF002914)
+                                )
+                            }
+                        } else {
+                            IconButton(
+                                onClick = { onMicClicked() },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(NeonEmerald.copy(alpha = 0.2f))
+                                    .border(1.dp, NeonEmerald, CircleShape)
+                            ) {
+                                Icon(
+                                    Icons.Default.Mic,
+                                    contentDescription = "Record Voice Note",
+                                    tint = NeonEmerald
+                                )
+                            }
+                        }
                     }
                 }
             }
