@@ -1,11 +1,9 @@
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
-use arti_client::config::BoolOrAuto;
-use arti_client::{StreamPrefs, TorClient, TorClientConfigBuilder};
+use arti_client::config::{BoolOrAuto, TorClientConfigBuilder};
+use arti_client::{StreamPrefs, TorClient};
 use futures::StreamExt;
 use jni::objects::{JClass, JString};
 use jni::sys::jint;
