@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.WindowManager
@@ -63,7 +64,6 @@ import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.net.TorRelayClient
 import com.ghostkey.app.notify.PushNotificationManager
 import com.ghostkey.app.service.TorForegroundService
-import android.content.pm.PackageManager
 import com.ghostkey.app.ui.*
 import com.ghostkey.app.ui.components.*
 import com.ghostkey.app.ui.dialogs.*
