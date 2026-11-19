@@ -116,7 +116,8 @@ class MainActivity : ComponentActivity() {
     private var lockEnabled by mutableStateOf(false)
     private var isLocked by mutableStateOf(false)
     private var keyBarCollapsed by mutableStateOf(false)
-    private val maxAttachmentBytes = 4 * 1024 * 1024
+    private val maxAttachmentBytes = 15 * 1024 * 1024
+    private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
 
     private val unlockLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -270,11 +271,16 @@ class MainActivity : ComponentActivity() {
 
     private fun updateEphemeralMode(enabled: Boolean) {
         ephemeralMode = enabled
-        getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("ephemeral_mode", enabled).apply()
+        val editor = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+        editor.putBoolean("ephemeral_mode", enabled)
         if (enabled) {
+            // Anti-forensic protection (loophole P3): erase relay URL from disk so it remains RAM-only
+            editor.remove("relay_url")
+            editor.apply()
             // Nothing may stay on disk: remove the saved identity and its keystore key.
             CoroutineScope(persistDispatcher).launch { secureStore.wipe() }
         } else {
+            editor.putString("relay_url", relayServerUrl).apply()
             persistIdentity()
         }
     }
@@ -357,7 +363,7 @@ class MainActivity : ComponentActivity() {
                     runOnUiThread {
                         Toast.makeText(
                             this@MainActivity,
-                            "Attachment is unreadable or larger than 4 MB",
+                            "Attachment is unreadable or larger than 15 MB",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -466,6 +472,22 @@ class MainActivity : ComponentActivity() {
                 val peerKey = recipientArmoredKey.ifBlank { null }
                 val result = StandalonePgpEngine.decrypt(msg.ciphertext, keys.privateKeyArmored, peerKey)
                 val plainText = String(result.bytes, Charsets.UTF_8)
+                val wire = WireFormat.parse(result.bytes)
+
+                // Anti-replay check (loophole P2): verify timestamp window and deduplicate nonce
+                if (wire != null && wire.nonce != null) {
+                    if (seenNonces.contains(wire.nonce)) {
+                        // Replay attack: old ciphertext re-submitted to the relay
+                        torClient.ack(listOf(msg.id))
+                        return@launch
+                    }
+                    seenNonces.add(wire.nonce)
+                    if (seenNonces.size > 2000) {
+                        val first = seenNonces.iterator().next()
+                        seenNonces.remove(first)
+                    }
+                }
+
                 runOnUiThread {
                     val index = messagesState.indexOfFirst { it.id == msg.id }
                     if (index != -1) {
@@ -486,13 +508,36 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Copy public key with automatic clipboard clearing after 45 seconds (loophole N3).
+     */
+    private fun copyKeyToClipboard(keyText: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("", keyText))
+        Toast.makeText(this, "Public Key copied! (auto-clears in 45s) 📋", Toast.LENGTH_SHORT).show()
+        CoroutineScope(Dispatchers.Main).launch {
+            kotlinx.coroutines.delay(45_000L)
+            try {
+                if (clipboard.hasPrimaryClip() && clipboard.primaryClip?.getItemAt(0)?.text?.toString() == keyText) {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
      * EMERGENCY PANIC WIPE
-     * Erases all memory objects, clears lists, closes sockets, and terminates immediately.
+     * Erases all memory objects, clears lists, closes sockets, wipes clipboard and terminates immediately.
      */
     private fun triggerEmergencyPanicWipe() {
         // Crypto-erase: delete the keystore key and the encrypted identity file, then all settings.
         secureStore.wipe()
         getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        // Issue N6: clear system clipboard so public keys/chat text don't remain
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
+        } catch (_: Exception) {}
+        seenNonces.clear()
         myPgpKeys = null
         recipientArmoredKey = ""
         recipientFingerprint = ""
@@ -689,10 +734,7 @@ class MainActivity : ComponentActivity() {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(
                                 onClick = {
-                                    myPgpKeys?.let {
-                                        clipboardManager.setPrimaryClip(ClipData.newPlainText("PGP Public Key", it.publicKeyArmored))
-                                        Toast.makeText(this@MainActivity, "Public Key copied to clipboard! 📋", Toast.LENGTH_SHORT).show()
-                                    }
+                                    myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) }
                                 },
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
@@ -953,10 +995,7 @@ class MainActivity : ComponentActivity() {
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         SheetAction(Icons.Default.ContentCopy, "COPY MY KEY (includes Drop-ID)", NeonEmerald) {
-                            myPgpKeys?.let {
-                                clipboardManager.setPrimaryClip(ClipData.newPlainText("PGP Public Key", it.publicKeyArmored))
-                                Toast.makeText(this@MainActivity, "Public key copied to clipboard", Toast.LENGTH_SHORT).show()
-                            }
+                            myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) }
                             showKeySheet = false
                         }
                         SheetAction(Icons.Default.Edit, "PASTE / EDIT PEER KEY", NeonEmerald) {
@@ -1071,8 +1110,7 @@ class MainActivity : ComponentActivity() {
                     confirmButton = {
                         Button(
                             onClick = {
-                                clipboardManager.setPrimaryClip(ClipData.newPlainText("PGP Public Key", myPgpKeys!!.publicKeyArmored))
-                                Toast.makeText(this@MainActivity, "Public Key copied to clipboard! 📋", Toast.LENGTH_SHORT).show()
+                                myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) }
                                 showMyKeyDialog = false
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
@@ -1268,10 +1306,13 @@ class MainActivity : ComponentActivity() {
                                 }
                                 relayServerUrl = cleanUrl
                                 val p = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
-                                p.edit()
-                                    .putString("relay_url", relayServerUrl)
-                                    .putBoolean("use_tor", useTorSocks)
-                                    .apply()
+                                val editor = p.edit()
+                                if (!ephemeralMode) {
+                                    editor.putString("relay_url", relayServerUrl)
+                                } else {
+                                    editor.remove("relay_url")
+                                }
+                                editor.putBoolean("use_tor", useTorSocks).apply()
                                 applyNetworkConfig()
                                 myPgpKeys?.let { connectToRelayMailbox(it) }
                             },

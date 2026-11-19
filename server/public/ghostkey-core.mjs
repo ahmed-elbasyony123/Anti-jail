@@ -151,14 +151,21 @@ export function createCore(openpgp, options = {}) {
         return lines.join('\n');
     }
 
+    async function deriveDropId(tokenHex) {
+        if (!isValidHex32(tokenHex)) return null;
+        const hash = await sha256(utf8.encode('drop:' + tokenHex.toLowerCase()));
+        return bytesToHex(hash);
+    }
+
     /**
      * New identity. publicKeyArmored carries both the certified User ID "ghostkey drop:<dropId>"
-     * and the convenience header "Comment: Drop-ID: <dropId>". readToken is secret: never put it in
-     * the key block and never share it.
+     * and the convenience header "Comment: Drop-ID: <dropId>".
+     * dropId is derived cryptographically from readToken: dropId = SHA-256("drop:" + readToken).
+     * readToken is secret: never put it in the key block and never share it.
      */
     async function generateIdentity() {
-        const dropId = randomHex32();
         const readToken = randomHex32();
+        const dropId = await deriveDropId(readToken);
         const { privateKey, publicKey } = await openpgp.generateKey({
             type: 'ecc',
             curve: 'ed25519Legacy',
@@ -220,7 +227,13 @@ export function createCore(openpgp, options = {}) {
     }
 
     function buildText(text) {
-        return withPad({ v: VERSION, type: 'text', text: String(text) });
+        return withPad({
+            v: VERSION,
+            type: 'text',
+            text: String(text),
+            ts: Date.now(),
+            nonce: bytesToHex(randomBytes(16))
+        });
     }
 
     function buildMedia(mimeType, filename, bytes) {
@@ -229,25 +242,31 @@ export function createCore(openpgp, options = {}) {
             type: 'media',
             mimeType: String(mimeType || 'application/octet-stream'),
             filename: String(filename || 'file'),
-            data: bytesToBase64(bytes)
+            data: bytesToBase64(bytes),
+            ts: Date.now(),
+            nonce: bytesToHex(randomBytes(16))
         });
     }
 
-    /** Returns { type, text } or { type, mimeType, filename, data } (data = base64), or null. */
+    /** Returns { type, text, ts, nonce } or { type, mimeType, filename, data, ts, nonce } (data = base64), or null. */
     function parseWire(input) {
         try {
             const text = typeof input === 'string' ? input : utf8d.decode(input);
             const obj = JSON.parse(text);
             if (!obj || typeof obj !== 'object' || obj.v !== VERSION) return null;
+            const ts = typeof obj.ts === 'number' ? obj.ts : null;
+            const nonce = typeof obj.nonce === 'string' ? obj.nonce : null;
             if (obj.type === 'text' && typeof obj.text === 'string') {
-                return { type: 'text', text: obj.text };
+                return { type: 'text', text: obj.text, ts, nonce };
             }
             if (obj.type === 'media' && typeof obj.data === 'string') {
                 return {
                     type: 'media',
                     mimeType: typeof obj.mimeType === 'string' ? obj.mimeType : 'application/octet-stream',
                     filename: typeof obj.filename === 'string' ? obj.filename : 'file',
-                    data: obj.data
+                    data: obj.data,
+                    ts,
+                    nonce
                 };
             }
             return null;
@@ -342,6 +361,7 @@ export function createCore(openpgp, options = {}) {
         VERSION,
         randomHex32,
         isValidHex32,
+        deriveDropId,
         bytesToBase64,
         base64ToBytes,
         sha256,

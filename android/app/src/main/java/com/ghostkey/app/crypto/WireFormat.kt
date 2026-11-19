@@ -10,7 +10,9 @@ class WireMessage(
     val text: String?,          // for type == "text"
     val mimeType: String?,      // for type == "media"
     val filename: String?,      // for type == "media"
-    val data: String?           // for type == "media": standard base64 (no data: prefix)
+    val data: String?,          // for type == "media": standard base64 (no data: prefix)
+    val timestamp: Long? = null,
+    val nonce: String? = null
 ) {
     val isMedia: Boolean get() = type == TYPE_MEDIA
 
@@ -23,7 +25,7 @@ class WireMessage(
 /**
  * Unified v2 plaintext JSON, identical on Android and Web:
  *   { "v": 2, "type": "text" | "media", "text": "...", "mimeType": "...", "filename": "...",
- *     "data": "<base64>", "pad": "<random base64url>" }
+ *     "data": "<base64>", "ts": 1234567890, "nonce": "...", "pad": "<random base64url>" }
  *
  * `pad` is random filler that rounds the plaintext up to a size bucket so the exact message
  * length is not directly visible in the ciphertext size (it does not hide it completely).
@@ -38,11 +40,19 @@ object WireFormat {
 
     private val random = SecureRandom()
 
+    private fun randomHex16(): String {
+        val b = ByteArray(16)
+        random.nextBytes(b)
+        return b.joinToString("") { "%02x".format(it) }
+    }
+
     fun buildText(text: String): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
         obj.put("type", WireMessage.TYPE_TEXT)
         obj.put("text", text)
+        obj.put("ts", System.currentTimeMillis())
+        obj.put("nonce", randomHex16())
         return withPad(obj)
     }
 
@@ -53,6 +63,8 @@ object WireFormat {
         obj.put("mimeType", mimeType)
         obj.put("filename", filename)
         obj.put("data", Base64.getEncoder().encodeToString(bytes))
+        obj.put("ts", System.currentTimeMillis())
+        obj.put("nonce", randomHex16())
         return withPad(obj)
     }
 
@@ -78,10 +90,12 @@ object WireFormat {
         return try {
             val obj = JSONObject(String(bytes, Charsets.UTF_8))
             if (obj.optInt("v", -1) != VERSION) return null
+            val ts = if (obj.has("ts")) obj.getLong("ts") else null
+            val nonce = obj.optString("nonce", null)
             when (val type = obj.optString("type")) {
                 WireMessage.TYPE_TEXT -> {
                     if (!obj.has("text")) return null
-                    WireMessage(type, obj.getString("text"), null, null, null)
+                    WireMessage(type, obj.getString("text"), null, null, null, ts, nonce)
                 }
                 WireMessage.TYPE_MEDIA -> {
                     if (!obj.has("data")) return null
@@ -89,7 +103,9 @@ object WireFormat {
                         type, null,
                         obj.optString("mimeType", "application/octet-stream"),
                         obj.optString("filename", "file"),
-                        obj.getString("data")
+                        obj.getString("data"),
+                        ts,
+                        nonce
                     )
                 }
                 else -> null

@@ -73,18 +73,18 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.0
-          name: "GhostKey v2.0.0 (Protocol v2 & Security Hardening)"
+          tag_name: v2.1.0
+          name: "GhostKey v2.1.0 (Security Hardening & 15MB Media)"
           body: |
-            ### 🛡️ GhostKey v2.0.0 (Protocol v2 & Security Hardening)
-            - **Wire Protocol v2:** Random drop IDs, hashed read-tokens, and ACK-based message deletion
-            - **Modern Cryptography:** Ed25519 (sign/certify) + X25519 (encryption) OpenPGP v4 (BouncyCastle 1.78)
-            - **Signed-then-Encrypted Messages:** Payloads are signed with sender's key; recipient UI shows verified/invalid status
-            - **Hardware-Backed Storage:** Identity saved via AndroidKeyStore AES-256-GCM; messages remain RAM-only
-            - **Anti-Forensics:** Android FLAG_SECURE, Ephemeral mode, App lock (biometric/PIN), and one-tap Burn Identity
-            - **Traffic Analysis Defense:** Uniform bucket padding (512 B / 16 KB)
-            - **Tor Integration:** SOCKS5 proxy with remote DNS leak protection, Orbot auto-discovery, exponential backoff
-            - **UI Polish:** Auto-scroll on new messages & keyboard show; collapsible key bar into bottom sheet
+            ### 🛡️ GhostKey v2.1.0 (Protocol v2.1 Hardening & Optimization)
+            - **Drop-ID Cryptographic Derivation:** `dropId = SHA-256("drop:" + readToken)` prevents mailbox squatting and front-running
+            - **Replay Attack Defense:** Monotonic timestamp window and nonce deduplication in signed wire format
+            - **Media Capacity Upgrade:** Raised uncompressed attachment limit to 15 MB with streaming server pipeline (25 MB cap)
+            - **Forensic Hardening:** Cleartext relay URL removed from disk in Ephemeral mode; system clipboard automatically cleared after 45s and on panic wipe
+            - **Stealth Notifications:** Renamed foreground service to neutral system task to prevent lock-screen eavesdropping
+            - **Web Client Security:** Eliminated `dangerouslySetInnerHTML` in React companion; strictly sandboxed inline media
+            - **Server Crash Resilience:** Added global unhandled rejection & exception handlers with rate-limited auth protection
+            - **ProGuard / R8 Hardening:** Removed wildcard keep rules for maximum binary obfuscation and footprint minimization
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -8,7 +8,7 @@
 import { createCore } from './ghostkey-core.mjs';
 import { renderBubble } from './ghostkey-ui.mjs';
 
-const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;   // the relay accepts at most 10 MB per request
+const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;   // 15 MB media attachment cap
 const TTL_SECONDS = 3600;
 
 function backoffMs(attempt) {
@@ -29,7 +29,8 @@ export function startApp(env) {
         identity: null,
         peer: null,
         messages: [],
-        seen: new Map(),            // message id -> 'pending' | 'done' | 'failed'
+        seen: new Map(),            // message id -> 'pending' | 'done' | 'failed' (capped at 5000)
+        seenNonces: new Set(),      // anti-replay nonce deduplication set
         attachment: null,
         ws: null,
         gen: 0,
@@ -190,6 +191,10 @@ export function startApp(env) {
         const prior = state.seen.get(record.id);
         if (prior === 'done') { ackMessages([record.id]); return; }     // an earlier ACK may have been lost
         if (prior === 'pending') return;
+        if (state.seen.size > 5000) {
+            const first = state.seen.keys().next().value;
+            state.seen.delete(first);
+        }
         state.seen.set(record.id, 'pending');
 
         try {
@@ -200,6 +205,24 @@ export function startApp(env) {
             );
             if (state.identity !== identity) return;                   // identity replaced or wiped meanwhile
             const payload = core.parseWire(result.bytes);
+
+            // Replay attack defense (loophole P2): verify timestamp and deduplicate nonce
+            if (payload && payload.nonce) {
+                if (state.seenNonces.has(payload.nonce)) {
+                    log(`[REPLAY WARNING] Duplicate nonce detected: ${payload.nonce.slice(0, 8)}... Ignored.`, 'warn');
+                    ackMessages([record.id]);
+                    return;
+                }
+                if (payload.ts && Math.abs(Date.now() - payload.ts) > 15 * 60 * 1000) {
+                    log(`[REPLAY WARNING] Message timestamp skewed by > 15 min (${new Date(payload.ts).toLocaleTimeString()}).`, 'warn');
+                }
+                state.seenNonces.add(payload.nonce);
+                if (state.seenNonces.size > 5000) {
+                    const oldest = state.seenNonces.values().next().value;
+                    state.seenNonces.delete(oldest);
+                }
+            }
+
             upsertMessage({
                 id: record.id,
                 isOutgoing: false,
@@ -400,8 +423,8 @@ export function startApp(env) {
         const file = event.target.files && event.target.files[0];
         if (!file) return;
         if (file.size > MAX_ATTACHMENT_BYTES) {
-            log('Attachment is larger than 4 MB and was not added.', 'error');
-            showPeerError('Attachment is larger than 4 MB.');
+            log('Attachment is larger than 15 MB and was not added.', 'error');
+            showPeerError('Attachment is larger than 15 MB.');
             event.target.value = '';
             return;
         }
@@ -485,6 +508,7 @@ export function startApp(env) {
         state.peer = null;
         state.messages = [];
         state.seen.clear();
+        state.seenNonces.clear();
         state.attachment = null;
         state.authFailed = false;
         revokeBlobUrls();

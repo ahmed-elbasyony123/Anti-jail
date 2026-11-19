@@ -115,11 +115,15 @@ class TorRelayClient(
         return builder.build()
     }
 
-    /** Accepts a relay URL typed by a person: adds http:// when missing and trims slashes. */
+    /** Accepts a relay URL typed by a person: adds https:// (or http:// for .onion/loopback) when missing and trims slashes. */
     private fun sanitizeUrl(url: String): String {
         var clean = url.trim()
         if (clean.isNotEmpty() && !clean.startsWith("http://") && !clean.startsWith("https://")) {
-            clean = "http://$clean"
+            clean = if (clean.contains(".onion") || clean.startsWith("127.0.0.1") || clean.startsWith("localhost") || clean.startsWith("10.0.2.2")) {
+                "http://$clean"
+            } else {
+                "https://$clean"
+            }
         }
         return clean.trimEnd('/')
     }

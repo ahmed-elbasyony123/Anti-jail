@@ -89,20 +89,30 @@ object StandalonePgpEngine {
 
     fun isValidHex32(value: String?): Boolean = value != null && HEX_64.matches(value)
 
+    /**
+     * Cryptographically derives a dropId from a secret readToken: dropId = SHA-256("drop:" + readToken).
+     * Eliminates dropId squatting and front-running entirely (loophole P1).
+     */
+    fun deriveDropId(readToken: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val digest = md.digest(("drop:" + readToken.lowercase()).toByteArray(Charsets.UTF_8))
+        return hex(digest)
+    }
+
     // ---------------------------------------------------------------------------------------
     // Key generation
     // ---------------------------------------------------------------------------------------
 
     /**
      * Generate a fresh identity: Ed25519 primary key + X25519 encryption subkey, plus a random
-     * 32-byte hex [PgpKeyPairArmored.dropId] and [PgpKeyPairArmored.readToken].
+     * 32-byte hex [PgpKeyPairArmored.readToken] and cryptographically derived [PgpKeyPairArmored.dropId].
      *
      * The dropId is also bound into the key's self-certified User ID, so a peer can detect a
      * swapped "Drop-ID" comment header (the armor header itself is not signed).
      */
     fun generateKeyPair(): PgpKeyPairArmored {
-        val dropId = randomHex32()
         val readToken = randomHex32()
+        val dropId = deriveDropId(readToken)
         val userId = "ghostkey drop:$dropId"
 
         val edGen = KeyPairGenerator.getInstance("EdDSA", bcProvider)
