@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Push-to-Talk (PTT) Encrypted Voice Notes -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Optional keep-alive foreground service (user-enabled in Settings) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
