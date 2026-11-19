@@ -86,16 +86,21 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.4.0
-          name: "GhostKey v2.4.0 (Zero-Leakage Tor Push Notifications & Background Alerts)"
+          tag_name: v2.5.0
+          name: "GhostKey v2.5.0 (Telegram UI, Anthropic Palette & E2EE Group Chats)"
           body: |
-            ### 🔔 GhostKey v2.4.0 (Zero-Leakage Tor Push Notifications & Background Alerts)
-            - **Tor Push Notifications (Zero Google FCM):** 100% private, tracker-free background push notifications delivered directly over Tor Onion WebSocket circuits without Google Play Services or third-party telemetry.
-            - **Stealth Notification Policy:** Sanitized lockscreen notifications (`VISIBILITY_PRIVATE`) masking sensitive sender fingerprints and message text from shoulder surfers.
-            - **Distinct Payload Badges:** Context-aware alerts for encrypted Opus voice notes (`🎙️ Encrypted Opus voice note`), file attachments (`📎 Encrypted file attachment`), and text messages (`💬 New encrypted message`).
-            - **Web Companion Alerts:** Integrated Web Desktop Notifications API for instant background message alerts when the browser tab is hidden.
-            - **Embedded Arti Tor Engine (Rust):** Official in-process Tor routing engine (`arti-client`) with zero external app dependencies.
-            - **Encrypted Opus PTT Voice Messaging:** High-fidelity RAM-only voice notes with panic wipe sanitization.
+            ### 📱 GhostKey v2.5.0 (New Telegram UI, Anthropic Palette & E2EE Group Chats)
+            - **New Telegram UI Layout:**
+              - Clean conversations list with initials avatars, unread badges, timestamps, and Floating Action Button (`+`).
+              - Navigation Drawer (`☰`) containing Identity Card, Drop ID, Fingerprint Copy, Tor circuit live telemetry, and Panic Wipe.
+              - Clutter-free Chat Screen: Removed top KeyBar clutter; replaced with Telegram asymmetric bubbles (`20dp`/`4dp`), inline time stamps, and read receipts (`✓✓`).
+              - Floating pill capsule input bar with morphing voice note mic button and audio waveform player.
+              - Dedicated grouped Settings screen for Tor Network, Push Notifications, Device Privacy, and Security Keys.
+            - **Anthropic Official Brand Palette:** Creamy & warm terracotta styling (`#FAF9F5`, `#141413`, `#D97757`, `#788C5D`, `#6A9BCC`).
+            - **Zero-Metadata E2EE Group Chats:** Group messaging using AES-256-GCM symmetric session encryption distributed pairwise via OpenPGP envelopes over shared `GroupDropId` blind relays.
+            - **Hardware-Backed Contacts & Identity Aliases:** User-friendly aliases authenticated inside OpenPGP User IDs (`Alias <ghostkey drop:ID>`) and persisted in KeyStore-encrypted `SecureStore`.
+            - **Tor & Relay Connectivity Fixes:** In-process Arti DNS lookup fallback directly sending `.onion` hosts to SOCKS5 (ATYP `0x03`), eliminating Orbot requirement.
+            - **Brave Tor / Tor Browser Alerts:** Audio chime (Web Audio API) and title blinking when browser permissions block HTML5 system notifications.
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
