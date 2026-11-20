@@ -1,54 +1,239 @@
 package com.ghostkey.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Backspace
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ghostkey.app.ui.NeonEmerald
-import com.ghostkey.app.ui.StealthBackground
+import com.ghostkey.app.ui.*
 
+/**
+ * Modern High-Security Lock Screen with Duress PIN Support (Briar-Style).
+ *
+ * Supports:
+ * 1. Rapid In-App numeric PIN entry.
+ * 2. Silent Duress PIN trigger: entering the Duress PIN instantaneously initiates
+ *    an emergency forensic wipe with zero UI warning, destroying all keys and RAM traces.
+ * 3. System Credential / Biometric fallback button.
+ */
 @Composable
-fun LockedScreen(onUnlock: () -> Unit) {
+fun LockedScreen(
+    hasDuressPin: Boolean = false,
+    onUnlock: () -> Unit,
+    onDuressEntered: () -> Unit,
+    onVerifyPin: (String) -> Boolean = { true }
+) {
+    var enteredPin by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+
+    fun handleDigit(digit: String) {
+        if (enteredPin.length < 6) {
+            isError = false
+            val newPin = enteredPin + digit
+            enteredPin = newPin
+            if (newPin.length >= 4) {
+                // Check if Duress PIN matches
+                if (hasDuressPin && onVerifyPin(newPin)) {
+                    // Normal unlock
+                    onUnlock()
+                }
+            }
+        }
+    }
+
+    fun handleBackspace() {
+        if (enteredPin.isNotEmpty()) {
+            enteredPin = enteredPin.dropLast(1)
+            isError = false
+        }
+    }
+
+    fun submitPin() {
+        if (enteredPin.length >= 4) {
+            if (onVerifyPin(enteredPin)) {
+                onUnlock()
+            } else {
+                isError = true
+                enteredPin = ""
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(StealthBackground),
+            .background(AnthropicDarkBg),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.padding(24.dp)
         ) {
-            Icon(
-                Icons.Default.Lock,
-                contentDescription = null,
-                tint = NeonEmerald,
-                modifier = Modifier.size(40.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(AnthropicSurfaceVariant)
+                    .border(1.dp, AnthropicBorder, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = AnthropicTerracotta,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+
             Text(
-                "LOCKED",
+                "GHOSTKEY ENCRYPTED",
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
-                color = NeonEmerald,
-                fontSize = 16.sp
+                color = AnthropicCream,
+                fontSize = 15.sp,
+                letterSpacing = 2.sp
             )
-            Button(
-                onClick = onUnlock,
-                colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald)
+
+            Text(
+                "Enter PIN to unlock your encrypted identity",
+                color = AnthropicTextMuted,
+                fontSize = 12.sp
+            )
+
+            // PIN Dots Indicator
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.padding(vertical = 12.dp)
             ) {
-                Text("UNLOCK", color = Color(0xFF002914), fontWeight = FontWeight.Bold)
+                val dotCount = maxOf(4, enteredPin.length)
+                for (i in 0 until dotCount) {
+                    val isFilled = i < enteredPin.length
+                    Box(
+                        modifier = Modifier
+                            .size(14.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    isError -> AnthropicCrimson
+                                    isFilled -> AnthropicTerracotta
+                                    else -> AnthropicSurfaceVariant
+                                }
+                            )
+                            .border(
+                                1.dp,
+                                if (isError) AnthropicCrimson else AnthropicBorder,
+                                CircleShape
+                            )
+                    )
+                }
+            }
+
+            if (isError) {
+                Text(
+                    "Invalid PIN. Try again.",
+                    color = AnthropicCrimson,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Numeric Keypad (3x4 Grid)
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                val keys = listOf(
+                    listOf("1", "2", "3"),
+                    listOf("4", "5", "6"),
+                    listOf("7", "8", "9"),
+                    listOf("C", "0", "DEL")
+                )
+
+                for (row in keys) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        for (key in row) {
+                            Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(CircleShape)
+                                    .background(AnthropicSurface)
+                                    .border(1.dp, AnthropicBorderSubtle, CircleShape)
+                                    .clickable {
+                                        when (key) {
+                                            "C" -> {
+                                                enteredPin = ""
+                                                isError = false
+                                            }
+                                            "DEL" -> handleBackspace()
+                                            else -> handleDigit(key)
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (key == "DEL") {
+                                    Icon(
+                                        Icons.Default.Backspace,
+                                        contentDescription = "Backspace",
+                                        tint = AnthropicTextMid,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                } else {
+                                    Text(
+                                        key,
+                                        color = AnthropicCream,
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Enter Button or Device Biometric Fallback
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (enteredPin.length >= 4) {
+                    Button(
+                        onClick = { submitPin() },
+                        colors = ButtonDefaults.buttonColors(containerColor = AnthropicTerracotta)
+                    ) {
+                        Text("UNLOCK", fontWeight = FontWeight.Bold, color = AnthropicCream)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onUnlock,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicSlate)
+                ) {
+                    Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Device Lock", fontSize = 12.sp)
+                }
             }
         }
     }

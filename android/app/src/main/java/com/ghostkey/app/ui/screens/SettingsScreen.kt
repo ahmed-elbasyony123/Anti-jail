@@ -56,7 +56,9 @@ fun SettingsScreen(
     ) -> Unit,
     onGenerateNewKey: () -> Unit,
     onCopyKey: () -> Unit,
-    onVerifySafetyCode: () -> Unit
+    onVerifySafetyCode: () -> Unit,
+    duressPinConfigured: Boolean = false,
+    onSetDuressPin: (String?) -> Unit = {}
 ) {
     var relayUrl by remember { mutableStateOf(initialRelayUrl) }
     var useTorSocks by remember { mutableStateOf(initialUseTorSocks) }
@@ -64,6 +66,8 @@ fun SettingsScreen(
     var ephemeralMode by remember { mutableStateOf(initialEphemeralMode) }
     var lockEnabled by remember { mutableStateOf(initialLockEnabled) }
     var alias by remember { mutableStateOf(userAlias) }
+    var showDuressDialog by remember { mutableStateOf(false) }
+    var duressInput by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -258,20 +262,32 @@ fun SettingsScreen(
 
                 HorizontalDivider(color = AnthropicBorderSubtle, modifier = Modifier.padding(vertical = 8.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            duressInput = ""
+                            showDuressDialog = true
+                        }
+                ) {
                     Box(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(RoundedCornerShape(10.dp))
-                            .background(AnthropicSurfaceVariant),
+                            .background(AnthropicCrimson.copy(alpha = 0.2f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.Screenshot, contentDescription = null, tint = AnthropicTextMuted, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = AnthropicCrimson, modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text("Screen Protection (FLAG_SECURE)", color = AnthropicCream, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("Screenshots, screen recording and app recents thumbnails blocked", color = AnthropicTextMuted, fontSize = 11.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Duress PIN / Panic Wipe (Briar-Style)", color = AnthropicCream, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            if (duressPinConfigured) "Configured: Entering decoy PIN silently executes emergency wipe" else "Disabled: Tap to set an emergency decoy wipe PIN",
+                            color = if (duressPinConfigured) AnthropicSage else AnthropicTextMuted,
+                            fontSize = 11.sp
+                        )
                     }
                 }
             }
@@ -310,6 +326,70 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+        }
+
+        if (showDuressDialog) {
+            AlertDialog(
+                onDismissRequest = { showDuressDialog = false },
+                containerColor = AnthropicSurface,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = AnthropicCrimson)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Duress PIN (Briar-Style)", color = AnthropicCream, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            "Enter a 4 to 6 digit decoy PIN. If you are ever forced to unlock GhostKey under duress, enter this PIN instead: GhostKey will instantly wipe all cryptographic keys, delete local data, and terminate with zero forensic traces.",
+                            color = AnthropicTextMuted,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                        OutlinedTextField(
+                            value = duressInput,
+                            onValueChange = { if (it.length <= 6 && it.all { ch -> ch.isDigit() }) duressInput = it },
+                            label = { Text("Duress PIN (4-6 digits)") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AnthropicCrimson,
+                                unfocusedBorderColor = AnthropicBorder,
+                                focusedTextColor = AnthropicCream,
+                                unfocusedTextColor = AnthropicCream
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (duressInput.length >= 4) {
+                                onSetDuressPin(duressInput)
+                                showDuressDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AnthropicCrimson)
+                    ) {
+                        Text("Set Duress PIN", fontWeight = FontWeight.Bold, color = AnthropicCream)
+                    }
+                },
+                dismissButton = {
+                    if (duressPinConfigured) {
+                        TextButton(onClick = {
+                            onSetDuressPin(null)
+                            showDuressDialog = false
+                        }) {
+                            Text("Disable PIN", color = AnthropicTextMuted)
+                        }
+                    } else {
+                        TextButton(onClick = { showDuressDialog = false }) {
+                            Text("Cancel", color = AnthropicTextMuted)
+                        }
+                    }
+                }
+            )
         }
     }
 }

@@ -36,6 +36,8 @@ fun TelegramDrawer(
     onCopyDropId: () -> Unit,
     onCopyFingerprint: () -> Unit,
     onCopyPublicKey: () -> Unit = {},
+    onShowMyQr: () -> Unit = {},
+    onPairContact: () -> Unit = {},
     onEmergencyPanic: () -> Unit
 ) {
     ModalDrawerSheet(
@@ -193,6 +195,20 @@ fun TelegramDrawer(
                 title = "All Chats & Contacts",
                 badge = null,
                 onClick = onNavigateChats
+            )
+
+            DrawerItem(
+                icon = Icons.Default.QrCode,
+                title = "My Contact QR (مفتاحي)",
+                badge = "Pair",
+                onClick = onShowMyQr
+            )
+
+            DrawerItem(
+                icon = Icons.Default.QrCodeScanner,
+                title = "Pair Peer (Briar SAS)",
+                badge = "In-Person",
+                onClick = onPairContact
             )
 
             DrawerItem(

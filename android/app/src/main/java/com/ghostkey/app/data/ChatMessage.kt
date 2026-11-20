@@ -34,8 +34,20 @@ data class ChatMessage(
     val filename: String = "",
     val mediaBitmap: ImageBitmap? = null,
     val audioBytes: ByteArray? = null,
-    val audioDurationMs: Long = 0L
+    val audioDurationMs: Long = 0L,
+    val expiresAt: Long? = null,
+    val ttlSeconds: Long? = null
 ) {
+    fun isExpired(now: Long = System.currentTimeMillis()): Boolean =
+        expiresAt != null && now >= expiresAt
+
+    fun remainingSeconds(now: Long = System.currentTimeMillis()): Long? =
+        expiresAt?.let { maxOf(0L, (it - now) / 1000L) }
+
+    fun zeroOut() {
+        audioBytes?.let { java.util.Arrays.fill(it, 0.toByte()) }
+    }
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
@@ -60,6 +72,8 @@ data class ChatMessage(
         if (mimeType != other.mimeType) return false
         if (filename != other.filename) return false
         if (audioDurationMs != other.audioDurationMs) return false
+        if (expiresAt != other.expiresAt) return false
+        if (ttlSeconds != other.ttlSeconds) return false
         if (mediaBitmap != other.mediaBitmap) return false
         if (audioBytes != null) {
             if (other.audioBytes == null) return false
@@ -90,6 +104,8 @@ data class ChatMessage(
         result = 31 * result + (mediaBitmap?.hashCode() ?: 0)
         result = 31 * result + (audioBytes?.contentHashCode() ?: 0)
         result = 31 * result + audioDurationMs.hashCode()
+        result = 31 * result + (expiresAt?.hashCode() ?: 0)
+        result = 31 * result + (ttlSeconds?.hashCode() ?: 0)
         return result
     }
 }

@@ -40,15 +40,25 @@ jobs:
         working-directory: ./android
         run: chmod +x ./gradlew
 
+      - name: Cache Arti Native Libraries (libarti_mobile.so)
+        id: cache-arti
+        uses: actions/cache@v4
+        with:
+          path: android/app/src/main/jniLibs
+          key: arti-jni-v1-${{ hashFiles('rust/arti-mobile/**') }}
+
       - name: Set up Rust Toolchain
+        if: steps.cache-arti.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Install cargo-ndk
+        if: steps.cache-arti.outputs.cache-hit != 'true'
         run: cargo install cargo-ndk
 
       - name: Build Arti Tor Native Libraries
+        if: steps.cache-arti.outputs.cache-hit != 'true'
         working-directory: ./rust/arti-mobile
         run: |
           mkdir -p ../../android/app/src/main/jniLibs

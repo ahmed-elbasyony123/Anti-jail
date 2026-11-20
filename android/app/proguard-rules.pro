@@ -13,3 +13,7 @@
     native <methods>;
 }
 -keep class com.ghostkey.app.net.ArtiTorManager { *; }
+
+# ZXing Core
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**

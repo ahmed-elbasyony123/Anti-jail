@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.*
@@ -186,6 +187,30 @@ fun MessageBubble(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (message.expiresAt != null) {
+                        val rem = message.remainingSeconds()
+                        val remText = if (rem != null) {
+                            if (rem >= 3600) "${rem / 3600}h"
+                            else if (rem >= 60) "${rem / 60}m"
+                            else "${rem}s"
+                        } else ""
+                        Icon(
+                            Icons.Default.HourglassBottom,
+                            contentDescription = "Disappearing message",
+                            tint = AnthropicTerracotta,
+                            modifier = Modifier.size(11.dp)
+                        )
+                        if (remText.isNotBlank()) {
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = remText,
+                                fontSize = 9.sp,
+                                color = AnthropicTerracotta,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
                     Text(
                         text = timeFormat.format(Date(message.timestamp)),
                         fontSize = 10.sp,

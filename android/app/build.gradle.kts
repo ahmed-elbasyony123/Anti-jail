@@ -12,8 +12,8 @@ android {
         applicationId = "com.ghostkey.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "2.5.2"
+        versionCode = 14
+        versionName = "2.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -86,4 +86,7 @@ dependencies {
 
     // Kotlin Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // QR Code Generation & Scanning (Briar-style In-Person Pairing)
+    implementation("com.google.zxing:core:3.5.3")
 }

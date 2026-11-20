@@ -61,9 +61,12 @@ fun CleanChatScreen(
     onAudioSeek: (ChatMessage, Float) -> Unit,
     onManualDecrypt: (ChatMessage) -> Unit = {},
     onOpenSafetyCode: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    disappearingTtlSeconds: Long? = null,
+    onSetDisappearingTimer: (Long?) -> Unit = {}
 ) {
     var inputText by remember { mutableStateOf("") }
+    var showTtlMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val filePicker = rememberLauncherForActivityResult(
@@ -140,6 +143,52 @@ fun CleanChatScreen(
                     }
                 },
                 actions = {
+                    Box {
+                        IconButton(onClick = { showTtlMenu = true }) {
+                            Icon(
+                                Icons.Default.HourglassBottom,
+                                contentDescription = "Disappearing Messages",
+                                tint = if (disappearingTtlSeconds != null) AnthropicTerracotta else AnthropicTextMuted
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showTtlMenu,
+                            onDismissRequest = { showTtlMenu = false },
+                            modifier = Modifier.background(AnthropicSurface)
+                        ) {
+                            Text(
+                                "Auto-Delete Timer (Briar-Style)",
+                                color = AnthropicCream,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                            val options = listOf(
+                                null to "Off (Never delete)",
+                                30L to "30 Seconds",
+                                300L to "5 Minutes",
+                                3600L to "1 Hour",
+                                86400L to "24 Hours",
+                                604800L to "7 Days"
+                            )
+                            for ((sec, label) in options) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = label,
+                                            color = if (disappearingTtlSeconds == sec) AnthropicTerracotta else AnthropicCream,
+                                            fontWeight = if (disappearingTtlSeconds == sec) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 13.sp
+                                        )
+                                    },
+                                    onClick = {
+                                        onSetDisappearingTimer(sec)
+                                        showTtlMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = onOpenSafetyCode) {
                         Icon(Icons.Default.VerifiedUser, contentDescription = "Safety Code", tint = AnthropicSage)
                     }

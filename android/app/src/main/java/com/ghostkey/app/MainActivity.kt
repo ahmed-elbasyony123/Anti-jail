@@ -111,6 +111,12 @@ class MainActivity : ComponentActivity() {
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
     private val sentCiphertexts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    // Briar-Style Features: QR Pairing, Disappearing Messages, Duress PIN
+    private var duressPinHash: String? = null
+    private var showMyQrDialog by mutableStateOf(false)
+    private var showPairContactDialog by mutableStateOf(false)
+    private var disappearingReaperJob: kotlinx.coroutines.Job? = null
+
     // Encrypted PTT Audio Voice Notes (Opus in RAM)
     private lateinit var audioRecorderManager: AudioRecorderManager
     private val audioPlayerManager = AudioPlayerManager()
@@ -182,11 +188,27 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (keepAlive) TorForegroundService.start(this)
+        startDisappearingMessagesReaper()
 
         setContent {
             GhostKeyTheme {
                 if (isLocked) {
-                    LockedScreen(onUnlock = { requestUnlock() })
+                    LockedScreen(
+                        hasDuressPin = !duressPinHash.isNullOrBlank(),
+                        onUnlock = { requestUnlock() },
+                        onDuressEntered = { triggerEmergencyPanicWipe() },
+                        onVerifyPin = { pin ->
+                            val hash = hashPin(pin)
+                            if (!duressPinHash.isNullOrBlank() && hash == duressPinHash) {
+                                // Duress PIN entered — silent panic wipe
+                                triggerEmergencyPanicWipe()
+                                false
+                            } else {
+                                // Not duress, let device credential handle unlock
+                                true
+                            }
+                        }
+                    )
                 } else {
                     MainModernApp()
                 }
@@ -316,6 +338,7 @@ class MainActivity : ComponentActivity() {
     private fun applyIdentity(stored: StoredIdentity) {
         myPgpKeys = stored.mine
         userAlias = stored.userAlias
+        duressPinHash = stored.duressPinHash
         contacts.clear()
         contacts.addAll(stored.contacts)
         groups.clear()
@@ -355,7 +378,8 @@ class MainActivity : ComponentActivity() {
             peer = peer,
             userAlias = userAlias,
             contacts = contacts.toList(),
-            groups = groups.toList()
+            groups = groups.toList(),
+            duressPinHash = duressPinHash
         )
         CoroutineScope(persistDispatcher).launch {
             try {
@@ -525,11 +549,20 @@ class MainActivity : ComponentActivity() {
 
     private fun sendMessage(text: String, targetChatId: String = "") {
         if (text.isBlank()) return
-        sendPayload(payload = WireFormat.buildText(text, senderAlias = userAlias), isMedia = false, displayText = text, targetChatId = targetChatId)
+        val finalChatId = targetChatId.ifBlank { recipientDropId }
+        val ttl = getDisappearingTtlForChat(finalChatId)
+        sendPayload(
+            payload = WireFormat.buildText(text, senderAlias = userAlias, ttlSeconds = ttl),
+            isMedia = false,
+            displayText = text,
+            targetChatId = targetChatId
+        )
     }
 
     private fun sendAudioRecordResult(result: AudioRecordResult, targetChatId: String = "") {
-        val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes, senderAlias = userAlias)
+        val finalChatId = targetChatId.ifBlank { recipientDropId }
+        val ttl = getDisappearingTtlForChat(finalChatId)
+        val payload = WireFormat.buildMedia(result.mimeType, result.filename, result.bytes, senderAlias = userAlias, ttlSeconds = ttl)
         sendPayload(
             payload = payload,
             isMedia = true,
@@ -585,6 +618,9 @@ class MainActivity : ComponentActivity() {
                 result.onSuccess {
                     runOnUiThread {
                         val cleanText = if (isMedia) null else (displayText ?: WireFormat.parse(payload)?.text ?: String(payload, Charsets.UTF_8))
+                        val wire = WireFormat.parse(payload)
+                        val ttl = wire?.ttlSeconds
+                        val expires = if (ttl != null && ttl > 0) System.currentTimeMillis() + (ttl * 1000L) else null
                         val msg = ChatMessage(
                             id = UUID.randomUUID().toString(),
                             isOutgoing = true,
@@ -600,7 +636,9 @@ class MainActivity : ComponentActivity() {
                             audioBytes = audioBytes,
                             audioDurationMs = audioDurationMs,
                             chatId = finalChatId,
-                            senderAlias = userAlias
+                            senderAlias = userAlias,
+                            expiresAt = expires,
+                            ttlSeconds = ttl
                         )
                         messagesState.add(msg)
                     }
@@ -676,6 +714,9 @@ class MainActivity : ComponentActivity() {
                         displayText = wire?.text ?: String(plainBytes, Charsets.UTF_8)
                     }
 
+                    val wireTtl = wire?.ttlSeconds
+                    val expires = if (wireTtl != null && wireTtl > 0) System.currentTimeMillis() + (wireTtl * 1000L) else null
+
                     runOnUiThread {
                         val index = messagesState.indexOfFirst { it.id == msg.id }
                         if (index != -1) {
@@ -692,7 +733,9 @@ class MainActivity : ComponentActivity() {
                                 chatId = group.id,
                                 groupId = group.id,
                                 isGroup = true,
-                                senderAlias = wire?.senderAlias
+                                senderAlias = wire?.senderAlias,
+                                expiresAt = expires,
+                                ttlSeconds = wireTtl
                             )
                             torClient.ack(listOf(msg.id), dropId = group.groupDropId)
                         }
@@ -797,6 +840,8 @@ class MainActivity : ComponentActivity() {
                 val senderFp = result.signerFingerprint
                 val matchedContact = contacts.find { it.fingerprint == senderFp }
                 val targetChat = matchedContact?.dropId ?: dropId
+                val wireTtl = wire?.ttlSeconds
+                val expires = if (wireTtl != null && wireTtl > 0) System.currentTimeMillis() + (wireTtl * 1000L) else null
 
                 runOnUiThread {
                     val index = messagesState.indexOfFirst { it.id == msg.id }
@@ -814,7 +859,9 @@ class MainActivity : ComponentActivity() {
                             signatureStatus = result.signatureStatus,
                             signerFingerprint = result.signerFingerprint,
                             chatId = targetChat,
-                            senderAlias = wire?.senderAlias ?: matchedContact?.alias
+                            senderAlias = wire?.senderAlias ?: matchedContact?.alias,
+                            expiresAt = expires,
+                            ttlSeconds = wireTtl
                         )
                         torClient.ack(listOf(msg.id), dropId = dropId)
                     }
@@ -860,6 +907,47 @@ class MainActivity : ComponentActivity() {
         copyToClipboard("Public Key", keyText)
     }
 
+    private fun hashPin(pin: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = md.digest(pin.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun setDuressPin(pin: String?) {
+        duressPinHash = if (pin != null) hashPin(pin) else null
+        persistIdentity()
+    }
+
+    private fun startDisappearingMessagesReaper() {
+        disappearingReaperJob?.cancel()
+        disappearingReaperJob = CoroutineScope(Dispatchers.Main).launch {
+            while (true) {
+                delay(5_000L) // Check every 5 seconds
+                val now = System.currentTimeMillis()
+                val expired = messagesState.filter { it.isExpired(now) }
+                if (expired.isNotEmpty()) {
+                    for (msg in expired) {
+                        msg.zeroOut() // Zero audio bytes in RAM
+                    }
+                    messagesState.removeAll(expired.toSet())
+                }
+            }
+        }
+    }
+
+    private fun getDisappearingTtlForChat(chatId: String): Long? {
+        return contacts.find { it.dropId == chatId }?.disappearingTtlSeconds
+            ?: groups.find { it.id == chatId }?.let { null } // Groups don't have per-contact TTL yet
+    }
+
+    private fun setDisappearingTimerForContact(contactDropId: String, ttlSeconds: Long?) {
+        val idx = contacts.indexOfFirst { it.dropId == contactDropId }
+        if (idx >= 0) {
+            contacts[idx] = contacts[idx].copy(disappearingTtlSeconds = ttlSeconds)
+            persistIdentity()
+        }
+    }
+
     private fun triggerEmergencyPanicWipe() {
         ArtiTorManager.stop()
         audioPlayerManager.wipe()
@@ -873,6 +961,7 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {}
         seenNonces.clear()
         myPgpKeys = null
+        duressPinHash = null
         contacts.clear()
         groups.clear()
         userAlias = ""
@@ -1202,6 +1291,14 @@ class MainActivity : ComponentActivity() {
                     onCopyPublicKey = {
                         myPgpKeys?.publicKeyArmored?.let { copyToClipboard("Armored Public Key", it) }
                     },
+                    onShowMyQr = {
+                        showMyQrDialog = true
+                        scope.launch { drawerState.close() }
+                    },
+                    onPairContact = {
+                        showPairContactDialog = true
+                        scope.launch { drawerState.close() }
+                    },
                     onEmergencyPanic = {
                         triggerEmergencyPanicWipe()
                     }
@@ -1221,7 +1318,9 @@ class MainActivity : ComponentActivity() {
                             currentNavScreen = AppNavScreen.CHAT_VIEW
                         },
                         onNewDirectChat = { showAddDirectChatDialog = true },
-                        onNewGroupChat = { showCreateGroupDialog = true }
+                        onNewGroupChat = { showCreateGroupDialog = true },
+                        onShowMyQr = { showMyQrDialog = true },
+                        onPairContactQr = { showPairContactDialog = true }
                     )
                 }
                 AppNavScreen.CHAT_VIEW -> {
@@ -1265,7 +1364,11 @@ class MainActivity : ComponentActivity() {
                             decryptMessage(msg, msg.chatId.ifBlank { recipientDropId })
                         },
                         onOpenSafetyCode = { showSafetyCodeDialog = true },
-                        onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS }
+                        onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS },
+                        disappearingTtlSeconds = getDisappearingTtlForChat(activeChatId),
+                        onSetDisappearingTimer = { ttl ->
+                            activeChatContact?.let { setDisappearingTimerForContact(it.dropId, ttl) }
+                        }
                     )
                 }
                 AppNavScreen.SETTINGS -> {
@@ -1283,7 +1386,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onGenerateNewKey = { showNewIdentityConfirm = true },
                         onCopyKey = { myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) } },
-                        onVerifySafetyCode = { showSafetyCodeDialog = true }
+                        onVerifySafetyCode = { showSafetyCodeDialog = true },
+                        duressPinConfigured = !duressPinHash.isNullOrBlank(),
+                        onSetDuressPin = { pin -> setDuressPin(pin) }
                     )
                 }
             }
@@ -1344,6 +1449,43 @@ class MainActivity : ComponentActivity() {
                 onConfirm = {
                     showNewIdentityConfirm = false
                     generateFreshKeys()
+                }
+            )
+        }
+
+        if (showMyQrDialog) {
+            val keys = myPgpKeys
+            if (keys != null) {
+                MyQrCodeDialog(
+                    myAlias = userAlias,
+                    myDropId = keys.dropId,
+                    myFingerprint = keys.fingerprint,
+                    myPublicKeyArmored = keys.publicKeyArmored,
+                    onDismiss = { showMyQrDialog = false }
+                )
+            } else {
+                Toast.makeText(this, "Generating PGP identity, please wait...", Toast.LENGTH_SHORT).show()
+                showMyQrDialog = false
+            }
+        }
+
+        if (showPairContactDialog) {
+            PairContactDialog(
+                myFingerprint = myPgpKeys?.fingerprint ?: "",
+                onDismiss = { showPairContactDialog = false },
+                onContactVerified = { contact ->
+                    showPairContactDialog = false
+                    val existingIdx = contacts.indexOfFirst { it.dropId == contact.dropId }
+                    if (existingIdx >= 0) {
+                        contacts[existingIdx] = contact
+                    } else {
+                        contacts.add(contact)
+                    }
+                    persistIdentity()
+                    activeChatContact = contact
+                    activeChatGroup = null
+                    currentNavScreen = AppNavScreen.CHAT_VIEW
+                    Toast.makeText(this, "Contact paired & verified: ${contact.alias} 🛡️", Toast.LENGTH_SHORT).show()
                 }
             )
         }

@@ -37,7 +37,9 @@ fun ChatsListScreen(
     onOpenSettings: () -> Unit,
     onSelectChat: (ChatSummary) -> Unit,
     onNewDirectChat: () -> Unit,
-    onNewGroupChat: () -> Unit
+    onNewGroupChat: () -> Unit,
+    onShowMyQr: () -> Unit = {},
+    onPairContactQr: () -> Unit = {}
 ) {
     var showFabMenu by remember { mutableStateOf(false) }
 
@@ -88,6 +90,9 @@ fun ChatsListScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onShowMyQr) {
+                        Icon(Icons.Default.QrCode, contentDescription = "My QR Code", tint = AnthropicTerracotta)
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings", tint = AnthropicCream)
                     }
@@ -117,6 +122,14 @@ fun ChatsListScreen(
                     onDismissRequest = { showFabMenu = false },
                     modifier = Modifier.background(AnthropicSurface)
                 ) {
+                    DropdownMenuItem(
+                        text = { Text("Pair via QR / SAS (Briar-Style)", color = AnthropicCream) },
+                        leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AnthropicSage) },
+                        onClick = {
+                            showFabMenu = false
+                            onPairContactQr()
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("New Direct E2EE Chat", color = AnthropicCream) },
                         leadingIcon = { Icon(Icons.Default.PersonAdd, contentDescription = null, tint = AnthropicTerracotta) },

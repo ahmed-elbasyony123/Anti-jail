@@ -25,7 +25,8 @@ data class StoredIdentity(
     val peer: PeerIdentity? = null,
     val userAlias: String = "",
     val contacts: List<Contact> = emptyList(),
-    val groups: List<GroupChat> = emptyList()
+    val groups: List<GroupChat> = emptyList(),
+    val duressPinHash: String? = null
 )
 
 /**
@@ -83,19 +84,24 @@ class SecureStore(private val context: Context) {
             json.put("peerFingerprint", it.fingerprint)
             json.put("peerDropId", it.dropId)
         }
+        if (!identity.duressPinHash.isNullOrBlank()) {
+            json.put("duressPinHash", identity.duressPinHash)
+        }
 
         // Serialize contacts
         val contactsArray = JSONArray()
         for (c in identity.contacts) {
-            contactsArray.put(
-                JSONObject()
-                    .put("id", c.id)
-                    .put("alias", c.alias)
-                    .put("dropId", c.dropId)
-                    .put("publicKeyArmored", c.publicKeyArmored)
-                    .put("fingerprint", c.fingerprint)
-                    .put("addedAt", c.addedAt)
-            )
+            val cObj = JSONObject()
+                .put("id", c.id)
+                .put("alias", c.alias)
+                .put("dropId", c.dropId)
+                .put("publicKeyArmored", c.publicKeyArmored)
+                .put("fingerprint", c.fingerprint)
+                .put("addedAt", c.addedAt)
+                .put("isVerified", c.isVerified)
+            if (c.safetyCode != null) cObj.put("safetyCode", c.safetyCode)
+            if (c.disappearingTtlSeconds != null) cObj.put("disappearingTtlSeconds", c.disappearingTtlSeconds)
+            contactsArray.put(cObj)
         }
         json.put("contacts", contactsArray)
 
@@ -189,7 +195,10 @@ class SecureStore(private val context: Context) {
                         dropId = c.getString("dropId"),
                         publicKeyArmored = c.getString("publicKeyArmored"),
                         fingerprint = c.optString("fingerprint", ""),
-                        addedAt = c.optLong("addedAt", System.currentTimeMillis())
+                        addedAt = c.optLong("addedAt", System.currentTimeMillis()),
+                        isVerified = c.optBoolean("isVerified", false),
+                        safetyCode = c.optString("safetyCode", null)?.ifBlank { null },
+                        disappearingTtlSeconds = if (c.has("disappearingTtlSeconds")) c.getLong("disappearingTtlSeconds") else null
                     )
                 )
             }
@@ -230,7 +239,9 @@ class SecureStore(private val context: Context) {
             }
         }
 
-        return StoredIdentity(mine, peer, userAlias, contactsList, groupsList)
+        val duressPinHash = json.optString("duressPinHash", null)?.ifBlank { null }
+
+        return StoredIdentity(mine, peer, userAlias, contactsList, groupsList, duressPinHash)
     }
 
     /** Delete the keystore key and the encrypted files. Safe to call when nothing exists. */

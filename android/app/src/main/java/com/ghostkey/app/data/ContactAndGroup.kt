@@ -9,7 +9,10 @@ data class Contact(
     val dropId: String,
     val publicKeyArmored: String,
     val fingerprint: String,
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val isVerified: Boolean = false,
+    val safetyCode: String? = null,
+    val disappearingTtlSeconds: Long? = null
 )
 
 @Immutable

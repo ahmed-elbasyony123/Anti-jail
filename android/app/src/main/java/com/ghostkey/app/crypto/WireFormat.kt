@@ -18,7 +18,8 @@ class WireMessage(
     val groupName: String? = null,      // group name for invites
     val groupDropId: String? = null,    // group mailbox for invites
     val groupReadToken: String? = null, // group mailbox read token for invites
-    val sharedKey: String? = null       // group AES-256 key for invites
+    val sharedKey: String? = null,      // group AES-256 key for invites
+    val ttlSeconds: Long? = null        // disappearing messages timer in seconds
 ) {
     val isMedia: Boolean get() = type == TYPE_MEDIA
     val isGroupInvite: Boolean get() = type == TYPE_GROUP_INVITE
@@ -52,7 +53,12 @@ object WireFormat {
         return b.joinToString("") { "%02x".format(it) }
     }
 
-    fun buildText(text: String, senderAlias: String? = null, groupId: String? = null): ByteArray {
+    fun buildText(
+        text: String,
+        senderAlias: String? = null,
+        groupId: String? = null,
+        ttlSeconds: Long? = null
+    ): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
         obj.put("type", WireMessage.TYPE_TEXT)
@@ -61,6 +67,7 @@ object WireFormat {
         obj.put("nonce", randomHex16())
         if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
         if (!groupId.isNullOrBlank()) obj.put("groupId", groupId.trim())
+        if (ttlSeconds != null && ttlSeconds > 0) obj.put("ttl", ttlSeconds)
         return withPad(obj)
     }
 
@@ -69,7 +76,8 @@ object WireFormat {
         filename: String,
         bytes: ByteArray,
         senderAlias: String? = null,
-        groupId: String? = null
+        groupId: String? = null,
+        ttlSeconds: Long? = null
     ): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
@@ -81,6 +89,7 @@ object WireFormat {
         obj.put("nonce", randomHex16())
         if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
         if (!groupId.isNullOrBlank()) obj.put("groupId", groupId.trim())
+        if (ttlSeconds != null && ttlSeconds > 0) obj.put("ttl", ttlSeconds)
         return withPad(obj)
     }
 
@@ -132,6 +141,7 @@ object WireFormat {
             val nonce = obj.optString("nonce", null)
             val senderAlias = obj.optString("senderAlias", null)?.ifBlank { null }
             val groupId = obj.optString("groupId", null)?.ifBlank { null }
+            val ttlSeconds = if (obj.has("ttl")) obj.getLong("ttl") else null
 
             when (val type = obj.optString("type")) {
                 WireMessage.TYPE_TEXT -> {
@@ -145,7 +155,8 @@ object WireFormat {
                         timestamp = ts,
                         nonce = nonce,
                         senderAlias = senderAlias,
-                        groupId = groupId
+                        groupId = groupId,
+                        ttlSeconds = ttlSeconds
                     )
                 }
                 WireMessage.TYPE_MEDIA -> {
@@ -159,7 +170,8 @@ object WireFormat {
                         timestamp = ts,
                         nonce = nonce,
                         senderAlias = senderAlias,
-                        groupId = groupId
+                        groupId = groupId,
+                        ttlSeconds = ttlSeconds
                     )
                 }
                 WireMessage.TYPE_GROUP_INVITE -> {
