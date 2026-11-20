@@ -39,7 +39,8 @@ fun ChatsListScreen(
     onNewDirectChat: () -> Unit,
     onNewGroupChat: () -> Unit,
     onShowMyQr: () -> Unit = {},
-    onPairContactQr: () -> Unit = {}
+    onPairContactQr: () -> Unit = {},
+    onOpenSecurityDiagnostics: () -> Unit = {}
 ) {
     var showFabMenu by remember { mutableStateOf(false) }
 
@@ -47,7 +48,7 @@ fun ChatsListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    Column(modifier = Modifier.clickable { onOpenSecurityDiagnostics() }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 "GhostKey",
@@ -266,13 +267,27 @@ private fun ChatItemRow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = chat.title,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    color = AnthropicCream,
-                    maxLines = 1
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Text(
+                        text = chat.title,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = AnthropicCream,
+                        maxLines = 1
+                    )
+                    if (!chat.isGroup) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = if (chat.isVerified) Icons.Default.Shield else Icons.Default.Security,
+                            contentDescription = if (chat.isVerified) "Verified SAS Peer" else "Unverified Peer",
+                            tint = if (chat.isVerified) AnthropicSage else AnthropicTextMuted.copy(alpha = 0.5f),
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
+                }
                 if (chat.lastMessageTime > 0L) {
                     Text(
                         text = timeFormat.format(Date(chat.lastMessageTime)),

@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Handshake
 import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Verified
@@ -43,7 +44,8 @@ fun MessageBubble(
     onToggleArmor: () -> Unit,
     onManualDecrypt: () -> Unit,
     onAudioPlayPause: (ChatMessage) -> Unit = {},
-    onAudioSeek: (ChatMessage, Float) -> Unit = { _, _ -> }
+    onAudioSeek: (ChatMessage, Float) -> Unit = { _, _ -> },
+    onAcceptIntroduction: (alias: String, dropId: String, armoredKey: String, safetyCode: String?) -> Unit = { _, _, _, _ -> }
 ) {
     val isOut = message.isOutgoing
     val align = if (isOut) Alignment.End else Alignment.Start
@@ -140,6 +142,79 @@ fun MessageBubble(
                                     color = AnthropicTextMuted,
                                     fontSize = 10.sp
                                 )
+                            }
+                        }
+                    }
+                } else if (message.isIntroduction && message.isDecrypted) {
+                    // Briar-style Contact Introduction Card
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(AnthropicSurfaceVariant)
+                            .padding(10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Handshake,
+                                contentDescription = null,
+                                tint = AnthropicTerracotta,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Contact Introduction",
+                                color = AnthropicTerracotta,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (isOut) {
+                                "You introduced ${message.introAlias ?: "a contact"}"
+                            } else {
+                                "${message.senderAlias ?: "Peer"} wants to introduce ${message.introAlias ?: "a contact"}"
+                            },
+                            color = AnthropicCream,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (!message.introDropId.isNullOrBlank()) {
+                            Text(
+                                text = "Drop ID: ${message.introDropId.take(12)}...",
+                                color = AnthropicTextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        if (!message.introSafetyCode.isNullOrBlank()) {
+                            Text(
+                                text = "Safety Code: ${message.introSafetyCode}",
+                                color = AnthropicSage,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        if (!isOut && !message.introArmoredKey.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    onAcceptIntroduction(
+                                        message.introAlias ?: "Peer",
+                                        message.introDropId ?: "",
+                                        message.introArmoredKey,
+                                        message.introSafetyCode
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = AnthropicTerracotta,
+                                    contentColor = AnthropicDarkBackground
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(vertical = 4.dp, horizontal = 8.dp)
+                            ) {
+                                Text("Add Contact", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

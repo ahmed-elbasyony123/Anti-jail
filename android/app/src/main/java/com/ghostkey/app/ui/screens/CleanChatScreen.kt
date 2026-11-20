@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -27,9 +28,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.data.ChatMessage
+import com.ghostkey.app.data.Contact
 import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.*
 import com.ghostkey.app.ui.components.MessageBubble
+import com.ghostkey.app.ui.dialogs.IntroduceContactDialog
 import java.util.Locale
 
 /**
@@ -63,10 +66,14 @@ fun CleanChatScreen(
     onOpenSafetyCode: () -> Unit,
     onOpenSettings: () -> Unit,
     disappearingTtlSeconds: Long? = null,
-    onSetDisappearingTimer: (Long?) -> Unit = {}
+    onSetDisappearingTimer: (Long?) -> Unit = {},
+    availableContacts: List<Contact> = emptyList(),
+    onIntroduceContact: (Contact) -> Unit = {},
+    onAcceptIntroduction: (alias: String, dropId: String, armoredKey: String, safetyCode: String?) -> Unit = { _, _, _, _ -> }
 ) {
     var inputText by remember { mutableStateOf("") }
     var showTtlMenu by remember { mutableStateOf(false) }
+    var showIntroduceDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val filePicker = rememberLauncherForActivityResult(
@@ -189,6 +196,11 @@ fun CleanChatScreen(
                             }
                         }
                     }
+                    if (!isGroup) {
+                        IconButton(onClick = { showIntroduceDialog = true }) {
+                            Icon(Icons.Default.Handshake, contentDescription = "Introduce a Contact (Briar-Style)", tint = AnthropicTerracotta)
+                        }
+                    }
                     IconButton(onClick = onOpenSafetyCode) {
                         Icon(Icons.Default.VerifiedUser, contentDescription = "Safety Code", tint = AnthropicSage)
                     }
@@ -260,7 +272,8 @@ fun CleanChatScreen(
                                 onToggleArmor = {},
                                 onManualDecrypt = { onManualDecrypt(msg) },
                                 onAudioPlayPause = onAudioPlayPause,
-                                onAudioSeek = onAudioSeek
+                                onAudioSeek = onAudioSeek,
+                                onAcceptIntroduction = onAcceptIntroduction
                             )
                         }
                     }
@@ -350,6 +363,7 @@ fun CleanChatScreen(
                             placeholder = { Text("Encrypted message...", color = AnthropicTextMuted, fontSize = 14.sp) },
                             shape = RoundedCornerShape(24.dp),
                             maxLines = 4,
+                            keyboardOptions = KeyboardOptions(autoCorrect = false),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedContainerColor = AnthropicSurfaceVariant,
                                 unfocusedContainerColor = AnthropicSurfaceVariant,
@@ -405,6 +419,18 @@ fun CleanChatScreen(
                 }
             }
         }
+    }
+
+    if (showIntroduceDialog) {
+        IntroduceContactDialog(
+            currentContactAlias = chatTitle,
+            availableContacts = availableContacts,
+            onDismiss = { showIntroduceDialog = false },
+            onIntroduce = { contactToIntroduce ->
+                showIntroduceDialog = false
+                onIntroduceContact(contactToIntroduce)
+            }
+        )
     }
 }
 

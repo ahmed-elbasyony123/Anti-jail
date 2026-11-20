@@ -48,5 +48,6 @@ data class ChatSummary(
     val lastMessageTime: Long = 0L,
     val unreadCount: Int = 0,
     val avatarLetter: String = "G",
-    val isOnline: Boolean = true
+    val isOnline: Boolean = true,
+    val isVerified: Boolean = false
 )

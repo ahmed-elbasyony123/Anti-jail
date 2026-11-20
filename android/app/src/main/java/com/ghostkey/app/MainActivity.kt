@@ -40,6 +40,7 @@ import com.ghostkey.app.data.*
 import com.ghostkey.app.net.ArtiTorManager
 import com.ghostkey.app.net.ArtiTorState
 import com.ghostkey.app.net.EncryptedMessageRecord
+import com.ghostkey.app.net.LocalLanMesh
 import com.ghostkey.app.net.OrbotPortWatcher
 import com.ghostkey.app.net.RelayHttpException
 import com.ghostkey.app.net.RelayStatus
@@ -111,10 +112,12 @@ class MainActivity : ComponentActivity() {
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
     private val sentCiphertexts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    // Briar-Style Features: QR Pairing, Disappearing Messages, Duress PIN
+    // Briar-Style Features: QR Pairing, Disappearing Messages, Duress PIN, Local LAN Mesh, Introductions
     private var duressPinHash: String? = null
     private var showMyQrDialog by mutableStateOf(false)
     private var showPairContactDialog by mutableStateOf(false)
+    private var showSecurityDiagnostics by mutableStateOf(false)
+    private var localLanMesh: LocalLanMesh? = null
     private var disappearingReaperJob: kotlinx.coroutines.Job? = null
 
     // Encrypted PTT Audio Voice Notes (Opus in RAM)
@@ -169,6 +172,19 @@ class MainActivity : ComponentActivity() {
 
         secureStore = SecureStore(applicationContext)
         audioRecorderManager = AudioRecorderManager(applicationContext)
+        localLanMesh = LocalLanMesh(applicationContext) { senderDropId, ciphertext ->
+            val msgId = UUID.randomUUID().toString()
+            val incoming = ChatMessage(
+                id = msgId,
+                isOutgoing = false,
+                ciphertext = ciphertext,
+                timestamp = System.currentTimeMillis(),
+                isDecrypted = false,
+                chatId = senderDropId
+            )
+            messagesState.add(incoming)
+            decryptMessage(incoming, senderDropId)
+        }
 
         // Initialize network client first, then bring up the identity
         applyNetworkConfig()
@@ -218,6 +234,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        localLanMesh?.stop()
         ArtiTorManager.stop()
         audioRecorderManager.cancelRecording()
         audioPlayerManager.stop()
@@ -447,6 +464,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun connectToRelayMailbox(keys: PgpKeyPairArmored) {
+        localLanMesh?.start(keys.dropId)
         torClient.subscribeLive(
             dropId = keys.dropId,
             readToken = keys.readToken,
@@ -614,7 +632,13 @@ class MainActivity : ComponentActivity() {
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val ciphertext = StandalonePgpEngine.encrypt(payload, peerKey, keys.privateKeyArmored)
-                val result = torClient.sendMessage(dropId = peerDrop, ciphertext = ciphertext)
+                // Attempt Local LAN direct mesh delivery first (Briar offline capability)
+                val sentViaLan = localLanMesh?.sendDirect(peerDrop, ciphertext) == true
+                val result = if (sentViaLan) {
+                    Result.success(Unit)
+                } else {
+                    torClient.sendMessage(dropId = peerDrop, ciphertext = ciphertext)
+                }
                 result.onSuccess {
                     runOnUiThread {
                         val cleanText = if (isMedia) null else (displayText ?: WireFormat.parse(payload)?.text ?: String(payload, Charsets.UTF_8))
@@ -681,7 +705,20 @@ class MainActivity : ComponentActivity() {
                     var audioDurationMs = 0L
                     var displayText: String? = null
 
-                    if (wire != null && wire.isMedia) {
+                    var isIntro = false
+                var introAlias: String? = null
+                var introDropId: String? = null
+                var introArmoredKey: String? = null
+                var introSafetyCode: String? = null
+
+                if (wire != null && wire.isIntroduction) {
+                    isIntro = true
+                    introAlias = wire.introAlias
+                    introDropId = wire.introDropId
+                    introArmoredKey = wire.introArmoredKey
+                    introSafetyCode = wire.introSafetyCode
+                    displayText = "🤝 Introduced contact: ${wire.introAlias}"
+                } else if (wire != null && wire.isMedia) {
                         isMedia = true
                         mimeType = wire.mimeType ?: ""
                         filename = wire.filename ?: ""
@@ -735,7 +772,12 @@ class MainActivity : ComponentActivity() {
                                 isGroup = true,
                                 senderAlias = wire?.senderAlias,
                                 expiresAt = expires,
-                                ttlSeconds = wireTtl
+                                ttlSeconds = wireTtl,
+                                isIntroduction = isIntro,
+                                introAlias = introAlias,
+                                introDropId = introDropId,
+                                introArmoredKey = introArmoredKey,
+                                introSafetyCode = introSafetyCode
                             )
                             torClient.ack(listOf(msg.id), dropId = group.groupDropId)
                         }
@@ -804,7 +846,20 @@ class MainActivity : ComponentActivity() {
                 var audioDurationMs = 0L
                 var displayText: String? = null
 
-                if (wire != null && wire.isMedia) {
+                var isIntro = false
+                var introAlias: String? = null
+                var introDropId: String? = null
+                var introArmoredKey: String? = null
+                var introSafetyCode: String? = null
+
+                if (wire != null && wire.isIntroduction) {
+                    isIntro = true
+                    introAlias = wire.introAlias
+                    introDropId = wire.introDropId
+                    introArmoredKey = wire.introArmoredKey
+                    introSafetyCode = wire.introSafetyCode
+                    displayText = "🤝 Introduced contact: ${wire.introAlias}"
+                } else if (wire != null && wire.isMedia) {
                     isMedia = true
                     mimeType = wire.mimeType ?: ""
                     filename = wire.filename ?: ""
@@ -861,7 +916,12 @@ class MainActivity : ComponentActivity() {
                             chatId = targetChat,
                             senderAlias = wire?.senderAlias ?: matchedContact?.alias,
                             expiresAt = expires,
-                            ttlSeconds = wireTtl
+                            ttlSeconds = wireTtl,
+                            isIntroduction = isIntro,
+                            introAlias = introAlias,
+                            introDropId = introDropId,
+                            introArmoredKey = introArmoredKey,
+                            introSafetyCode = introSafetyCode
                         )
                         torClient.ack(listOf(msg.id), dropId = dropId)
                     }
@@ -1039,7 +1099,8 @@ class MainActivity : ComponentActivity() {
                     isGroup = false,
                     lastMessageText = lastMsg?.plaintext ?: if (lastMsg?.isAudio == true) "🎙️ Voice note" else if (lastMsg?.isMedia == true) "📎 Attachment" else "Direct E2EE session",
                     lastMessageTime = lastMsg?.timestamp ?: c.addedAt,
-                    avatarLetter = c.alias.take(1)
+                    avatarLetter = c.alias.take(1),
+                    isVerified = c.isVerified
                 )
             )
         }
@@ -1244,6 +1305,77 @@ class MainActivity : ComponentActivity() {
         audioRecorderManager.cancelRecording()
     }
 
+    private fun sendContactIntroduction(targetContact: Contact, contactToIntroduce: Contact) {
+        val keys = myPgpKeys ?: return
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val wireBytes = WireFormat.buildIntroduction(
+                    introAlias = contactToIntroduce.alias,
+                    introDropId = contactToIntroduce.dropId,
+                    introArmoredKey = contactToIntroduce.publicKeyArmored,
+                    introSafetyCode = contactToIntroduce.safetyCode,
+                    senderAlias = userAlias
+                )
+                val encryptedArmor = StandalonePgpEngine.encrypt(
+                    wireBytes,
+                    targetContact.publicKeyArmored,
+                    keys.privateKeyArmored
+                )
+                val msgId = UUID.randomUUID().toString()
+                val now = System.currentTimeMillis()
+                val outMsg = ChatMessage(
+                    id = msgId,
+                    isOutgoing = true,
+                    plaintext = "🤝 Introduced ${contactToIntroduce.alias} to ${targetContact.alias}",
+                    ciphertext = encryptedArmor,
+                    timestamp = now,
+                    isDecrypted = true,
+                    chatId = targetContact.dropId,
+                    isIntroduction = true,
+                    introAlias = contactToIntroduce.alias,
+                    introDropId = contactToIntroduce.dropId,
+                    introArmoredKey = contactToIntroduce.publicKeyArmored,
+                    introSafetyCode = contactToIntroduce.safetyCode
+                )
+                runOnUiThread {
+                    messagesState.add(outMsg)
+                }
+                val deliveredLan = localLanMesh?.sendDirect(targetContact.dropId, encryptedArmor) == true
+                if (!deliveredLan) {
+                    torClient.sendMessage(dropId = targetContact.dropId, ciphertext = encryptedArmor)
+                }
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Introduction sent to ${targetContact.alias} 🤝", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Failed to introduce: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun addIntroducedContact(alias: String, dropId: String, armoredKey: String, safetyCode: String?) {
+        if (contacts.any { it.dropId == dropId }) {
+            Toast.makeText(this, "Contact already exists in your address book", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val info = try { StandalonePgpEngine.parsePeerKey(armoredKey) } catch (_: Exception) { null }
+        val fp = info?.fingerprint ?: ""
+        val newContact = Contact(
+            id = dropId,
+            alias = alias,
+            dropId = dropId,
+            publicKeyArmored = armoredKey,
+            fingerprint = fp,
+            isVerified = !safetyCode.isNullOrBlank(),
+            safetyCode = safetyCode
+        )
+        contacts.add(newContact)
+        persistIdentity()
+        Toast.makeText(this, "Added $alias to contacts 🛡️", Toast.LENGTH_SHORT).show()
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun MainModernApp() {
@@ -1299,6 +1431,10 @@ class MainActivity : ComponentActivity() {
                         showPairContactDialog = true
                         scope.launch { drawerState.close() }
                     },
+                    onOpenSecurityDiagnostics = {
+                        showSecurityDiagnostics = true
+                        scope.launch { drawerState.close() }
+                    },
                     onEmergencyPanic = {
                         triggerEmergencyPanicWipe()
                     }
@@ -1320,7 +1456,8 @@ class MainActivity : ComponentActivity() {
                         onNewDirectChat = { showAddDirectChatDialog = true },
                         onNewGroupChat = { showCreateGroupDialog = true },
                         onShowMyQr = { showMyQrDialog = true },
-                        onPairContactQr = { showPairContactDialog = true }
+                        onPairContactQr = { showPairContactDialog = true },
+                        onOpenSecurityDiagnostics = { showSecurityDiagnostics = true }
                     )
                 }
                 AppNavScreen.CHAT_VIEW -> {
@@ -1368,6 +1505,15 @@ class MainActivity : ComponentActivity() {
                         disappearingTtlSeconds = getDisappearingTtlForChat(activeChatId),
                         onSetDisappearingTimer = { ttl ->
                             activeChatContact?.let { setDisappearingTimerForContact(it.dropId, ttl) }
+                        },
+                        availableContacts = contacts.filter { it.dropId != activeChatContact?.dropId },
+                        onIntroduceContact = { contactToIntroduce ->
+                            activeChatContact?.let { target ->
+                                sendContactIntroduction(target, contactToIntroduce)
+                            }
+                        },
+                        onAcceptIntroduction = { alias, dropId, armoredKey, safetyCode ->
+                            addIntroducedContact(alias, dropId, armoredKey, safetyCode)
                         }
                     )
                 }
@@ -1430,6 +1576,7 @@ class MainActivity : ComponentActivity() {
         if (showSafetyCodeDialog) {
             val myFp = myPgpKeys?.fingerprint ?: ""
             val peerFp = activeChatContact?.fingerprint ?: recipientFingerprint
+            val activeContact = activeChatContact
             SafetyCodeDialog(
                 safetyNumber = if (myPgpKeys != null && peerFp.isNotBlank()) {
                     StandalonePgpEngine.generateSafetyCode(myPgpKeys!!.fingerprint, peerFp)
@@ -1437,9 +1584,32 @@ class MainActivity : ComponentActivity() {
                     "NO PEER SELECTED"
                 },
                 recipientFingerprint = peerFp,
-                isPeerVerified = false,
-                onVerificationChanged = {},
+                isPeerVerified = activeContact?.isVerified ?: false,
+                onVerificationChanged = { verified ->
+                    if (activeContact != null) {
+                        val idx = contacts.indexOfFirst { it.dropId == activeContact.dropId }
+                        if (idx >= 0) {
+                            contacts[idx] = contacts[idx].copy(isVerified = verified)
+                            activeChatContact = contacts[idx]
+                            persistIdentity()
+                        }
+                    }
+                },
                 onDismiss = { showSafetyCodeDialog = false }
+            )
+        }
+
+        if (showSecurityDiagnostics) {
+            SecurityStatusDialog(
+                relayStatus = relayStatus.value,
+                artiState = artiState,
+                relayUrl = relayServerUrl,
+                lanPeersCount = localLanMesh?.activePeersCount ?: 0,
+                isEphemeral = ephemeralMode,
+                hasDuressPin = !duressPinHash.isNullOrBlank(),
+                myFingerprint = myPgpKeys?.fingerprint ?: "",
+                myDropId = myPgpKeys?.dropId ?: "",
+                onDismiss = { showSecurityDiagnostics = false }
             )
         }
 

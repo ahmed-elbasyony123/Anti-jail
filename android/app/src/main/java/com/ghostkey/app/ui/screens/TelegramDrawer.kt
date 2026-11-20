@@ -38,6 +38,7 @@ fun TelegramDrawer(
     onCopyPublicKey: () -> Unit = {},
     onShowMyQr: () -> Unit = {},
     onPairContact: () -> Unit = {},
+    onOpenSecurityDiagnostics: () -> Unit = {},
     onEmergencyPanic: () -> Unit
 ) {
     ModalDrawerSheet(
@@ -236,9 +237,9 @@ fun TelegramDrawer(
 
             DrawerItem(
                 icon = Icons.Default.Shield,
-                title = "Zero-Metadata Security",
-                badge = "Verified",
-                onClick = onNavigateSettings
+                title = "Security & Network Health",
+                badge = "Briar Diagnostics",
+                onClick = onOpenSecurityDiagnostics
             )
         }
 

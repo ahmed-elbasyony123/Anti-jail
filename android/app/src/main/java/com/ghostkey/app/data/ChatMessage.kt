@@ -36,7 +36,12 @@ data class ChatMessage(
     val audioBytes: ByteArray? = null,
     val audioDurationMs: Long = 0L,
     val expiresAt: Long? = null,
-    val ttlSeconds: Long? = null
+    val ttlSeconds: Long? = null,
+    val isIntroduction: Boolean = false,
+    val introAlias: String? = null,
+    val introDropId: String? = null,
+    val introArmoredKey: String? = null,
+    val introSafetyCode: String? = null
 ) {
     fun isExpired(now: Long = System.currentTimeMillis()): Boolean =
         expiresAt != null && now >= expiresAt
@@ -74,6 +79,11 @@ data class ChatMessage(
         if (audioDurationMs != other.audioDurationMs) return false
         if (expiresAt != other.expiresAt) return false
         if (ttlSeconds != other.ttlSeconds) return false
+        if (isIntroduction != other.isIntroduction) return false
+        if (introAlias != other.introAlias) return false
+        if (introDropId != other.introDropId) return false
+        if (introArmoredKey != other.introArmoredKey) return false
+        if (introSafetyCode != other.introSafetyCode) return false
         if (mediaBitmap != other.mediaBitmap) return false
         if (audioBytes != null) {
             if (other.audioBytes == null) return false
@@ -106,6 +116,11 @@ data class ChatMessage(
         result = 31 * result + audioDurationMs.hashCode()
         result = 31 * result + (expiresAt?.hashCode() ?: 0)
         result = 31 * result + (ttlSeconds?.hashCode() ?: 0)
+        result = 31 * result + isIntroduction.hashCode()
+        result = 31 * result + (introAlias?.hashCode() ?: 0)
+        result = 31 * result + (introDropId?.hashCode() ?: 0)
+        result = 31 * result + (introArmoredKey?.hashCode() ?: 0)
+        result = 31 * result + (introSafetyCode?.hashCode() ?: 0)
         return result
     }
 }

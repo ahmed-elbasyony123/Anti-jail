@@ -19,15 +19,21 @@ class WireMessage(
     val groupDropId: String? = null,    // group mailbox for invites
     val groupReadToken: String? = null, // group mailbox read token for invites
     val sharedKey: String? = null,      // group AES-256 key for invites
-    val ttlSeconds: Long? = null        // disappearing messages timer in seconds
+    val ttlSeconds: Long? = null,       // disappearing messages timer in seconds
+    val introAlias: String? = null,     // Briar contact introduction: target alias
+    val introDropId: String? = null,    // Briar contact introduction: target dropId
+    val introArmoredKey: String? = null,// Briar contact introduction: target public key
+    val introSafetyCode: String? = null // Briar contact introduction: target SAS safety code
 ) {
     val isMedia: Boolean get() = type == TYPE_MEDIA
     val isGroupInvite: Boolean get() = type == TYPE_GROUP_INVITE
+    val isIntroduction: Boolean get() = type == TYPE_INTRODUCTION
 
     companion object {
         const val TYPE_TEXT = "text"
         const val TYPE_MEDIA = "media"
         const val TYPE_GROUP_INVITE = "group_invite"
+        const val TYPE_INTRODUCTION = "introduction"
     }
 }
 
@@ -115,6 +121,30 @@ object WireFormat {
         return withPad(obj)
     }
 
+    /**
+     * Briar-style Contact Introduction Protocol:
+     * User introduces contact B to contact C by sending an introduction payload.
+     */
+    fun buildIntroduction(
+        introAlias: String,
+        introDropId: String,
+        introArmoredKey: String,
+        introSafetyCode: String? = null,
+        senderAlias: String? = null
+    ): ByteArray {
+        val obj = JSONObject()
+        obj.put("v", VERSION)
+        obj.put("type", WireMessage.TYPE_INTRODUCTION)
+        obj.put("introAlias", introAlias.trim())
+        obj.put("introDropId", introDropId.trim())
+        obj.put("introArmoredKey", introArmoredKey.trim())
+        if (!introSafetyCode.isNullOrBlank()) obj.put("introSafetyCode", introSafetyCode.trim())
+        obj.put("ts", System.currentTimeMillis())
+        obj.put("nonce", randomHex16())
+        if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
+        return withPad(obj)
+    }
+
     private fun withPad(obj: JSONObject): ByteArray {
         obj.put("pad", "")
         val baseLen = obj.toString().toByteArray(Charsets.UTF_8).size
@@ -189,6 +219,22 @@ object WireFormat {
                         groupDropId = obj.optString("groupDropId", null),
                         groupReadToken = obj.optString("groupReadToken", null),
                         sharedKey = obj.optString("sharedKey", null)
+                    )
+                }
+                WireMessage.TYPE_INTRODUCTION -> {
+                    WireMessage(
+                        type = type,
+                        text = null,
+                        mimeType = null,
+                        filename = null,
+                        data = null,
+                        timestamp = ts,
+                        nonce = nonce,
+                        senderAlias = senderAlias,
+                        introAlias = obj.optString("introAlias", null),
+                        introDropId = obj.optString("introDropId", null),
+                        introArmoredKey = obj.optString("introArmoredKey", null),
+                        introSafetyCode = obj.optString("introSafetyCode", null)
                     )
                 }
                 else -> null

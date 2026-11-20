@@ -100,13 +100,14 @@ object BriarPairing {
             try {
                 val json = JSONObject(trimmed)
                 val key = json.getString("key")
+                val parsed = try { StandalonePgpEngine.parsePeerKey(key) } catch (_: Exception) { null }
                 val dropId = json.optString("dropId", "").ifBlank {
-                    StandalonePgpEngine.deriveDropIdFromPublicKey(key)
+                    parsed?.dropId ?: ""
                 }
                 val fp = json.optString("fp", "").ifBlank {
-                    StandalonePgpEngine.extractFingerprint(key) ?: ""
+                    parsed?.fingerprint ?: ""
                 }
-                val alias = json.optString("alias", "Peer")
+                val alias = json.optString("alias", parsed?.alias ?: "Peer")
                 return ContactCard(alias = alias, dropId = dropId, fingerprint = fp, publicKeyArmored = key)
             } catch (_: Exception) {}
         }
@@ -114,9 +115,9 @@ object BriarPairing {
         // Format 2: Raw PGP Public Key Block
         if (trimmed.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----")) {
             return try {
-                val dropId = StandalonePgpEngine.deriveDropIdFromPublicKey(trimmed)
-                val fp = StandalonePgpEngine.extractFingerprint(trimmed) ?: ""
-                ContactCard(alias = "Peer", dropId = dropId, fingerprint = fp, publicKeyArmored = trimmed)
+                val info = StandalonePgpEngine.parsePeerKey(trimmed)
+                val dropId = info.dropId ?: ""
+                ContactCard(alias = info.alias ?: "Peer", dropId = dropId, fingerprint = info.fingerprint, publicKeyArmored = trimmed)
             } catch (_: Exception) {
                 null
             }
