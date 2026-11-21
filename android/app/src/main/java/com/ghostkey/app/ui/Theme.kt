@@ -49,6 +49,20 @@ val StealthTextPrimary = AnthropicCream
 val StealthTextSecondary = AnthropicTextMuted
 val StealthBorder = AnthropicBorder
 
+/**
+ * Semantic names used by the security-status and contact-introduction dialogs,
+ * mapped onto the Anthropic warm palette defined above.
+ */
+object GhostKeyColors {
+    val SurfacePrimary = AnthropicSurface
+    val SurfaceSecondary = AnthropicSurfaceVariant
+    val TextPrimary = AnthropicCream
+    val TextSecondary = AnthropicTextMuted
+    val AccentGold = AnthropicTerracotta
+    val StatusGreen = AnthropicSage
+    val StatusRed = AnthropicCrimson
+}
+
 private val DarkColorScheme = darkColorScheme(
     primary = AnthropicTerracotta,
     secondary = AnthropicSlate,

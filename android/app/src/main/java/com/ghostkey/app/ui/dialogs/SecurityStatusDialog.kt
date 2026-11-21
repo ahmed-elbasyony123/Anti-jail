@@ -62,16 +62,16 @@ fun SecurityStatusDialog(
                 // Section 1: Network & Tor
                 DiagnosticsCategory(title = "Network & Routing") {
                     val torLabel = when (relayStatus) {
-                        RelayStatus.CONNECTED -> "Tor Circuit Established 🧅"
-                        RelayStatus.BUILDING_CIRCUIT -> "Building Onion Circuit..."
-                        RelayStatus.AUTH_FAILED -> "Authentication Failed ⚠️"
-                        RelayStatus.CONNECTING -> "Connecting to Relay..."
-                        RelayStatus.FAILED -> "Circuit Failed / Offline"
+                        RelayStatus.CONNECTED -> "Connected to relay"
+                        RelayStatus.BUILDING_CIRCUIT -> "Building Tor circuit..."
+                        RelayStatus.AUTH_FAILED -> "Mailbox authentication failed"
+                        RelayStatus.ORBOT_NOT_RUNNING -> "Tor proxy is not running"
+                        RelayStatus.TIMED_OUT -> "Connection timed out, retrying"
                         RelayStatus.DISCONNECTED -> "Disconnected"
                     }
                     val torColor = when (relayStatus) {
                         RelayStatus.CONNECTED -> GhostKeyColors.StatusGreen
-                        RelayStatus.BUILDING_CIRCUIT, RelayStatus.CONNECTING -> GhostKeyColors.AccentGold
+                        RelayStatus.BUILDING_CIRCUIT -> GhostKeyColors.AccentGold
                         else -> GhostKeyColors.StatusRed
                     }
                     DiagnosticsRow(

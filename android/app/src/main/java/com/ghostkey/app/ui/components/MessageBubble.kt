@@ -208,7 +208,7 @@ fun MessageBubble(
                                 },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = AnthropicTerracotta,
-                                    contentColor = AnthropicDarkBackground
+                                    contentColor = AnthropicDarkBg
                                 ),
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.fillMaxWidth(),
