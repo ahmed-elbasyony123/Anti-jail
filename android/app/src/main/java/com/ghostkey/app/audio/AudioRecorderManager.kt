@@ -169,15 +169,15 @@ class AudioRecorderManager(private val context: Context) {
             if (file.exists()) {
                 val length = file.length()
                 if (length > 0) {
-                    val zeroes = ByteArray(minOf(length.toInt(), 4096))
-                    FileOutputStream(file).use { fos ->
+                    java.io.RandomAccessFile(file, "rws").use { raf ->
+                        raf.seek(0)
+                        val zeroes = ByteArray(minOf(length.toInt(), 4096))
                         var remaining = length
                         while (remaining > 0) {
                             val toWrite = minOf(remaining.toInt(), zeroes.size)
-                            fos.write(zeroes, 0, toWrite)
+                            raf.write(zeroes, 0, toWrite)
                             remaining -= toWrite
                         }
-                        fos.flush()
                     }
                 }
                 file.delete()

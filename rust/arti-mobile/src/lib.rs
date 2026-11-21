@@ -122,26 +122,18 @@ async fn run_arti_daemon(
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Disable filesystem permission checks globally for Android sandboxed filesystem
+    std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
     std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "yes");
     std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "1");
 
-    // 1. Bind local SOCKS5 listener FIRST on 127.0.0.1:0 (ephemeral port assigned by OS)
-    // This guarantees the port is ready and emitted immediately without blocking on network/TorClient setup.
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let local_addr = listener.local_addr()?;
-    let port = local_addr.port();
-
-    SOCKS_PORT.store(port, Ordering::Relaxed);
-    IS_RUNNING.store(true, Ordering::Relaxed);
-    let _ = port_tx.send(port);
-
-    log::info!("Arti Tor SOCKS5 proxy bound to 127.0.0.1:{}", port);
-
-    let config = match TorClientConfigBuilder::from_directories(
+    // 1. Build TorClientConfig and disable fs-mistrust on Android directories
+    let mut config_builder = TorClientConfigBuilder::from_directories(
         PathBuf::from(&state_dir),
         PathBuf::from(&cache_dir),
-    )
-    .build() {
+    );
+    config_builder.storage().permissions().ignore_all();
+
+    let config = match config_builder.build() {
         Ok(c) => c,
         Err(e) => {
             log::error!("Arti TorClientConfig build error: {}", e);
@@ -150,6 +142,7 @@ async fn run_arti_daemon(
         }
     };
 
+    // 2. Create TorClient instance BEFORE binding port to verify integrity
     let tor_client: Arc<TorClient<PreferredRuntime>> = match TorClient::builder()
         .config(config)
         .create_unbootstrapped() {
@@ -160,6 +153,17 @@ async fn run_arti_daemon(
             return Err(e.into());
         }
     };
+
+    // 3. Bind local SOCKS5 listener on 127.0.0.1:0 (ephemeral port assigned by OS)
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let local_addr = listener.local_addr()?;
+    let port = local_addr.port();
+
+    SOCKS_PORT.store(port, Ordering::Relaxed);
+    IS_RUNNING.store(true, Ordering::Relaxed);
+    let _ = port_tx.send(port);
+
+    log::info!("Arti Tor SOCKS5 proxy bound to 127.0.0.1:{}", port);
 
     // Track bootstrap events in the background
     let mut events = tor_client.bootstrap_events();
@@ -173,8 +177,15 @@ async fn run_arti_daemon(
     // Start background bootstrap
     let tor_clone = tor_client.clone();
     tokio::spawn(async move {
-        let _ = tor_clone.bootstrap().await;
-        BOOTSTRAP_PERCENT.store(100, Ordering::Relaxed);
+        match tor_clone.bootstrap().await {
+            Ok(_) => {
+                log::info!("Arti Tor circuit bootstrapped successfully (100%)");
+                BOOTSTRAP_PERCENT.store(100, Ordering::Relaxed);
+            }
+            Err(e) => {
+                log::error!("Arti Tor bootstrap failed: {}", e);
+            }
+        }
     });
 
     loop {
@@ -218,6 +229,7 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
     init_logging();
 
     // Disable filesystem permission checks globally for Android sandboxed filesystem
+    std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
     std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "yes");
     std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "1");
 
@@ -280,6 +292,9 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_stopNative(
     _env: JNIEnv,
     _class: JClass,
 ) {
+    IS_RUNNING.store(false, Ordering::Relaxed);
+    SOCKS_PORT.store(0, Ordering::Relaxed);
+    BOOTSTRAP_PERCENT.store(0, Ordering::Relaxed);
     if let Ok(mut lock) = SHUTDOWN_TX.lock() {
         if let Some(tx) = lock.take() {
             let _ = tx.send(());

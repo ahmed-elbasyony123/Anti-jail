@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: android/app/src/main/jniLibs
-          key: arti-jni-v1-${{ hashFiles('rust/arti-mobile/**') }}
+          key: arti-jni-v2-${{ hashFiles('rust/arti-mobile/**') }}
 
       - name: Set up Rust Toolchain
         if: steps.cache-arti.outputs.cache-hit != 'true'

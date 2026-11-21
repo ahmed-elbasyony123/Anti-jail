@@ -294,9 +294,9 @@ fun MessageBubble(
                     if (isOut) {
                         Spacer(modifier = Modifier.width(4.dp))
                         Icon(
-                            imageVector = if (message.isDecrypted) Icons.Default.DoneAll else Icons.Default.Done,
-                            contentDescription = if (message.isDecrypted) "Delivered & Decrypted" else "Sent to Relay",
-                            tint = if (message.isDecrypted) AnthropicSage else AnthropicTextMuted,
+                            imageVector = Icons.Default.Done,
+                            contentDescription = "Sent to Relay",
+                            tint = AnthropicTextMuted,
                             modifier = Modifier.size(13.dp)
                         )
                     }

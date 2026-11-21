@@ -348,13 +348,14 @@ fun PairContactDialog(
                             sasCode ?: "------",
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.ExtraBold,
-                            fontSize = 28.sp,
-                            letterSpacing = 4.sp,
-                            color = AnthropicCream
+                            fontSize = 15.sp,
+                            letterSpacing = 1.sp,
+                            color = AnthropicCream,
+                            textAlign = TextAlign.Center
                         )
 
                         Text(
-                            "Compare this 6-digit code on both screens. If it matches identically on both devices, your connection is authenticated against any Man-in-the-Middle (MITM) eavesdropping.",
+                            "Compare this 30-digit safety code on both screens. If it matches identically on both devices, your connection is authenticated against any Man-in-the-Middle (MITM) eavesdropping.",
                             fontSize = 11.sp,
                             color = AnthropicTextMuted,
                             textAlign = TextAlign.Center,

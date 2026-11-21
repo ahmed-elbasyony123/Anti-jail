@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
     private var isGeneratingKey by mutableStateOf(false)
 
     // Configuration state
-    private var relayServerUrl by mutableStateOf("http://68.210.150.165:8765")
+    private var relayServerUrl by mutableStateOf("http://127.0.0.1:8765")
     private var useTorSocks by mutableStateOf(false)
     private var keepAlive by mutableStateOf(false)
     private var orbotSocksPort = OrbotPortWatcher.DEFAULT_SOCKS_PORT
@@ -162,13 +162,14 @@ class MainActivity : ComponentActivity() {
 
         // Load network config preferences
         val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
-        relayServerUrl = prefs.getString("relay_url", "http://68.210.150.165:8765") ?: "http://68.210.150.165:8765"
+        relayServerUrl = prefs.getString("relay_url", "http://127.0.0.1:8765") ?: "http://127.0.0.1:8765"
         useTorSocks = prefs.getBoolean("use_tor", true)
         keepAlive = prefs.getBoolean("keep_alive", true)
         orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
         ephemeralMode = prefs.getBoolean("ephemeral_mode", false)
         lockEnabled = prefs.getBoolean("lock_enabled", false)
         userAlias = prefs.getString("user_alias", "") ?: ""
+        duressPinHash = prefs.getString("duress_pin_hash", null)
 
         secureStore = SecureStore(applicationContext)
         audioRecorderManager = AudioRecorderManager(applicationContext)
@@ -186,17 +187,17 @@ class MainActivity : ComponentActivity() {
             decryptMessage(incoming, senderDropId)
         }
 
-        // Initialize network client first, then bring up the identity
+        // 1. Initialize Embedded Arti Tor (Rust engine) or fallback to external Orbot FIRST
+        initTorNetworkEngine()
         applyNetworkConfig()
+
+        // 2. Bring up the identity
         if (lockEnabled && !ephemeralMode && secureStore.hasIdentity()) {
             isLocked = true
             requestUnlock()
         } else {
             bootstrapIdentity()
         }
-
-        // Initialize Embedded Arti Tor (Rust engine) or fallback to external Orbot
-        initTorNetworkEngine()
         PushNotificationManager.init(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -252,13 +253,19 @@ class MainActivity : ComponentActivity() {
                         is ArtiTorState.Starting -> {
                             relayStatus.value = RelayStatus.BUILDING_CIRCUIT
                             if (state.socksPort > 0) {
-                                onOrbotPort(state.socksPort)
+                                orbotSocksPort = state.socksPort
                             }
                         }
                         is ArtiTorState.Connected -> {
-                            onOrbotPort(state.socksPort)
+                            orbotSocksPort = state.socksPort
                             applyNetworkConfig()
-                            myPgpKeys?.let { connectToRelayMailbox(it) }
+                            relayStatus.value = RelayStatus.CONNECTING
+                            myPgpKeys?.let { keys ->
+                                connectToRelayMailbox(keys)
+                                for (g in groups) {
+                                    torClient.addSubscription(g.groupDropId, g.groupReadToken)
+                                }
+                            }
                         }
                         is ArtiTorState.Error -> {
                             startOrbotWatcher()
@@ -378,9 +385,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        connectToRelayMailbox(stored.mine)
-        for (g in groups) {
-            torClient.addSubscription(g.groupDropId, g.groupReadToken)
+        if (useTorSocks && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
+            relayStatus.value = RelayStatus.BUILDING_CIRCUIT
+        } else {
+            connectToRelayMailbox(stored.mine)
+            for (g in groups) {
+                torClient.addSubscription(g.groupDropId, g.groupReadToken)
+            }
         }
     }
 
@@ -452,7 +463,11 @@ class MainActivity : ComponentActivity() {
                     isGeneratingKey = false
                     messagesState.clear()
                     persistIdentity()
-                    connectToRelayMailbox(pair)
+                    if (useTorSocks && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
+                        relayStatus.value = RelayStatus.BUILDING_CIRCUIT
+                    } else {
+                        connectToRelayMailbox(pair)
+                    }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -696,6 +711,19 @@ class MainActivity : ComponentActivity() {
                     val plainBytes = GroupCrypto.decrypt(msg.ciphertext, group.sharedKeyBase64)
                     val wire = WireFormat.parse(plainBytes)
 
+                    // Anti-replay check for group messages
+                    if (wire != null && wire.nonce != null) {
+                        if (seenNonces.contains(wire.nonce)) {
+                            torClient.ack(listOf(msg.id), dropId = group.groupDropId)
+                            return@launch
+                        }
+                        seenNonces.add(wire.nonce)
+                        if (seenNonces.size > 2000) {
+                            val first = seenNonces.iterator().next()
+                            seenNonces.remove(first)
+                        }
+                    }
+
                     var isMedia = false
                     var isAudio = false
                     var mimeType = ""
@@ -815,7 +843,9 @@ class MainActivity : ComponentActivity() {
                         members = emptyList()
                     )
                     if (!groups.any { it.id == newGroup.id }) {
-                        groups.add(newGroup)
+                        withContext(Dispatchers.Main) {
+                            groups.add(newGroup)
+                        }
                         torClient.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
                         persistIdentity()
                         runOnUiThread {
@@ -974,7 +1004,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setDuressPin(pin: String?) {
-        duressPinHash = if (pin != null) hashPin(pin) else null
+        val hash = if (pin != null) hashPin(pin) else null
+        duressPinHash = hash
+        val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
+        if (hash != null) {
+            prefs.edit().putString("duress_pin_hash", hash).apply()
+        } else {
+            prefs.edit().remove("duress_pin_hash").apply()
+        }
         persistIdentity()
     }
 
@@ -1174,16 +1211,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun sendGroupMedia(group: GroupChat, uri: Uri) {
-        val cr = contentResolver
-        val mimeType = cr.getType(uri) ?: "application/octet-stream"
-        val filename = queryFilename(uri) ?: "attachment"
-        val rawBytes = contentResolver.openInputStream(uri)?.use { readLimited(it, maxAttachmentBytes) } ?: return
-        val isAudio = mimeType.startsWith("audio/")
-        val payload = WireFormat.buildMedia(mimeType, filename, rawBytes, senderAlias = userAlias, groupId = group.id)
-        val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
-        sentCiphertexts.add(ciphertext)
-        CoroutineScope(Dispatchers.Default).launch {
+        CoroutineScope(Dispatchers.IO).launch {
             try {
+                val cr = contentResolver
+                val mimeType = cr.getType(uri) ?: "application/octet-stream"
+                val filename = queryFilename(uri) ?: "attachment"
+                val rawBytes = contentResolver.openInputStream(uri)?.use { readLimited(it, maxAttachmentBytes) } ?: return@launch
+                val isAudio = mimeType.startsWith("audio/")
+                val payload = WireFormat.buildMedia(mimeType, filename, rawBytes, senderAlias = userAlias, groupId = group.id)
+                val ciphertext = GroupCrypto.encrypt(payload, group.sharedKeyBase64)
+                sentCiphertexts.add(ciphertext)
+
                 val res = torClient.sendMessage(dropId = group.groupDropId, ciphertext = ciphertext)
                 res.onSuccess {
                     runOnUiThread {
@@ -1205,8 +1243,16 @@ class MainActivity : ComponentActivity() {
                         )
                         messagesState.add(msg)
                     }
+                }.onFailure { err ->
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "Failed to send group media: ${err.message}", Toast.LENGTH_LONG).show()
+                    }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Media error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 

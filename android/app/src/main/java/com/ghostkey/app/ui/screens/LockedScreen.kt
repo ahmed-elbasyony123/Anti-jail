@@ -42,16 +42,13 @@ fun LockedScreen(
     var isError by remember { mutableStateOf(false) }
 
     fun handleDigit(digit: String) {
-        if (enteredPin.length < 6) {
+        if (enteredPin.length < 8) {
             isError = false
             val newPin = enteredPin + digit
             enteredPin = newPin
-            if (newPin.length >= 4) {
-                // Check if Duress PIN matches
-                if (hasDuressPin && onVerifyPin(newPin)) {
-                    // Normal unlock
-                    onUnlock()
-                }
+            // Check if Duress PIN matches — triggers instant silent wipe if matched
+            if (hasDuressPin && !onVerifyPin(newPin)) {
+                return
             }
         }
     }
@@ -65,12 +62,12 @@ fun LockedScreen(
 
     fun submitPin() {
         if (enteredPin.length >= 4) {
-            if (onVerifyPin(enteredPin)) {
-                onUnlock()
-            } else {
-                isError = true
-                enteredPin = ""
+            if (!onVerifyPin(enteredPin)) {
+                // Duress PIN entered — panic wipe triggered
+                return
             }
+            // Normal unlock request via device biometric/PIN keyguard
+            onUnlock()
         }
     }
 

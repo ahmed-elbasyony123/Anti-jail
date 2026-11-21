@@ -127,28 +127,13 @@ object BriarPairing {
     }
 
     /**
-     * Computes a 6-digit Short Authentication String (SAS / Safety Code)
+     * Computes the unified 30-digit Safety Code (SAS)
      * derived from the lexicographically sorted fingerprints of both peers.
      *
-     * Produces identical "XXX-XXX" code on both devices to verify in-person pairing
+     * Produces identical code on both devices to verify in-person pairing
      * and prevent MITM attacks (Briar / Bramble protocol style).
      */
     fun calculateSas(myFingerprint: String, peerFingerprint: String): String {
-        val clean1 = myFingerprint.replace(" ", "").lowercase()
-        val clean2 = peerFingerprint.replace(" ", "").lowercase()
-        val sorted = listOf(clean1, clean2).sorted()
-        val combined = "${sorted[0]}:${sorted[1]}"
-
-        val md = MessageDigest.getInstance("SHA-256")
-        val digest = md.digest(combined.toByteArray(Charsets.UTF_8))
-
-        // Extract 32-bit positive integer from first 4 bytes
-        val num = ((digest[0].toInt() and 0xFF) shl 24) or
-                ((digest[1].toInt() and 0xFF) shl 16) or
-                ((digest[2].toInt() and 0xFF) shl 8) or
-                (digest[3].toInt() and 0xFF)
-        val absNum = Math.abs(num) % 1_000_000
-        val formatted = "%06d".format(absNum)
-        return "${formatted.substring(0, 3)}-${formatted.substring(3, 6)}"
+        return StandalonePgpEngine.generateSafetyCode(myFingerprint, peerFingerprint)
     }
 }
