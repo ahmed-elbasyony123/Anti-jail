@@ -207,26 +207,19 @@ fun TelegramDrawer(
 
             DrawerItem(
                 icon = Icons.Default.QrCodeScanner,
-                title = "Pair Peer (Briar SAS)",
-                badge = "In-Person",
+                title = "In-Person QR Pairing",
+                badge = "SAS",
                 onClick = onPairContact
             )
 
             DrawerItem(
-                icon = Icons.Default.Public,
-                title = "Tor & Arti Network",
+                icon = Icons.Default.Settings,
+                title = "Settings & Network",
                 badge = when (artiState) {
                     is ArtiTorState.Connected -> "Arti Live 🧅"
                     is ArtiTorState.Starting -> if (artiState.progress > 0) "Arti: ${artiState.progress}%" else "Booting..."
-                    else -> "Ready"
+                    else -> "Tor Ready"
                 },
-                onClick = onNavigateSettings
-            )
-
-            DrawerItem(
-                icon = Icons.Default.Settings,
-                title = "Settings (الإعدادات)",
-                badge = null,
                 onClick = onNavigateSettings
             )
 
@@ -238,7 +231,7 @@ fun TelegramDrawer(
             DrawerItem(
                 icon = Icons.Default.Shield,
                 title = "Security & Network Health",
-                badge = "Briar Diagnostics",
+                badge = "Diagnostics",
                 onClick = onOpenSecurityDiagnostics
             )
         }

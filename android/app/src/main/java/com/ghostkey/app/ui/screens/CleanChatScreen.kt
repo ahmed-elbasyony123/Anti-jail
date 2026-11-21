@@ -64,7 +64,7 @@ fun CleanChatScreen(
     onAudioSeek: (ChatMessage, Float) -> Unit,
     onManualDecrypt: (ChatMessage) -> Unit = {},
     onOpenSafetyCode: () -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     disappearingTtlSeconds: Long? = null,
     onSetDisappearingTimer: (Long?) -> Unit = {},
     availableContacts: List<Contact> = emptyList(),
@@ -164,7 +164,7 @@ fun CleanChatScreen(
                             modifier = Modifier.background(AnthropicSurface)
                         ) {
                             Text(
-                                "Auto-Delete Timer (Briar-Style)",
+                                "Disappearing Messages Timer",
                                 color = AnthropicCream,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
@@ -198,14 +198,11 @@ fun CleanChatScreen(
                     }
                     if (!isGroup) {
                         IconButton(onClick = { showIntroduceDialog = true }) {
-                            Icon(Icons.Default.Handshake, contentDescription = "Introduce a Contact (Briar-Style)", tint = AnthropicTerracotta)
+                            Icon(Icons.Default.Handshake, contentDescription = "Introduce Contact", tint = AnthropicTerracotta)
                         }
                     }
                     IconButton(onClick = onOpenSafetyCode) {
                         Icon(Icons.Default.VerifiedUser, contentDescription = "Safety Code", tint = AnthropicSage)
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = AnthropicCream)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

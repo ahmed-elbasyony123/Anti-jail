@@ -124,7 +124,7 @@ fun ChatsListScreen(
                     modifier = Modifier.background(AnthropicSurface)
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Pair via QR / SAS (Briar-Style)", color = AnthropicCream) },
+                        text = { Text("In-Person QR Pairing (SAS)", color = AnthropicCream) },
                         leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AnthropicSage) },
                         onClick = {
                             showFabMenu = false

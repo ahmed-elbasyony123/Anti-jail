@@ -146,7 +146,7 @@ fun MessageBubble(
                         }
                     }
                 } else if (message.isIntroduction && message.isDecrypted) {
-                    // Briar-style Contact Introduction Card
+                    // Peer Contact Introduction Card
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()

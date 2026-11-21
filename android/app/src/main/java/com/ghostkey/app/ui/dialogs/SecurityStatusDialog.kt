@@ -20,7 +20,7 @@ import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.GhostKeyColors
 
 /**
- * Briar-Style Security & Network Health Diagnostics Dialog:
+ * Security & Network Health Diagnostics Dialog:
  *
  * Full overview of Tor routing, local LAN mesh, forensic safeguards, and cryptographic status.
  */
@@ -121,7 +121,7 @@ fun SecurityStatusDialog(
                     DiagnosticsRow(
                         icon = Icons.Default.LockReset,
                         title = "Duress Panic Wipe",
-                        value = if (hasDuressPin) "Armed & Ready (Briar Silent Wipe)" else "Not Configured",
+                        value = if (hasDuressPin) "Armed & Ready (Silent Wipe)" else "Not Configured",
                         valueColor = if (hasDuressPin) GhostKeyColors.StatusGreen else GhostKeyColors.TextSecondary
                     )
                     DiagnosticsRow(

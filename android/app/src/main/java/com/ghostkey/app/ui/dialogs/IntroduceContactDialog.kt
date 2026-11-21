@@ -19,7 +19,7 @@ import com.ghostkey.app.data.Contact
 import com.ghostkey.app.ui.GhostKeyColors
 
 /**
- * Briar-Style Contact Introduction Dialog:
+ * Contact Introduction Dialog:
  *
  * Allows a mutual friend to introduce two contacts to each other over encrypted channels,
  * sharing their public keys and drop IDs without needing an external directory.

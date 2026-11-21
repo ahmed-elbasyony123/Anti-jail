@@ -282,7 +282,7 @@ fun SettingsScreen(
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Duress PIN / Panic Wipe (Briar-Style)", color = AnthropicCream, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("Duress PIN (Silent Panic Wipe)", color = AnthropicCream, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         Text(
                             if (duressPinConfigured) "Configured: Entering decoy PIN silently executes emergency wipe" else "Disabled: Tap to set an emergency decoy wipe PIN",
                             color = if (duressPinConfigured) AnthropicSage else AnthropicTextMuted,
@@ -336,7 +336,7 @@ fun SettingsScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Warning, contentDescription = null, tint = AnthropicCrimson)
                         Spacer(Modifier.width(8.dp))
-                        Text("Duress PIN (Briar-Style)", color = AnthropicCream, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                        Text("Duress PIN", color = AnthropicCream, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                     }
                 },
                 text = {

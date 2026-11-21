@@ -20,10 +20,10 @@ class WireMessage(
     val groupReadToken: String? = null, // group mailbox read token for invites
     val sharedKey: String? = null,      // group AES-256 key for invites
     val ttlSeconds: Long? = null,       // disappearing messages timer in seconds
-    val introAlias: String? = null,     // Briar contact introduction: target alias
-    val introDropId: String? = null,    // Briar contact introduction: target dropId
-    val introArmoredKey: String? = null,// Briar contact introduction: target public key
-    val introSafetyCode: String? = null // Briar contact introduction: target SAS safety code
+    val introAlias: String? = null,     // Peer contact introduction: target alias
+    val introDropId: String? = null,    // Peer contact introduction: target dropId
+    val introArmoredKey: String? = null,// Peer contact introduction: target public key
+    val introSafetyCode: String? = null // Peer contact introduction: target SAS safety code
 ) {
     val isMedia: Boolean get() = type == TYPE_MEDIA
     val isGroupInvite: Boolean get() = type == TYPE_GROUP_INVITE
@@ -122,7 +122,7 @@ object WireFormat {
     }
 
     /**
-     * Briar-style Contact Introduction Protocol:
+     * Mutual Contact Introduction Protocol:
      * User introduces contact B to contact C by sending an introduction payload.
      */
     fun buildIntroduction(

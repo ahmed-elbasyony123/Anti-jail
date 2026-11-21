@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.ghostkey.app.ui.*
 
 /**
- * Modern High-Security Lock Screen with Duress PIN Support (Briar-Style).
+ * Modern High-Security Lock Screen with Duress PIN Support.
  *
  * Supports:
  * 1. Rapid In-App numeric PIN entry.

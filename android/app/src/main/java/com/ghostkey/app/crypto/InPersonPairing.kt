@@ -1,15 +1,16 @@
 package com.ghostkey.app.crypto
 
 import android.graphics.Bitmap
+import androidx.camera.core.ImageProxy
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import org.json.JSONObject
-import java.security.MessageDigest
 
 data class ContactCard(
     val alias: String,
@@ -19,15 +20,15 @@ data class ContactCard(
 )
 
 /**
- * Briar-style cryptographic contact pairing and verification suite.
+ * High-assurance cryptographic contact pairing and in-person verification suite.
  *
  * Provides:
  * 1. ZXing QR code generation and decoding in RAM.
- * 2. Deterministic Short Authentication String (SAS / Safety Code) calculation
- *    matching Briar & Signal's in-person verification standard.
- * 3. Secure contact card encoding/decoding.
+ * 2. Real-time CameraX frame decoding for in-person camera QR scanning.
+ * 3. Deterministic Short Authentication String (SAS / Safety Code) calculation.
+ * 4. Secure contact card encoding/decoding with zero network reliance.
  */
-object BriarPairing {
+object InPersonPairing {
 
     const val URI_SCHEME = "ghostkey://contact"
 
@@ -67,6 +68,37 @@ object BriarPairing {
             val source = RGBLuminanceSource(width, height, pixels)
             val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
             val result = MultiFormatReader().decode(binaryBitmap)
+            result.text
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Decodes a QR code from a live CameraX [ImageProxy] frame in memory.
+     */
+    fun decodeQrFromImageProxy(imageProxy: ImageProxy): String? {
+        return try {
+            val plane = imageProxy.planes[0]
+            val buffer = plane.buffer
+            val data = ByteArray(buffer.remaining())
+            buffer.get(data)
+            val width = imageProxy.width
+            val height = imageProxy.height
+
+            val source = PlanarYUVLuminanceSource(
+                data,
+                width,
+                height,
+                0,
+                0,
+                width,
+                height,
+                false
+            )
+            val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+            val reader = MultiFormatReader()
+            val result = reader.decode(binaryBitmap)
             result.text
         } catch (_: Exception) {
             null
@@ -129,9 +161,6 @@ object BriarPairing {
     /**
      * Computes the unified 30-digit Safety Code (SAS)
      * derived from the lexicographically sorted fingerprints of both peers.
-     *
-     * Produces identical code on both devices to verify in-person pairing
-     * and prevent MITM attacks (Briar / Bramble protocol style).
      */
     fun calculateSas(myFingerprint: String, peerFingerprint: String): String {
         return StandalonePgpEngine.generateSafetyCode(myFingerprint, peerFingerprint)

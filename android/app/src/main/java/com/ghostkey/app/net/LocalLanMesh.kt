@@ -12,7 +12,7 @@ import java.net.*
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Briar-Style Offline Local LAN Mesh Transport:
+ * Offline Local LAN Mesh Transport:
  *
  * Enables direct device-to-device end-to-end encrypted messaging over local Wi-Fi or portable
  * hotspot networks when the internet and Tor are completely censored or shut down.

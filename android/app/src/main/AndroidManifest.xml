@@ -10,6 +10,14 @@
     <!-- Push-to-Talk (PTT) Encrypted Voice Notes -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- In-Person QR Code Scanning -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- Reliable background Tor network without battery killer interruption -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Optional keep-alive foreground service (user-enabled in Settings) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

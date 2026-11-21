@@ -112,7 +112,8 @@ class MainActivity : ComponentActivity() {
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
     private val sentCiphertexts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    // Briar-Style Features: QR Pairing, Disappearing Messages, Duress PIN, Local LAN Mesh, Introductions
+    // Privacy & In-Person Pairing Features: QR Pairing, Disappearing Messages, Duress PIN, Local LAN Mesh, Introductions
+    private var isOnboarding by mutableStateOf(false)
     private var duressPinHash: String? = null
     private var showMyQrDialog by mutableStateOf(false)
     private var showPairContactDialog by mutableStateOf(false)
@@ -191,8 +192,12 @@ class MainActivity : ComponentActivity() {
         initTorNetworkEngine()
         applyNetworkConfig()
 
-        // 2. Bring up the identity
-        if (lockEnabled && !ephemeralMode && secureStore.hasIdentity()) {
+        val hasCompletedOnboarding = prefs.getBoolean("has_completed_onboarding", false)
+
+        // 2. Bring up the identity or start onboarding
+        if (!hasCompletedOnboarding && !secureStore.hasIdentity()) {
+            isOnboarding = true
+        } else if (lockEnabled && !ephemeralMode && secureStore.hasIdentity()) {
             isLocked = true
             requestUnlock()
         } else {
@@ -209,7 +214,31 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             GhostKeyTheme {
-                if (isLocked) {
+                if (isOnboarding) {
+                    WelcomeOnboardingScreen(
+                        onCompleteOnboarding = { alias, appPin, duressPin, isEphemeral ->
+                            userAlias = alias
+                            ephemeralMode = isEphemeral
+                            val editor = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+                            editor.putString("user_alias", alias)
+                            editor.putBoolean("ephemeral_mode", isEphemeral)
+                            editor.putBoolean("has_completed_onboarding", true)
+                            if (!appPin.isNullOrBlank()) {
+                                lockEnabled = true
+                                editor.putBoolean("lock_enabled", true)
+                            }
+                            if (!duressPin.isNullOrBlank()) {
+                                val hash = hashPin(duressPin)
+                                duressPinHash = hash
+                                editor.putString("duress_pin_hash", hash)
+                            }
+                            editor.apply()
+
+                            generateFreshKeys(alias)
+                            isOnboarding = false
+                        }
+                    )
+                } else if (isLocked) {
                     LockedScreen(
                         hasDuressPin = !duressPinHash.isNullOrBlank(),
                         onUnlock = { requestUnlock() },
@@ -452,7 +481,10 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("lock_enabled", enabled).apply()
     }
 
-    private fun generateFreshKeys() {
+    private fun generateFreshKeys(alias: String? = null) {
+        if (!alias.isNullOrBlank()) {
+            userAlias = alias
+        }
         isGeneratingKey = true
         CoroutineScope(Dispatchers.Default).launch {
             try {
@@ -646,7 +678,7 @@ class MainActivity : ComponentActivity() {
         CoroutineScope(Dispatchers.Default).launch {
             try {
                 val ciphertext = StandalonePgpEngine.encrypt(payload, peerKey, keys.privateKeyArmored)
-                // Attempt Local LAN direct mesh delivery first (Briar offline capability)
+                // Attempt Local LAN direct mesh delivery first (offline capability)
                 val sentViaLan = localLanMesh?.sendDirect(peerDrop, ciphertext) == true
                 val result = if (sentViaLan) {
                     Result.success(Unit)
@@ -1018,7 +1050,7 @@ class MainActivity : ComponentActivity() {
         disappearingReaperJob?.cancel()
         disappearingReaperJob = CoroutineScope(Dispatchers.Main).launch {
             while (true) {
-                delay(5_000L) // Check every 5 seconds
+                delay(1_000L) // Check every 1 second for exact countdown expiration
                 val now = System.currentTimeMillis()
                 val expired = messagesState.filter { it.isExpired(now) }
                 if (expired.isNotEmpty()) {
