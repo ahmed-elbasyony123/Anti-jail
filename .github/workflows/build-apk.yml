@@ -95,8 +95,8 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.5.2
-          name: "GhostKey v2.5.2 (Critical Security & Architecture Hardening)"
+          tag_name: v2.6.0
+          name: "GhostKey v2.6.0 (Live QR Pairing, In-App PIN Lock & Welcome Flow)"
           body: |
             ### 🛡️ GhostKey v2.5.2 (Critical Security & Architecture Hardening)
             - **Contact Message Routing & Signature Verification:**
