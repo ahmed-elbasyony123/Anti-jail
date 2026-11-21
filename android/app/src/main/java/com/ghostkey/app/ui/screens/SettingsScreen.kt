@@ -1,5 +1,7 @@
 package com.ghostkey.app.ui.screens
 
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -68,6 +71,14 @@ fun SettingsScreen(
     var alias by remember { mutableStateOf(userAlias) }
     var showDuressDialog by remember { mutableStateOf(false) }
     var duressInput by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    // Auto-save when user uses Android gesture navigation / hardware back
+    BackHandler {
+        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
+        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
+        onBack()
+    }
 
     Scaffold(
         topBar = {
@@ -82,7 +93,8 @@ fun SettingsScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = {
-                        onSaveSettings(relayUrl, useTorSocks, keepAlive, ephemeralMode, lockEnabled, alias)
+                        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
+                        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
                         onBack()
                     }) {
                         Icon(
@@ -90,6 +102,16 @@ fun SettingsScreen(
                             contentDescription = "Back",
                             tint = AnthropicCream
                         )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = {
+                        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
+                        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
+                        Toast.makeText(context, "Settings saved! Connecting...", Toast.LENGTH_SHORT).show()
+                        onBack()
+                    }) {
+                        Text("Save", color = AnthropicTerracotta, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -201,6 +223,28 @@ fun SettingsScreen(
                     checked = useTorSocks,
                     onCheckedChange = { useTorSocks = it }
                 )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = {
+                        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
+                        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
+                        Toast.makeText(context, "Saved! Connecting to relay...", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AnthropicTerracotta,
+                        contentColor = AnthropicDarkBg
+                    ),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Save & Connect (حفظ وإعادة الاتصال)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
             }
 
             // -------------------------------------------------------------------------
