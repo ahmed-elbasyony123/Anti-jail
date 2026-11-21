@@ -49,8 +49,8 @@ class TorForegroundService : Service() {
         return START_NOT_STICKY
     }
 
-    override fun onTimeout(startId: Int, fgsType: Int) {
-        super.onTimeout(startId, fgsType)
+    override fun onTimeout(startId: Int) {
+        super.onTimeout(startId)
         stopSelf()
     }
 

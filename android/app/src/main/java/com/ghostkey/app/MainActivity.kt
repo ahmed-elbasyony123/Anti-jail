@@ -259,7 +259,6 @@ class MainActivity : ComponentActivity() {
                         is ArtiTorState.Connected -> {
                             orbotSocksPort = state.socksPort
                             applyNetworkConfig()
-                            relayStatus.value = RelayStatus.CONNECTING
                             myPgpKeys?.let { keys ->
                                 connectToRelayMailbox(keys)
                                 for (g in groups) {
@@ -843,7 +842,7 @@ class MainActivity : ComponentActivity() {
                         members = emptyList()
                     )
                     if (!groups.any { it.id == newGroup.id }) {
-                        withContext(Dispatchers.Main) {
+                        runOnUiThread {
                             groups.add(newGroup)
                         }
                         torClient.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
