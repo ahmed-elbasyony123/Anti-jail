@@ -36,6 +36,7 @@ fun LockedScreen(
     hasDuressPin: Boolean = false,
     onUnlock: () -> Unit,
     onDuressEntered: () -> Unit,
+    onDeviceUnlock: () -> Unit = onUnlock,
     onVerifyPin: (String) -> Boolean = { true }
 ) {
     var enteredPin by remember { mutableStateOf("") }
@@ -44,12 +45,7 @@ fun LockedScreen(
     fun handleDigit(digit: String) {
         if (enteredPin.length < 8) {
             isError = false
-            val newPin = enteredPin + digit
-            enteredPin = newPin
-            // Check if Duress PIN matches — triggers instant silent wipe if matched
-            if (hasDuressPin && !onVerifyPin(newPin)) {
-                return
-            }
+            enteredPin += digit
         }
     }
 
@@ -62,12 +58,13 @@ fun LockedScreen(
 
     fun submitPin() {
         if (enteredPin.length >= 4) {
-            if (!onVerifyPin(enteredPin)) {
-                // Duress PIN entered — panic wipe triggered
-                return
+            val valid = onVerifyPin(enteredPin)
+            if (valid) {
+                onUnlock()
+            } else {
+                isError = true
+                enteredPin = ""
             }
-            // Normal unlock request via device biometric/PIN keyguard
-            onUnlock()
         }
     }
 
@@ -224,7 +221,7 @@ fun LockedScreen(
                 }
 
                 OutlinedButton(
-                    onClick = onUnlock,
+                    onClick = onDeviceUnlock,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicSlate)
                 ) {
                     Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -23,6 +24,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.crypto.PgpKeyPairArmored
@@ -61,7 +64,9 @@ fun SettingsScreen(
     onCopyKey: () -> Unit,
     onVerifySafetyCode: () -> Unit,
     duressPinConfigured: Boolean = false,
-    onSetDuressPin: (String?) -> Unit = {}
+    onSetDuressPin: (String?) -> Unit = {},
+    appPinConfigured: Boolean = false,
+    onSetAppPin: (String?) -> Unit = {}
 ) {
     var relayUrl by remember { mutableStateOf(initialRelayUrl) }
     var useTorSocks by remember { mutableStateOf(initialUseTorSocks) }
@@ -71,6 +76,10 @@ fun SettingsScreen(
     var alias by remember { mutableStateOf(userAlias) }
     var showDuressDialog by remember { mutableStateOf(false) }
     var duressInput by remember { mutableStateOf("") }
+    var showAppPinDialog by remember { mutableStateOf(false) }
+    var appPinInput by remember { mutableStateOf("") }
+    var appPinConfirmInput by remember { mutableStateOf("") }
+    var appPinError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
 
     // Auto-save when user uses Android gesture navigation / hardware back
@@ -311,6 +320,39 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
+                            appPinInput = ""
+                            appPinConfirmInput = ""
+                            appPinError = null
+                            showAppPinDialog = true
+                        }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(AnthropicSage.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = AnthropicSage, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("App Lock PIN (رمز قفل التطبيق)", color = AnthropicCream, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            if (appPinConfigured) "Active 🔒: Demands PIN on launch/resume (Tap to change)" else "Disabled: Tap to set an in-app lock PIN",
+                            color = if (appPinConfigured) AnthropicSage else AnthropicTextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = AnthropicBorderSubtle, modifier = Modifier.padding(vertical = 8.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
                             duressInput = ""
                             showDuressDialog = true
                         }
@@ -370,6 +412,109 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+        }
+
+        if (showAppPinDialog) {
+            AlertDialog(
+                onDismissRequest = { showAppPinDialog = false },
+                containerColor = AnthropicSurface,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = AnthropicSage)
+                        Spacer(Modifier.width(8.dp))
+                        Text("App Lock PIN", color = AnthropicCream, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            "Choose a 4 to 8 digit PIN. Whenever you launch GhostKey or return from the background, this PIN will be required to unlock your session.",
+                            color = AnthropicTextMuted,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                        OutlinedTextField(
+                            value = appPinInput,
+                            onValueChange = {
+                                if (it.length <= 8 && it.all { ch -> ch.isDigit() }) {
+                                    appPinInput = it
+                                    appPinError = null
+                                }
+                            },
+                            label = { Text("Enter PIN (4-8 digits)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AnthropicSage,
+                                unfocusedBorderColor = AnthropicBorder,
+                                focusedTextColor = AnthropicCream,
+                                unfocusedTextColor = AnthropicCream
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = appPinConfirmInput,
+                            onValueChange = {
+                                if (it.length <= 8 && it.all { ch -> ch.isDigit() }) {
+                                    appPinConfirmInput = it
+                                    appPinError = null
+                                }
+                            },
+                            label = { Text("Confirm PIN") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AnthropicSage,
+                                unfocusedBorderColor = AnthropicBorder,
+                                focusedTextColor = AnthropicCream,
+                                unfocusedTextColor = AnthropicCream
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (appPinError != null) {
+                            Text(
+                                text = appPinError ?: "",
+                                color = AnthropicCrimson,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (appPinInput.length < 4) {
+                                appPinError = "PIN must be at least 4 digits."
+                            } else if (appPinInput != appPinConfirmInput) {
+                                appPinError = "PINs do not match."
+                            } else {
+                                onSetAppPin(appPinInput)
+                                showAppPinDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AnthropicSage)
+                    ) {
+                        Text("Save PIN", fontWeight = FontWeight.Bold, color = AnthropicDarkBg)
+                    }
+                },
+                dismissButton = {
+                    if (appPinConfigured) {
+                        TextButton(onClick = {
+                            onSetAppPin(null)
+                            showAppPinDialog = false
+                        }) {
+                            Text("Disable Lock", color = AnthropicCrimson)
+                        }
+                    } else {
+                        TextButton(onClick = { showAppPinDialog = false }) {
+                            Text("Cancel", color = AnthropicTextMuted)
+                        }
+                    }
+                }
+            )
         }
 
         if (showDuressDialog) {

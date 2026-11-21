@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
 
     // Privacy & In-Person Pairing Features: QR Pairing, Disappearing Messages, Duress PIN, Local LAN Mesh, Introductions
     private var isOnboarding by mutableStateOf(false)
+    private var appPinHash: String? = null
     private var duressPinHash: String? = null
     private var showMyQrDialog by mutableStateOf(false)
     private var showPairContactDialog by mutableStateOf(false)
@@ -144,6 +145,13 @@ class MainActivity : ComponentActivity() {
         isForeground = false
     }
 
+    override fun onStop() {
+        super.onStop()
+        if (lockEnabled && (!appPinHash.isNullOrBlank() || !duressPinHash.isNullOrBlank())) {
+            isLocked = true
+        }
+    }
+
     private val unlockLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -170,6 +178,7 @@ class MainActivity : ComponentActivity() {
         ephemeralMode = prefs.getBoolean("ephemeral_mode", false)
         lockEnabled = prefs.getBoolean("lock_enabled", false)
         userAlias = prefs.getString("user_alias", "") ?: ""
+        appPinHash = prefs.getString("app_pin_hash", null)
         duressPinHash = prefs.getString("duress_pin_hash", null)
 
         secureStore = SecureStore(applicationContext)
@@ -197,9 +206,8 @@ class MainActivity : ComponentActivity() {
         // 2. Bring up the identity or start onboarding
         if (!hasCompletedOnboarding && !secureStore.hasIdentity()) {
             isOnboarding = true
-        } else if (lockEnabled && !ephemeralMode && secureStore.hasIdentity()) {
+        } else if (lockEnabled && !ephemeralMode && (!appPinHash.isNullOrBlank() || !duressPinHash.isNullOrBlank())) {
             isLocked = true
-            requestUnlock()
         } else {
             bootstrapIdentity()
         }
@@ -224,8 +232,11 @@ class MainActivity : ComponentActivity() {
                             editor.putBoolean("ephemeral_mode", isEphemeral)
                             editor.putBoolean("has_completed_onboarding", true)
                             if (!appPin.isNullOrBlank()) {
+                                val hash = hashPin(appPin)
+                                appPinHash = hash
                                 lockEnabled = true
                                 editor.putBoolean("lock_enabled", true)
+                                editor.putString("app_pin_hash", hash)
                             }
                             if (!duressPin.isNullOrBlank()) {
                                 val hash = hashPin(duressPin)
@@ -241,17 +252,26 @@ class MainActivity : ComponentActivity() {
                 } else if (isLocked) {
                     LockedScreen(
                         hasDuressPin = !duressPinHash.isNullOrBlank(),
-                        onUnlock = { requestUnlock() },
+                        onUnlock = {
+                            isLocked = false
+                            if (myPgpKeys == null) {
+                                bootstrapIdentity()
+                            }
+                        },
                         onDuressEntered = { triggerEmergencyPanicWipe() },
+                        onDeviceUnlock = { requestUnlock() },
                         onVerifyPin = { pin ->
                             val hash = hashPin(pin)
                             if (!duressPinHash.isNullOrBlank() && hash == duressPinHash) {
                                 // Duress PIN entered — silent panic wipe
                                 triggerEmergencyPanicWipe()
                                 false
-                            } else {
-                                // Not duress, let device credential handle unlock
+                            } else if (!appPinHash.isNullOrBlank() && hash == appPinHash) {
                                 true
+                            } else if (appPinHash.isNullOrBlank() && duressPinHash.isNullOrBlank()) {
+                                true
+                            } else {
+                                false
                             }
                         }
                     )
@@ -356,11 +376,15 @@ class MainActivity : ComponentActivity() {
         @Suppress("DEPRECATION")
         val intent = keyguard.createConfirmDeviceCredentialIntent("GhostKey", "Unlock to open your saved identity")
         if (intent == null) {
-            lockEnabled = false
-            getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("lock_enabled", false).apply()
-            isLocked = false
-            Toast.makeText(this, "No device screen lock is set, so the app lock was turned off", Toast.LENGTH_LONG).show()
-            bootstrapIdentity()
+            if (appPinHash.isNullOrBlank()) {
+                lockEnabled = false
+                getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit().putBoolean("lock_enabled", false).apply()
+                isLocked = false
+                Toast.makeText(this, "No device screen lock is set, so the app lock was turned off", Toast.LENGTH_LONG).show()
+                bootstrapIdentity()
+            } else {
+                Toast.makeText(this, "Device lock screen not configured. Please use your App PIN.", Toast.LENGTH_SHORT).show()
+            }
         } else {
             unlockLauncher.launch(intent)
         }
@@ -468,12 +492,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateLockEnabled(enabled: Boolean) {
-        if (enabled) {
+        if (enabled && appPinHash.isNullOrBlank()) {
             val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             if (!keyguard.isDeviceSecure) {
                 Toast.makeText(
                     this,
-                    "Set a screen lock (PIN, pattern or password) in Android settings first",
+                    "Set an App PIN below or configure a screen lock in Android settings",
                     Toast.LENGTH_LONG
                 ).show()
                 return
@@ -1034,6 +1058,26 @@ class MainActivity : ComponentActivity() {
         val md = java.security.MessageDigest.getInstance("SHA-256")
         val digest = md.digest(pin.toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun setAppPin(pin: String?) {
+        val hash = if (pin != null) hashPin(pin) else null
+        appPinHash = hash
+        val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
+        if (hash != null) {
+            lockEnabled = true
+            prefs.edit()
+                .putString("app_pin_hash", hash)
+                .putBoolean("lock_enabled", true)
+                .apply()
+        } else {
+            lockEnabled = false
+            prefs.edit()
+                .remove("app_pin_hash")
+                .putBoolean("lock_enabled", false)
+                .apply()
+        }
+        persistIdentity()
     }
 
     private fun setDuressPin(pin: String?) {
@@ -1613,7 +1657,9 @@ class MainActivity : ComponentActivity() {
                         onCopyKey = { myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) } },
                         onVerifySafetyCode = { showSafetyCodeDialog = true },
                         duressPinConfigured = !duressPinHash.isNullOrBlank(),
-                        onSetDuressPin = { pin -> setDuressPin(pin) }
+                        onSetDuressPin = { pin -> setDuressPin(pin) },
+                        appPinConfigured = !appPinHash.isNullOrBlank(),
+                        onSetAppPin = { pin -> setAppPin(pin) }
                     )
                 }
             }
