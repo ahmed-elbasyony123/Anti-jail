@@ -436,6 +436,20 @@ class TorRelayClient(
         return when {
             t is SocketTimeoutException || message.contains("timeout", ignoreCase = true) ->
                 RelayStatus.TIMED_OUT
+            // If embedded Arti Tor is available, connection retries while circuit builds should report BUILDING_CIRCUIT
+            useTorProxy && ArtiTorManager.isAvailable -> {
+                if (t is SocketException && message.contains("SOCKS", ignoreCase = true)) {
+                    RelayStatus.BUILDING_CIRCUIT
+                } else if (t is ConnectException) {
+                    if (torSocksPort != OrbotPortWatcher.DEFAULT_SOCKS_PORT || ArtiTorManager.state.value is ArtiTorState.Starting) {
+                        RelayStatus.BUILDING_CIRCUIT
+                    } else {
+                        RelayStatus.ORBOT_NOT_RUNNING
+                    }
+                } else {
+                    RelayStatus.DISCONNECTED
+                }
+            }
             // Cannot even reach Orbot's local SOCKS port: Orbot is not running.
             useTorProxy && t is ConnectException -> RelayStatus.ORBOT_NOT_RUNNING
             // Orbot answered but Tor could not reach the relay yet (no circuit / descriptor).

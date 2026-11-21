@@ -39,6 +39,7 @@ object ArtiTorManager {
 
     val isAvailable: Boolean get() = isLibraryLoaded
 
+    @Synchronized
     fun start(context: Context, scope: CoroutineScope = CoroutineScope(Dispatchers.IO)): Boolean {
         if (!isLibraryLoaded) {
             _state.value = ArtiTorState.Error("Arti native library (libarti_mobile.so) not present")
@@ -46,8 +47,10 @@ object ArtiTorManager {
         }
 
         if (activePort > 0) {
-            _state.value = ArtiTorState.Connected(activePort)
-            return true
+            val currentState = _state.value
+            if (currentState is ArtiTorState.Connected || currentState is ArtiTorState.Starting) {
+                return true
+            }
         }
 
         val stateDir = File(context.filesDir, "arti_state").apply { mkdirs() }.absolutePath
@@ -75,18 +78,21 @@ object ArtiTorManager {
                     _state.value = ArtiTorState.Error("Arti Tor circuit bootstrap failed in native engine")
                     break
                 } else {
-                    _state.value = ArtiTorState.Starting(progress, socksPort = port)
+                    val current = _state.value
+                    if (current !is ArtiTorState.Connected) {
+                        _state.value = ArtiTorState.Starting(progress, socksPort = port)
+                    }
                 }
                 delay(300)
                 elapsedMs += 300
-                // After 30 seconds: if partial bootstrap succeeded (>= 40%), allow connection; otherwise report error
-                if (elapsedMs >= 30_000L) {
+                // After 60 seconds: if partial bootstrap succeeded (>= 40%), allow connection; otherwise report error
+                if (elapsedMs >= 60_000L) {
                     if (progress >= 40) {
                         android.util.Log.i("GhostKey-Arti", "Proceeding with partially bootstrapped Tor ($progress%)")
                         _state.value = ArtiTorState.Connected(port)
                         break
                     } else {
-                        android.util.Log.e("GhostKey-Arti", "Tor bootstrap timed out at $progress% after 30s")
+                        android.util.Log.e("GhostKey-Arti", "Tor bootstrap timed out at $progress% after 60s")
                         _state.value = ArtiTorState.Error("Tor circuit bootstrap timed out ($progress%)")
                         break
                     }
@@ -97,6 +103,7 @@ object ArtiTorManager {
         return true
     }
 
+    @Synchronized
     fun stop() {
         progressJob?.cancel()
         progressJob = null

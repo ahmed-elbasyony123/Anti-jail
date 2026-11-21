@@ -16,6 +16,7 @@ use tor_rtcompat::PreferredRuntime;
 static BOOTSTRAP_PERCENT: AtomicI32 = AtomicI32::new(0);
 static SOCKS_PORT: AtomicU16 = AtomicU16::new(0);
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
+static IS_STARTING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_TX: std::sync::Mutex<Option<oneshot::Sender<()>>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "android")]
@@ -118,7 +119,7 @@ async fn handle_socks5_client(
 async fn run_arti_daemon(
     state_dir: String,
     cache_dir: String,
-    port_tx: oneshot::Sender<u16>,
+    port_tx: std::sync::mpsc::SyncSender<u16>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Disable filesystem permission checks globally for Android sandboxed filesystem
@@ -132,12 +133,14 @@ async fn run_arti_daemon(
         PathBuf::from(&cache_dir),
     );
     config_builder.storage().permissions().dangerously_trust_everyone();
+    config_builder.address_filter().allow_onion_addrs(true);
 
     let config = match config_builder.build() {
         Ok(c) => c,
         Err(e) => {
             log::error!("Arti TorClientConfig build error: {}", e);
             IS_RUNNING.store(false, Ordering::Relaxed);
+            IS_STARTING.store(false, Ordering::Relaxed);
             return Err(e.into());
         }
     };
@@ -150,6 +153,7 @@ async fn run_arti_daemon(
         Err(e) => {
             log::error!("Arti TorClient create_unbootstrapped error: {}", e);
             IS_RUNNING.store(false, Ordering::Relaxed);
+            IS_STARTING.store(false, Ordering::Relaxed);
             return Err(e.into());
         }
     };
@@ -161,6 +165,7 @@ async fn run_arti_daemon(
 
     SOCKS_PORT.store(port, Ordering::Relaxed);
     IS_RUNNING.store(true, Ordering::Relaxed);
+    IS_STARTING.store(false, Ordering::Relaxed);
     let _ = port_tx.send(port);
 
     log::info!("Arti Tor SOCKS5 proxy bound to 127.0.0.1:{}", port);
@@ -212,6 +217,7 @@ async fn run_arti_daemon(
     }
 
     IS_RUNNING.store(false, Ordering::Relaxed);
+    IS_STARTING.store(false, Ordering::Relaxed);
     SOCKS_PORT.store(0, Ordering::Relaxed);
     BOOTSTRAP_PERCENT.store(0, Ordering::Relaxed);
 
@@ -238,16 +244,40 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
         return SOCKS_PORT.load(Ordering::Relaxed) as jint;
     }
 
+    // Guard against concurrent startNative calls
+    if IS_STARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        // Another thread is currently starting Arti, wait briefly for port
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if IS_RUNNING.load(Ordering::Relaxed) {
+                return SOCKS_PORT.load(Ordering::Relaxed) as jint;
+            }
+            if !IS_STARTING.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+        if IS_RUNNING.load(Ordering::Relaxed) {
+            return SOCKS_PORT.load(Ordering::Relaxed) as jint;
+        }
+        return -1;
+    }
+
     let state_dir: String = match env.get_string(&j_state_dir) {
         Ok(s) => s.into(),
-        Err(_) => return -1,
+        Err(_) => {
+            IS_STARTING.store(false, Ordering::Relaxed);
+            return -1;
+        }
     };
     let cache_dir: String = match env.get_string(&j_cache_dir) {
         Ok(s) => s.into(),
-        Err(_) => return -1,
+        Err(_) => {
+            IS_STARTING.store(false, Ordering::Relaxed);
+            return -1;
+        }
     };
 
-    let (port_tx, port_rx) = oneshot::channel();
+    let (port_tx, port_rx) = std::sync::mpsc::sync_channel(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     if let Ok(mut lock) = SHUTDOWN_TX.lock() {
@@ -262,6 +292,7 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
             Ok(r) => r,
             Err(e) => {
                 log::error!("Failed to create Tokio runtime for Arti: {}", e);
+                IS_STARTING.store(false, Ordering::Relaxed);
                 return;
             }
         };
@@ -269,14 +300,18 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
         rt.block_on(async move {
             if let Err(e) = run_arti_daemon(state_dir, cache_dir, port_tx, shutdown_rx).await {
                 log::error!("Arti daemon error: {}", e);
+                IS_STARTING.store(false, Ordering::Relaxed);
             }
         });
     });
 
-    // Wait up to 5 seconds for the SOCKS port to bind
-    match port_rx.blocking_recv() {
+    // Wait up to 10 seconds with timeout for the SOCKS port to bind
+    match port_rx.recv_timeout(std::time::Duration::from_secs(10)) {
         Ok(port) => port as jint,
-        Err(_) => -1,
+        Err(_) => {
+            IS_STARTING.store(false, Ordering::Relaxed);
+            -1
+        }
     }
 }
 
@@ -293,6 +328,7 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_stopNative(
     _env: JNIEnv,
     _class: JClass,
 ) {
+    IS_STARTING.store(false, Ordering::Relaxed);
     IS_RUNNING.store(false, Ordering::Relaxed);
     SOCKS_PORT.store(0, Ordering::Relaxed);
     BOOTSTRAP_PERCENT.store(0, Ordering::Relaxed);

@@ -317,8 +317,16 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         is ArtiTorState.Error -> {
-                            android.util.Log.w("GhostKey", "Arti Tor error: ${state.message}, falling back to Orbot port watcher")
-                            startOrbotWatcher()
+                            android.util.Log.w("GhostKey", "Arti Tor error: ${state.message}, retrying or falling back to Orbot")
+                            relayStatus.value = RelayStatus.BUILDING_CIRCUIT
+                            CoroutineScope(Dispatchers.IO).launch {
+                                delay(3000)
+                                if (artiState is ArtiTorState.Error && (useTorSocks || relayServerUrl.contains(".onion"))) {
+                                    ArtiTorManager.start(applicationContext)
+                                } else {
+                                    runOnUiThread { startOrbotWatcher() }
+                                }
+                            }
                         }
                         is ArtiTorState.Idle -> {}
                     }
@@ -342,11 +350,6 @@ class MainActivity : ComponentActivity() {
 
     private fun applyNetworkConfig() {
         torClient.updateConfig(relayServerUrl, useTorSocks, socksPort = orbotSocksPort)
-        if ((useTorSocks || relayServerUrl.contains(".onion")) && ArtiTorManager.isAvailable) {
-            CoroutineScope(Dispatchers.IO).launch {
-                ArtiTorManager.start(applicationContext)
-            }
-        }
     }
 
     private fun onOrbotPort(port: Int) {
@@ -439,7 +442,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (useTorSocks && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
+        val requiresTor = useTorSocks || relayServerUrl.contains(".onion")
+        if (requiresTor && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
             relayStatus.value = RelayStatus.BUILDING_CIRCUIT
         } else {
             connectToRelayMailbox(stored.mine)
@@ -520,7 +524,8 @@ class MainActivity : ComponentActivity() {
                     isGeneratingKey = false
                     messagesState.clear()
                     persistIdentity()
-                    if (useTorSocks && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
+                    val requiresTor = useTorSocks || relayServerUrl.contains(".onion")
+                    if (requiresTor && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
                         relayStatus.value = RelayStatus.BUILDING_CIRCUIT
                     } else {
                         connectToRelayMailbox(pair)
