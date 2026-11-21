@@ -131,7 +131,7 @@ async fn run_arti_daemon(
         PathBuf::from(&state_dir),
         PathBuf::from(&cache_dir),
     );
-    config_builder.storage().permissions().ignore_all();
+    config_builder.storage().permissions().dangerously_trust_everyone();
 
     let config = match config_builder.build() {
         Ok(c) => c,
