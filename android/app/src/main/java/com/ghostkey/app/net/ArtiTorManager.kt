@@ -62,18 +62,35 @@ object ArtiTorManager {
         activePort = port
         _state.value = ArtiTorState.Starting(0, socksPort = port)
 
-        // Poll bootstrap progress until 100%
+        // Poll bootstrap progress until 100% or timeout
         progressJob?.cancel()
         progressJob = scope.launch {
+            var elapsedMs = 0L
             while (isActive) {
                 val progress = getBootstrapProgressNative()
                 if (progress >= 100) {
                     _state.value = ArtiTorState.Connected(port)
                     break
+                } else if (progress < 0) {
+                    _state.value = ArtiTorState.Error("Arti Tor circuit bootstrap failed in native engine")
+                    break
                 } else {
                     _state.value = ArtiTorState.Starting(progress, socksPort = port)
                 }
                 delay(300)
+                elapsedMs += 300
+                // After 30 seconds: if partial bootstrap succeeded (>= 40%), allow connection; otherwise report error
+                if (elapsedMs >= 30_000L) {
+                    if (progress >= 40) {
+                        android.util.Log.i("GhostKey-Arti", "Proceeding with partially bootstrapped Tor ($progress%)")
+                        _state.value = ArtiTorState.Connected(port)
+                        break
+                    } else {
+                        android.util.Log.e("GhostKey-Arti", "Tor bootstrap timed out at $progress% after 30s")
+                        _state.value = ArtiTorState.Error("Tor circuit bootstrap timed out ($progress%)")
+                        break
+                    }
+                }
             }
         }
 

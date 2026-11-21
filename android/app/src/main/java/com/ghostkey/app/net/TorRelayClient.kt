@@ -99,20 +99,15 @@ class TorRelayClient(
             .pingInterval(20, TimeUnit.SECONDS)
 
         if (torActive) {
-            builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress(torSocksHost, torSocksPort)))
+            builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved(torSocksHost, torSocksPort)))
         }
 
-        // With a SOCKS proxy OkHttp hands the host name to the proxy (Tor resolves it).
-        // This resolver prevents local DNS leaks for all remote hostnames (both .onion and clearnet)
-        // by returning a dummy address, forcing OkHttp to pass the unresolved hostname directly to Tor's SOCKS5 proxy.
-        // Direct numeric IP addresses (like 127.0.0.1 or 10.0.2.2) are resolved normally.
+        // DNS resolver: Bypasses Android OS UnknownHostException for .onion addresses
+        // while allowing direct numeric IPs and clearnet addresses to resolve correctly.
         builder.dns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
-                if (torActive) {
-                    if (hostname.matches(Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"""))) {
-                        return Dns.SYSTEM.lookup(hostname)
-                    }
-                    return listOf(InetAddress.getByAddress(hostname, byteArrayOf(0, 0, 0, 0)))
+                if (torActive && hostname.endsWith(".onion")) {
+                    return listOf(InetAddress.getByAddress(hostname, byteArrayOf(1, 1, 1, 1)))
                 }
                 return Dns.SYSTEM.lookup(hostname)
             }

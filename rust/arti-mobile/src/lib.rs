@@ -184,6 +184,7 @@ async fn run_arti_daemon(
             }
             Err(e) => {
                 log::error!("Arti Tor bootstrap failed: {}", e);
+                BOOTSTRAP_PERCENT.store(-1, Ordering::Relaxed);
             }
         }
     });

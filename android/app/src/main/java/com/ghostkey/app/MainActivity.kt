@@ -281,8 +281,9 @@ class MainActivity : ComponentActivity() {
                     when (state) {
                         is ArtiTorState.Starting -> {
                             relayStatus.value = RelayStatus.BUILDING_CIRCUIT
-                            if (state.socksPort > 0) {
+                            if (state.socksPort > 0 && orbotSocksPort != state.socksPort) {
                                 orbotSocksPort = state.socksPort
+                                applyNetworkConfig()
                             }
                         }
                         is ArtiTorState.Connected -> {
@@ -296,6 +297,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         is ArtiTorState.Error -> {
+                            android.util.Log.w("GhostKey", "Arti Tor error: ${state.message}, falling back to Orbot port watcher")
                             startOrbotWatcher()
                         }
                         is ArtiTorState.Idle -> {}
