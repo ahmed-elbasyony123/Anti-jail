@@ -133,6 +133,9 @@ async fn run_arti_daemon(
     port_tx: std::sync::mpsc::SyncSender<Result<u16, String>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Install ring crypto provider for rustls 0.23
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Disable filesystem permission checks globally for Android sandboxed filesystem
     std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
     std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "yes");
@@ -290,6 +293,9 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
     j_cache_dir: JString,
 ) -> jint {
     init_logging();
+
+    // Install ring crypto provider for rustls 0.23
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Disable filesystem permission checks globally for Android sandboxed filesystem
     std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
