@@ -724,7 +724,7 @@ private fun StepPermissions(
             desc = "Scans friend QR codes in 1 second to verify safety codes and eliminate Man-in-the-Middle attacks.",
             isGranted = hasCameraPermission,
             onAction = onRequestCamera,
-            buttonText = "Allow Camera"
+            buttonText = "Allow"
         )
 
         // 3. Mic Permission
@@ -734,7 +734,7 @@ private fun StepPermissions(
             desc = "Records Push-to-Talk audio directly in RAM. Zero temporary audio files written to disk storage.",
             isGranted = hasMicPermission,
             onAction = onRequestMic,
-            buttonText = "Allow Mic"
+            buttonText = "Allow"
         )
 
         // 4. Notifications
@@ -744,7 +744,7 @@ private fun StepPermissions(
             desc = "Notifies you when incoming E2EE messages arrive through your Tor mailbox.",
             isGranted = hasNotifPermission,
             onAction = onRequestNotif,
-            buttonText = "Allow Alerts"
+            buttonText = "Allow"
         )
 
         Spacer(modifier = Modifier.weight(1f))
@@ -901,10 +901,12 @@ private fun PermissionCard(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f).padding(end = 8.dp)
+            ) {
                 Icon(
                     icon,
                     contentDescription = null,
@@ -915,18 +917,24 @@ private fun PermissionCard(
                 Text(title, fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = AnthropicCream)
             }
             if (isGranted) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = AnthropicSage, modifier = Modifier.size(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .background(AnthropicSage.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = AnthropicSage, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Granted", color = AnthropicSage, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Granted", color = AnthropicSage, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             } else {
-                OutlinedButton(
+                Button(
                     onClick = onAction,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicTerracotta)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AnthropicTerracotta, contentColor = AnthropicDarkBg),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text(buttonText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(buttonText, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                 }
             }
         }

@@ -24,6 +24,7 @@ data class StoredIdentity(
     val mine: PgpKeyPairArmored,
     val peer: PeerIdentity? = null,
     val userAlias: String = "",
+    val relayUrl: String = "",
     val contacts: List<Contact> = emptyList(),
     val groups: List<GroupChat> = emptyList(),
     val duressPinHash: String? = null
@@ -78,6 +79,7 @@ class SecureStore(private val context: Context) {
             .put("dropId", identity.mine.dropId)
             .put("readToken", identity.mine.readToken)
             .put("userAlias", identity.userAlias)
+            .put("relayUrl", identity.relayUrl)
 
         identity.peer?.let {
             json.put("peerPublicKeyArmored", it.publicKeyArmored)
@@ -240,8 +242,9 @@ class SecureStore(private val context: Context) {
         }
 
         val duressPinHash = json.optString("duressPinHash", null)?.ifBlank { null }
+        val relayUrl = json.optString("relayUrl", "")
 
-        return StoredIdentity(mine, peer, userAlias, contactsList, groupsList, duressPinHash)
+        return StoredIdentity(mine, peer, userAlias, relayUrl, contactsList, groupsList, duressPinHash)
     }
 
     /** Delete the keystore key and the encrypted files. Safe to call when nothing exists. */

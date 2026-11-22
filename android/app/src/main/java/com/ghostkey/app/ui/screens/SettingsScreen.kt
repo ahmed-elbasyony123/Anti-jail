@@ -203,24 +203,62 @@ fun SettingsScreen(
             // 2. Tor & Network Routing
             // -------------------------------------------------------------------------
             SettingsGroup(title = "TOR NETWORK & ARTI ENGINE") {
-                OutlinedTextField(
-                    value = relayUrl,
-                    onValueChange = {
-                        relayUrl = it.trim()
-                        if (relayUrl.contains(".onion", ignoreCase = true)) {
-                            useTorSocks = true
-                        }
-                    },
-                    label = { Text("Relay (.onion or IP:Port)") },
-                    textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AnthropicTerracotta,
-                        unfocusedBorderColor = AnthropicBorder,
-                        focusedTextColor = AnthropicCream,
-                        unfocusedTextColor = AnthropicCream
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = relayUrl,
+                        onValueChange = {
+                            relayUrl = it.trim()
+                            if (relayUrl.contains(".onion", ignoreCase = true)) {
+                                useTorSocks = true
+                            }
+                        },
+                        label = { Text("Relay (.onion or IP:Port)") },
+                        placeholder = { Text("e.g. xyz...onion:8765") },
+                        singleLine = true,
+                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                        trailingIcon = {
+                            if (relayUrl.isNotEmpty()) {
+                                IconButton(onClick = { relayUrl = "" }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear", tint = AnthropicTextMuted)
+                                }
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AnthropicTerracotta,
+                            unfocusedBorderColor = AnthropicBorder,
+                            focusedTextColor = AnthropicCream,
+                            unfocusedTextColor = AnthropicCream
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            val clipData = clipboard.primaryClip
+                            if (clipData != null && clipData.itemCount > 0) {
+                                val pasted = clipData.getItemAt(0).text?.toString()?.trim() ?: ""
+                                if (pasted.isNotBlank()) {
+                                    relayUrl = pasted
+                                    if (relayUrl.contains(".onion", ignoreCase = true)) {
+                                        useTorSocks = true
+                                    }
+                                    Toast.makeText(context, "Pasted from clipboard! (تم اللصق)", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AnthropicSurface)
+                            .border(1.dp, AnthropicBorder, RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = AnthropicTerracotta)
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -253,6 +291,39 @@ fun SettingsScreen(
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Save & Connect (حفظ وإعادة الاتصال)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        val artiAvailable = com.ghostkey.app.net.ArtiTorManager.isAvailable
+                        val artiStateStr = com.ghostkey.app.net.ArtiTorManager.state.value.toString()
+                        val abis = android.os.Build.SUPPORTED_ABIS.joinToString(", ")
+                        val diag = """
+                            --- GHOSTKEY DIAGNOSTICS ---
+                            App Version: 2.6.1
+                            Relay URL: '$relayUrl'
+                            Use Tor SOCKS: $useTorSocks
+                            Arti Native Library Loaded: $artiAvailable
+                            Arti Engine State: $artiStateStr
+                            Device Model: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}
+                            Android SDK: ${android.os.Build.VERSION.SDK_INT}
+                            Supported ABIs: $abis
+                            Time: ${java.util.Date()}
+                            ----------------------------
+                        """.trimIndent()
+                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("GhostKey Diagnostics", diag))
+                        Toast.makeText(context, "Diagnostics copied to clipboard! (تم نسخ التقرير)", Toast.LENGTH_LONG).show()
+                    },
+                    modifier = Modifier.fillMaxWidth().height(42.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicSlate),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy Diagnostics (نسخ تقرير تشخيص الاتصال)", fontSize = 12.sp)
                 }
             }
 

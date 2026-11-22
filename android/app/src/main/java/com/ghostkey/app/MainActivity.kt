@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
     private var isGeneratingKey by mutableStateOf(false)
 
     // Configuration state
-    private var relayServerUrl by mutableStateOf("http://127.0.0.1:8765")
+    private var relayServerUrl by mutableStateOf("")
     private var useTorSocks by mutableStateOf(false)
     private var keepAlive by mutableStateOf(false)
     private var orbotSocksPort = OrbotPortWatcher.DEFAULT_SOCKS_PORT
@@ -171,7 +171,7 @@ class MainActivity : ComponentActivity() {
 
         // Load network config preferences
         val prefs = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
-        relayServerUrl = prefs.getString("relay_url", "http://127.0.0.1:8765") ?: "http://127.0.0.1:8765"
+        relayServerUrl = prefs.getString("relay_url", "") ?: ""
         useTorSocks = prefs.getBoolean("use_tor", true)
         keepAlive = prefs.getBoolean("keep_alive", true)
         orbotSocksPort = prefs.getInt("orbot_socks_port", OrbotPortWatcher.DEFAULT_SOCKS_PORT)
@@ -418,7 +418,12 @@ class MainActivity : ComponentActivity() {
 
     private fun applyIdentity(stored: StoredIdentity) {
         myPgpKeys = stored.mine
-        userAlias = stored.userAlias
+        if (stored.userAlias.isNotBlank()) {
+            userAlias = stored.userAlias
+        }
+        if (stored.relayUrl.isNotBlank()) {
+            relayServerUrl = stored.relayUrl
+        }
         duressPinHash = stored.duressPinHash
         contacts.clear()
         contacts.addAll(stored.contacts)
@@ -463,6 +468,7 @@ class MainActivity : ComponentActivity() {
             mine = mine,
             peer = peer,
             userAlias = userAlias,
+            relayUrl = relayServerUrl,
             contacts = contacts.toList(),
             groups = groups.toList(),
             duressPinHash = duressPinHash
@@ -1186,7 +1192,8 @@ class MainActivity : ComponentActivity() {
             editor.remove("relay_url")
             editor.remove("user_alias")
         }
-        editor.putBoolean("use_tor", useTorSocks).apply()
+        editor.putBoolean("use_tor", useTorSocks)
+        editor.commit()
         applyNetworkConfig()
         persistIdentity()
         myPgpKeys?.let { connectToRelayMailbox(it) }
@@ -1569,6 +1576,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
         ) {
+            BackHandler(enabled = drawerState.isOpen) {
+                scope.launch { drawerState.close() }
+            }
+            BackHandler(enabled = currentNavScreen != AppNavScreen.CHATS_LIST && !drawerState.isOpen) {
+                currentNavScreen = AppNavScreen.CHATS_LIST
+            }
+
             when (currentNavScreen) {
                 AppNavScreen.CHATS_LIST -> {
                     ChatsListScreen(
