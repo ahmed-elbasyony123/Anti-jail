@@ -91,30 +91,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create or Update GitHub Release
+      - name: Compute Release Tag & Metadata
+        if: github.ref == 'refs/heads/main'
+        id: release_meta
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' android/app/build.gradle.kts || echo "2.6.1")
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1 || gh release view "$TAG" >/dev/null 2>&1; then
+            TAG="v${VERSION}-build.${{ github.run_number }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          COMMIT_TITLE=$(git log -1 --pretty=%s)
+          echo "title=GhostKey ${TAG}: ${COMMIT_TITLE}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish New GitHub Release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.6.0
-          name: "GhostKey v2.6.0 (Live QR Pairing, In-App PIN Lock & Welcome Flow)"
-          body: |
-            ### 🛡️ GhostKey v2.5.2 (Critical Security & Architecture Hardening)
-            - **Contact Message Routing & Signature Verification:**
-              - Decryption now verifies OpenPGP signatures against all saved contacts, eliminating message routing failures and preventing messages from landing in the user's own drop ID.
-            - **Group Messaging Fixes:**
-              - De-duplicated group message echo using outbound ciphertext tracking.
-              - Full media and voice note rendering in groups (images, attachments, and Opus waveforms).
-              - Background push notifications for group messages.
-            - **Tor & Network Engine Hardening:**
-              - Fixed Arti Tor compilation: replaced `static mut` with thread-safe `Mutex<Option<oneshot::Sender<()>>>`.
-              - Early SOCKS5 listener bind with `ARTI_FS_DISABLE_PERMISSION_CHECKS` bypass for Android container sandbox.
-              - Smart DNS routing: dummy IP for `.onion` hosts, native IP resolution for direct cloud relays.
-              - Safe URL scheme enforcement (`https://` for external domains, `http://` for `.onion` and loopback).
-            - **Anti-Forensics & UI Polish:**
-              - Memory zeroization before audio player release on panic wipe (`AudioPlayerManager.wipe`).
-              - Real-time descriptive connectivity status indicator in ChatsList and Chat screens.
-              - One-tap "Copy Full Public Key" button in Telegram navigation drawer.
-              - Rate limiter memory leak fixed in relay server garbage collection.
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: ${{ steps.release_meta.outputs.title }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
