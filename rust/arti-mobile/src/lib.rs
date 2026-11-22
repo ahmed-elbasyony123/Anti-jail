@@ -6,7 +6,7 @@ use arti_client::config::{BoolOrAuto, TorClientConfigBuilder};
 use arti_client::{StreamPrefs, TorClient};
 use futures::StreamExt;
 use jni::objects::{JClass, JString};
-use jni::sys::jint;
+use jni::sys::{jint, jstring};
 use jni::JNIEnv;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -18,6 +18,17 @@ static SOCKS_PORT: AtomicU16 = AtomicU16::new(0);
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 static IS_STARTING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_TX: std::sync::Mutex<Option<oneshot::Sender<()>>> = std::sync::Mutex::new(None);
+static LAST_ERROR: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+fn set_last_error(msg: String) {
+    if let Ok(mut lock) = LAST_ERROR.lock() {
+        *lock = msg;
+    }
+}
+
+fn get_last_error() -> String {
+    LAST_ERROR.lock().map(|l| l.clone()).unwrap_or_default()
+}
 
 #[cfg(target_os = "android")]
 fn init_logging() {
@@ -119,7 +130,7 @@ async fn handle_socks5_client(
 async fn run_arti_daemon(
     state_dir: String,
     cache_dir: String,
-    port_tx: std::sync::mpsc::SyncSender<u16>,
+    port_tx: std::sync::mpsc::SyncSender<Result<u16, String>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Disable filesystem permission checks globally for Android sandboxed filesystem
@@ -138,35 +149,80 @@ async fn run_arti_daemon(
     let config = match config_builder.build() {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Arti TorClientConfig build error: {}", e);
+            let msg = format!("Arti TorClientConfig build error: {}", e);
+            log::error!("{}", msg);
+            set_last_error(msg.clone());
+            let _ = port_tx.send(Err(msg));
             IS_RUNNING.store(false, Ordering::Relaxed);
             IS_STARTING.store(false, Ordering::Relaxed);
             return Err(e.into());
         }
     };
 
-    // 2. Create TorClient instance BEFORE binding port to verify integrity
-    let tor_client: Arc<TorClient<PreferredRuntime>> = match TorClient::builder()
+    // 2. Obtain runtime handle for Arti
+    let runtime = match PreferredRuntime::current() {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("Failed to acquire PreferredRuntime: {}", e);
+            log::error!("{}", msg);
+            set_last_error(msg.clone());
+            let _ = port_tx.send(Err(msg));
+            IS_RUNNING.store(false, Ordering::Relaxed);
+            IS_STARTING.store(false, Ordering::Relaxed);
+            return Err(e.into());
+        }
+    };
+
+    // 3. Create TorClient instance asynchronously using current runtime
+    let tor_client: Arc<TorClient<PreferredRuntime>> = match TorClient::with_runtime(runtime)
         .config(config)
-        .create_unbootstrapped() {
+        .create_unbootstrapped_async()
+        .await
+    {
         Ok(tc) => tc,
         Err(e) => {
-            log::error!("Arti TorClient create_unbootstrapped error: {}", e);
+            let msg = format!("Arti TorClient create error: {}", e);
+            log::error!("{}", msg);
+            set_last_error(msg.clone());
+            let _ = port_tx.send(Err(msg));
             IS_RUNNING.store(false, Ordering::Relaxed);
             IS_STARTING.store(false, Ordering::Relaxed);
             return Err(e.into());
         }
     };
 
-    // 3. Bind local SOCKS5 listener on 127.0.0.1:0 (ephemeral port assigned by OS)
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let local_addr = listener.local_addr()?;
+    // 4. Bind local SOCKS5 listener on 127.0.0.1:0 (ephemeral port assigned by OS)
+    let listener = match TcpListener::bind("127.0.0.1:0").await {
+        Ok(l) => l,
+        Err(e) => {
+            let msg = format!("Failed to bind SOCKS5 listener: {}", e);
+            log::error!("{}", msg);
+            set_last_error(msg.clone());
+            let _ = port_tx.send(Err(msg));
+            IS_RUNNING.store(false, Ordering::Relaxed);
+            IS_STARTING.store(false, Ordering::Relaxed);
+            return Err(e.into());
+        }
+    };
+
+    let local_addr = match listener.local_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            let msg = format!("Failed to get local address: {}", e);
+            log::error!("{}", msg);
+            set_last_error(msg.clone());
+            let _ = port_tx.send(Err(msg));
+            IS_RUNNING.store(false, Ordering::Relaxed);
+            IS_STARTING.store(false, Ordering::Relaxed);
+            return Err(e.into());
+        }
+    };
     let port = local_addr.port();
 
     SOCKS_PORT.store(port, Ordering::Relaxed);
     IS_RUNNING.store(true, Ordering::Relaxed);
     IS_STARTING.store(false, Ordering::Relaxed);
-    let _ = port_tx.send(port);
+    let _ = port_tx.send(Ok(port));
 
     log::info!("Arti Tor SOCKS5 proxy bound to 127.0.0.1:{}", port);
 
@@ -264,20 +320,24 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
 
     let state_dir: String = match env.get_string(&j_state_dir) {
         Ok(s) => s.into(),
-        Err(_) => {
+        Err(e) => {
+            let msg = format!("Invalid state_dir string: {}", e);
+            set_last_error(msg);
             IS_STARTING.store(false, Ordering::Relaxed);
             return -1;
         }
     };
     let cache_dir: String = match env.get_string(&j_cache_dir) {
         Ok(s) => s.into(),
-        Err(_) => {
+        Err(e) => {
+            let msg = format!("Invalid cache_dir string: {}", e);
+            set_last_error(msg);
             IS_STARTING.store(false, Ordering::Relaxed);
             return -1;
         }
     };
 
-    let (port_tx, port_rx) = std::sync::mpsc::sync_channel(1);
+    let (port_tx, port_rx) = std::sync::mpsc::sync_channel::<Result<u16, String>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     if let Ok(mut lock) = SHUTDOWN_TX.lock() {
@@ -285,30 +345,60 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
     }
 
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(r) => r,
-            Err(e) => {
-                log::error!("Failed to create Tokio runtime for Arti: {}", e);
-                IS_STARTING.store(false, Ordering::Relaxed);
-                return;
-            }
-        };
+        let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("Failed to create Tokio runtime: {}", e);
+                    log::error!("{}", msg);
+                    set_last_error(msg.clone());
+                    let _ = port_tx.send(Err(msg));
+                    IS_STARTING.store(false, Ordering::Relaxed);
+                    return;
+                }
+            };
 
-        rt.block_on(async move {
-            if let Err(e) = run_arti_daemon(state_dir, cache_dir, port_tx, shutdown_rx).await {
-                log::error!("Arti daemon error: {}", e);
-                IS_STARTING.store(false, Ordering::Relaxed);
-            }
-        });
+            rt.block_on(async move {
+                if let Err(e) = run_arti_daemon(state_dir, cache_dir, port_tx, shutdown_rx).await {
+                    log::error!("Arti daemon error: {}", e);
+                    IS_STARTING.store(false, Ordering::Relaxed);
+                    IS_RUNNING.store(false, Ordering::Relaxed);
+                }
+            });
+        }));
+
+        if let Err(panic_payload) = panic_res {
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                format!("Arti thread panicked: {}", s)
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                format!("Arti thread panicked: {}", s)
+            } else {
+                "Arti thread panicked with unknown error".to_string()
+            };
+            log::error!("{}", panic_msg);
+            set_last_error(panic_msg);
+            IS_STARTING.store(false, Ordering::Relaxed);
+            IS_RUNNING.store(false, Ordering::Relaxed);
+        }
     });
 
-    // Wait up to 10 seconds with timeout for the SOCKS port to bind
+    // Wait up to 10 seconds with timeout for the SOCKS port to bind or error
     match port_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(port) => port as jint,
+        Ok(Ok(port)) => port as jint,
+        Ok(Err(err_msg)) => {
+            log::error!("Arti startup failed: {}", err_msg);
+            set_last_error(err_msg);
+            IS_STARTING.store(false, Ordering::Relaxed);
+            -1
+        }
         Err(_) => {
+            let msg = get_last_error();
+            if msg.is_empty() {
+                set_last_error("Timed out waiting for Arti proxy initialization".to_string());
+            }
             IS_STARTING.store(false, Ordering::Relaxed);
             -1
         }
@@ -321,6 +411,18 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_getBootstrapProg
     _class: JClass,
 ) -> jint {
     BOOTSTRAP_PERCENT.load(Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_getLastErrorNative(
+    env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    let err = get_last_error();
+    match env.new_string(err) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 #[no_mangle]

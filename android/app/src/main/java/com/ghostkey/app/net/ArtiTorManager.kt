@@ -53,12 +53,23 @@ object ArtiTorManager {
             }
         }
 
-        val stateDir = File(context.filesDir, "arti_state").apply { mkdirs() }.absolutePath
-        val cacheDir = File(context.cacheDir, "arti_cache").apply { mkdirs() }.absolutePath
+        val stateDirFile = File(context.filesDir, "arti_state").apply { mkdirs() }
+        val cacheDirFile = File(context.cacheDir, "arti_cache").apply { mkdirs() }
+
+        // Clean any stale locks left behind from previous crashes or force stops
+        try {
+            File(stateDirFile, "state.lock").delete()
+            File(cacheDirFile, "cache.lock").delete()
+        } catch (_: Throwable) {}
+
+        val stateDir = stateDirFile.absolutePath
+        val cacheDir = cacheDirFile.absolutePath
 
         val port = startNative(stateDir, cacheDir)
         if (port <= 0) {
-            _state.value = ArtiTorState.Error("Failed to bind Arti local SOCKS5 proxy")
+            val nativeErr = try { getLastErrorNative() } catch (_: Throwable) { null }
+            val detail = if (!nativeErr.isNullOrBlank()) ": $nativeErr" else ""
+            _state.value = ArtiTorState.Error("Failed to bind Arti local SOCKS5 proxy$detail")
             return false
         }
 
@@ -117,5 +128,6 @@ object ArtiTorManager {
     // Native JNI functions implemented in Rust (rust/arti-mobile/src/lib.rs)
     private external fun startNative(stateDir: String, cacheDir: String): Int
     private external fun getBootstrapProgressNative(): Int
+    private external fun getLastErrorNative(): String?
     private external fun stopNative()
 }
