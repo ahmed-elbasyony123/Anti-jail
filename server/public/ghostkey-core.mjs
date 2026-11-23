@@ -55,9 +55,10 @@ export function createCore(openpgp, options = {}) {
 
     function bytesToBase64(bytes) {
         let binary = '';
-        const chunk = 0x8000;
+        const chunk = 0x4000;
         for (let i = 0; i < bytes.length; i += chunk) {
-            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+            const sub = bytes.subarray(i, i + chunk);
+            binary += String.fromCharCode.apply(null, sub);
         }
         return btoa(binary);
     }
@@ -257,7 +258,14 @@ export function createCore(openpgp, options = {}) {
             const ts = typeof obj.ts === 'number' ? obj.ts : null;
             const nonce = typeof obj.nonce === 'string' ? obj.nonce : null;
             if (obj.type === 'text' && typeof obj.text === 'string') {
-                return { type: 'text', text: obj.text, ts, nonce };
+                return {
+                    type: 'text',
+                    text: obj.text,
+                    senderAlias: typeof obj.senderAlias === 'string' ? obj.senderAlias : null,
+                    ttl: typeof obj.ttl === 'number' ? obj.ttl : null,
+                    ts,
+                    nonce
+                };
             }
             if (obj.type === 'media' && typeof obj.data === 'string') {
                 return {
@@ -265,6 +273,18 @@ export function createCore(openpgp, options = {}) {
                     mimeType: typeof obj.mimeType === 'string' ? obj.mimeType : 'application/octet-stream',
                     filename: typeof obj.filename === 'string' ? obj.filename : 'file',
                     data: obj.data,
+                    senderAlias: typeof obj.senderAlias === 'string' ? obj.senderAlias : null,
+                    ttl: typeof obj.ttl === 'number' ? obj.ttl : null,
+                    ts,
+                    nonce
+                };
+            }
+            if (obj.type === 'group_invite' || obj.type === 'introduction') {
+                return {
+                    type: obj.type,
+                    unsupported: true,
+                    text: `[${obj.type} message received - unsupported on web console]`,
+                    senderAlias: typeof obj.senderAlias === 'string' ? obj.senderAlias : null,
                     ts,
                     nonce
                 };

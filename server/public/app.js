@@ -532,7 +532,14 @@ export function startApp(env) {
     function cancelRecording() {
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             audioChunks = [];
-            mediaRecorder.stop();
+            mediaRecorder.ondataavailable = null;
+            mediaRecorder.onstop = null;
+            try {
+                if (mediaRecorder.stream) {
+                    mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+                }
+                mediaRecorder.stop();
+            } catch (_) {}
         }
         showRecordingUI(false);
         log('Recording cancelled.', 'warn');
@@ -664,6 +671,9 @@ export function startApp(env) {
             gain.connect(ctx.destination);
             osc.start(now);
             osc.stop(now + 0.35);
+            osc.onended = () => {
+                try { ctx.close(); } catch (_) {}
+            };
         } catch (_) { /* audio restricted */ }
     }
 
@@ -705,16 +715,7 @@ export function startApp(env) {
         if (win.Notification.permission !== 'granted') return;
         if (doc.visibilityState === 'visible') return;
 
-        let body = 'New encrypted message received';
-        if (payload && payload.isMedia) {
-            if (payload.mimeType && payload.mimeType.startsWith('audio/')) {
-                body = '🎙️ Encrypted Opus voice note';
-            } else {
-                body = `📎 Encrypted file (${payload.filename || 'attachment'})`;
-            }
-        } else if (payload && payload.text) {
-            body = payload.text.length > 50 ? payload.text.slice(0, 47) + '...' : payload.text;
-        }
+        const body = 'New encrypted message received';
 
         try {
             const notif = new win.Notification('GhostKey // Secure Relay', {
@@ -792,6 +793,25 @@ export function startApp(env) {
     on('clear-logs-btn', 'click', () => { $('logs-container').textContent = ''; });
     if ($('notif-btn')) on('notif-btn', 'click', toggleNotifications);
 
+    const reaperInterval = win.setInterval(() => {
+        if (!state.messages || state.messages.length === 0) return;
+        const now = Date.now();
+        let changed = false;
+        const filtered = [];
+        for (const m of state.messages) {
+            const ttl = m.payload && m.payload.ttl;
+            if (ttl && typeof ttl === 'number' && (now - m.timestamp) >= (ttl * 1000)) {
+                changed = true;
+            } else {
+                filtered.push(m);
+            }
+        }
+        if (changed) {
+            state.messages = filtered;
+            renderMessages(false);
+        }
+    }, 1000);
+
     renderMessages(true);
     renderPeer();
     updateNotifBtn();
@@ -805,6 +825,7 @@ export function startApp(env) {
             state.disposed = true;
             listeners.abort();
             if (state.reconnectTimer) win.clearTimeout(state.reconnectTimer);
+            if (reaperInterval) win.clearInterval(reaperInterval);
             closeSocketOnly();
             revokeBlobUrls();
         }

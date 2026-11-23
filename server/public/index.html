@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- Everything is served by the relay itself: no external scripts, fonts, styles or images. -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'; object-src 'none'">
     <meta name="referrer" content="no-referrer">
     <title>GhostKey // OpenPGP console</title>
     <link rel="stylesheet" href="app.css">
@@ -26,7 +26,7 @@
             <div class="label">Drop-ID (where peers send to you)</div>
             <div id="my-dropid" class="mono-box small-text">-</div>
             <div class="label">My public key (share this, it includes the Drop-ID)</div>
-            <textarea id="my-pubkey" class="key-box" readonly rows="4" spellcheck="false"></textarea>
+            <textarea id="my-pubkey" class="key-box" readonly rows="4" spellcheck="false" autocomplete="off"></textarea>
             <div class="row">
                 <button id="copy-key-btn" class="btn small" type="button">COPY KEY</button>
                 <button id="new-identity-btn" class="btn small ghost" type="button">NEW IDENTITY</button>
@@ -37,7 +37,7 @@
             <div class="card-title">PEER</div>
             <div id="peer-summary" class="peer-summary none">No peer key saved yet.</div>
             <div class="label">Paste your peer's public key</div>
-            <textarea id="peer-key-input" class="key-box" rows="4" spellcheck="false" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
+            <textarea id="peer-key-input" class="key-box" rows="4" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
             <div class="row">
                 <button id="save-peer-btn" class="btn small" type="button">SAVE PEER KEY</button>
             </div>
@@ -85,10 +85,10 @@
                 <button id="cancel-rec-btn" class="btn small danger" type="button">CANCEL</button>
                 <button id="stop-send-rec-btn" class="btn small" type="button">STOP &amp; SEND</button>
             </div>
-            <form id="chat-form" autocomplete="off">
+            <form id="chat-form" autocomplete="off" onsubmit="return false;">
                 <input type="file" id="media-file-input" class="hidden" accept="image/*,audio/*,video/*,.pdf,.zip,.txt,.doc,.docx">
                 <button id="attach-btn" class="btn ghost" type="button" title="Attach a file (max 15 MB)">ATTACH</button>
-                <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off">
+                <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
                 <button id="ptt-btn" class="btn ghost" type="button" title="Record Voice Note (Opus PTT)">🎙️ REC</button>
                 <button id="send-btn" class="btn" type="submit">SEND</button>
             </form>
