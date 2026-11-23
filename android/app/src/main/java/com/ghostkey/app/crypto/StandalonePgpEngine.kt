@@ -143,6 +143,7 @@ object StandalonePgpEngine {
 
         val masterSubpacketGen = PGPSignatureSubpacketGenerator()
         masterSubpacketGen.setKeyFlags(false, KeyFlags.SIGN_DATA or KeyFlags.CERTIFY_OTHER)
+        masterSubpacketGen.setFeature(false, org.bouncycastle.bcpg.sig.Features.FEATURE_MODIFICATION_DETECTION)
         masterSubpacketGen.setPreferredSymmetricAlgorithms(
             false,
             intArrayOf(
@@ -187,13 +188,17 @@ object StandalonePgpEngine {
 
         val pubOut = ByteArrayOutputStream()
         ArmoredOutputStream(pubOut).use {
+            it.setHeader("Version", null)
             it.setHeader("Comment", "Drop-ID: $dropId")
             it.write(pubRing.encoded)
         }
         val pubArmored = pubOut.toString(Charsets.UTF_8.name())
 
         val secOut = ByteArrayOutputStream()
-        ArmoredOutputStream(secOut).use { it.write(secRing.encoded) }
+        ArmoredOutputStream(secOut).use {
+            it.setHeader("Version", null)
+            it.write(secRing.encoded)
+        }
         val secArmored = secOut.toString(Charsets.UTF_8.name())
 
         val fp = hex(pubRing.publicKey.fingerprint, upper = true)
@@ -207,7 +212,11 @@ object StandalonePgpEngine {
 
     private fun readPublicRings(armored: String): PGPPublicKeyRingCollection {
         val stream = PGPUtil.getDecoderStream(ByteArrayInputStream(armored.toByteArray(Charsets.UTF_8)))
-        return PGPPublicKeyRingCollection(stream, fingerprintCalc())
+        val collection = PGPPublicKeyRingCollection(stream, fingerprintCalc())
+        if (collection.size() > 1) {
+            throw IllegalArgumentException("Multiple key rings in public key block are not permitted")
+        }
+        return collection
     }
 
     private fun isExpired(key: PGPPublicKey, now: Date): Boolean {
@@ -380,6 +389,7 @@ object StandalonePgpEngine {
 
         val out = ByteArrayOutputStream()
         val armoredOut = ArmoredOutputStream(out)
+        armoredOut.setHeader("Version", null)
         val encOut = encDataGen.open(armoredOut, ByteArray(4096))
 
         sigGen.generateOnePassVersion(false).encode(encOut)
@@ -499,7 +509,19 @@ object StandalonePgpEngine {
                     if (plainObj.size() > 0) onePass = plainObj.get(0)
                 }
                 is PGPLiteralData -> {
-                    literal = plainObj.inputStream.readBytes()
+                    val inStream = plainObj.inputStream
+                    val buf = ByteArrayOutputStream()
+                    val temp = ByteArray(8192)
+                    var totalRead = 0
+                    var bytesRead: Int
+                    while (inStream.read(temp).also { bytesRead = it } != -1) {
+                        totalRead += bytesRead
+                        if (totalRead > 25 * 1024 * 1024) {
+                            throw IllegalArgumentException("Decrypted plaintext exceeds maximum allowed size (25 MB)")
+                        }
+                        buf.write(temp, 0, bytesRead)
+                    }
+                    literal = buf.toByteArray()
                 }
                 is PGPSignatureList -> {
                     if (plainObj.size() > 0) signature = plainObj.get(0)
@@ -512,7 +534,10 @@ object StandalonePgpEngine {
             throw IllegalArgumentException("Expected literal data in decrypted stream")
         }
 
-        if (pbe.isIntegrityProtected && !pbe.verify()) {
+        if (!pbe.isIntegrityProtected) {
+            throw IllegalArgumentException("Message is not integrity-protected (SEIPD packet required)")
+        }
+        if (!pbe.verify()) {
             throw IllegalArgumentException("Message integrity check failed (modified or corrupted)")
         }
 
@@ -536,7 +561,27 @@ object StandalonePgpEngine {
                         }
                         if (peerRing != null) {
                             val signingKey = peerRing.getPublicKey(ops.keyID)
-                            if (!signingKey.isRevoked &&
+                            val masterKey = peerRing.publicKey
+                            val now = Date()
+                            val masterValid = !masterKey.isRevoked && !isExpired(masterKey, now)
+                            val signingValid = !signingKey.isRevoked && !isExpired(signingKey, now)
+                            var subkeyValid = true
+                            if (signingKey.keyID != masterKey.keyID) {
+                                var hasBinding = false
+                                for (s in signingKey.signatures) {
+                                    val sigItem = s as PGPSignature
+                                    if (sigItem.signatureType == PGPSignature.SUBKEY_BINDING || sigItem.signatureType == PGPSignature.PRIMARYKEY_BINDING) {
+                                        sigItem.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), masterKey)
+                                        if (sigItem.verifyCertification(masterKey, signingKey)) {
+                                            hasBinding = true
+                                            break
+                                        }
+                                    }
+                                }
+                                subkeyValid = hasBinding
+                            }
+
+                            if (masterValid && signingValid && subkeyValid &&
                                 sig.keyID == ops.keyID &&
                                 sig.signatureType == PGPSignature.BINARY_DOCUMENT &&
                                 sig.hashAlgorithm in acceptedSignatureHashes
