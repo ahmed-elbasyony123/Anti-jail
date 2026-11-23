@@ -1006,6 +1006,7 @@ class MainActivity : ComponentActivity() {
                             groupDropId = wire.groupDropId,
                             groupReadToken = wire.groupReadToken,
                             sharedKeyBase64 = wire.sharedKey,
+                            members = emptyList(),
                             createdAt = System.currentTimeMillis()
                         )
                         if (!groups.any { it.id == newGroup.id || it.groupDropId == newGroup.groupDropId }) {
@@ -1203,7 +1204,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun triggerEmergencyPanicWipe() {
-        try { persistDispatcher.cancel() } catch (_: Exception) {}
+        try { persistDispatcher.close() } catch (_: Exception) {}
         for (m in messagesState) {
             m.zeroOut()
         }

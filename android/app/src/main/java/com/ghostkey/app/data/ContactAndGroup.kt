@@ -30,7 +30,7 @@ data class GroupChat(
     val groupDropId: String,
     val groupReadToken: String,
     val sharedKeyBase64: String,
-    val members: List<GroupMember>,
+    val members: List<GroupMember> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
     val isAdmin: Boolean = false
 )

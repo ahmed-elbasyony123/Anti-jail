@@ -508,16 +508,15 @@ object StandalonePgpEngine {
             throw IllegalArgumentException("Could not find matching private key to decrypt payload")
         }
 
-        val algo = pbe.symmetricAlgorithm
+        val decryptorFactory = JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
+        val algo = pbe.getSymmetricAlgorithm(decryptorFactory)
         if (algo != SymmetricKeyAlgorithmTags.AES_256 &&
             algo != SymmetricKeyAlgorithmTags.AES_192 &&
             algo != SymmetricKeyAlgorithmTags.AES_128) {
             throw IllegalArgumentException("Insecure or unsupported symmetric algorithm ($algo); AES required")
         }
 
-        val clearStream: InputStream = pbe.getDataStream(
-            JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
-        )
+        val clearStream: InputStream = pbe.getDataStream(decryptorFactory)
 
         var plainFact = PGPObjectFactory(clearStream, fingerprintCalc())
         val onePassList = mutableListOf<PGPOnePassSignature>()
@@ -637,17 +636,24 @@ object StandalonePgpEngine {
     }
 
     private fun hasSignDataFlag(key: PGPPublicKey): Boolean {
-        if (!key.isSigningKey) return false
+        val algo = key.algorithm
+        if (algo != org.bouncycastle.bcpg.PublicKeyAlgorithmTags.EDDSA &&
+            algo != org.bouncycastle.bcpg.PublicKeyAlgorithmTags.EDDSA_LEGACY &&
+            algo != org.bouncycastle.bcpg.PublicKeyAlgorithmTags.ECDSA &&
+            algo != org.bouncycastle.bcpg.PublicKeyAlgorithmTags.RSA_GENERAL &&
+            algo != org.bouncycastle.bcpg.PublicKeyAlgorithmTags.RSA_SIGN) {
+            return false
+        }
         val sigs = key.signatures
         while (sigs.hasNext()) {
             val sig = sigs.next() as? PGPSignature ?: continue
             val hashedSubpackets = sig.hashedSubPackets ?: continue
             val keyFlags = hashedSubpackets.keyFlags
             if (keyFlags != 0) {
-                return (keyFlags and KeyFlags.SIGN_DATA) != 0
+                return (keyFlags and (KeyFlags.SIGN_DATA or KeyFlags.CERTIFY_OTHER)) != 0
             }
         }
-        return key.isSigningKey
+        return true
     }
 
     // ---------------------------------------------------------------------------------------

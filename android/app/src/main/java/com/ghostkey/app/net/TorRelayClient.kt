@@ -299,20 +299,6 @@ class TorRelayClient(
         }
     }
 
-    /** Remove a mailbox subscription (e.g. when leaving or deleting a group). */
-    fun removeSubscription(dropId: String) {
-        activeSubscriptions.remove(dropId)
-        val ws = currentWebSocket
-        if (ws != null && subscriptionConfirmed) {
-            ws.send(
-                JSONObject()
-                    .put("type", "UNSUBSCRIBE")
-                    .put("dropId", dropId)
-                    .toString()
-            )
-        }
-    }
-
     /** Zero out secrets from memory on Panic Wipe. */
     fun wipe() {
         disconnectWebSocket()
