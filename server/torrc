@@ -18,11 +18,12 @@ HiddenServiceVersion 3
 HiddenServicePort 80 127.0.0.1:8765
 
 # Security Hardening
-AvoidDiskWrites 1
+AvoidDiskWrites 0
 SafeLogging 1
 Log notice stdout
 
-# This Tor instance only hosts the onion service; it does not need to expose a
-# local SOCKS proxy. (Clients use their own Tor/Orbot.) Re-enable only if you
-# deliberately want a SOCKS listener on this machine.
-# SocksPort 9050
+# Explicitly disable the local SOCKS proxy so no open Tor proxy is left running
+SocksPort 0
+
+# Tor v3 Proof-of-Work DoS Defense
+HiddenServicePoWDefensesEnabled 1

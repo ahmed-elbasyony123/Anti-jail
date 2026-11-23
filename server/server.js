@@ -153,7 +153,14 @@ function authenticate(dropId, tokenHex) {
     }
 
     const expectedDropId = deriveDropId(token);
-    if (!expectedDropId || !crypto.timingSafeEqual(Buffer.from(expectedDropId, 'utf8'), Buffer.from(dropId, 'utf8'))) {
+    const expectedBuf = expectedDropId ? Buffer.from(expectedDropId, 'utf8') : null;
+    const dropBuf = dropId ? Buffer.from(dropId, 'utf8') : null;
+
+    if (!expectedBuf || !dropBuf || expectedBuf.length !== dropBuf.length || !crypto.timingSafeEqual(expectedBuf, dropBuf)) {
+        if (authFailures.size >= 10000) {
+            const oldestKey = authFailures.keys().next().value;
+            if (oldestKey) authFailures.delete(oldestKey);
+        }
         const rec = failRecord || { count: 0, winStart: now, lockedUntil: 0 };
         if (now - rec.winStart > 60000) { rec.winStart = now; rec.count = 0; }
         rec.count++;
@@ -204,6 +211,8 @@ const BASE_HEADERS = {
     'Cache-Control': 'no-store, no-cache, must-revalidate, private',
     'Pragma': 'no-cache',
     'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'; object-src 'none'; base-uri 'none';",
     'Referrer-Policy': 'no-referrer'
 };
 
@@ -475,9 +484,14 @@ async function serveStatic(req, res, pathname) {
     }
     if (decoded.includes('\0')) return sendJson(res, 400, { error: 'Bad request' });
 
-    const safePath = (decoded === '/' || decoded === '/app') ? '/index.html' : decoded;
+    const safePath = (decoded === '/' || decoded === '/app' || decoded === '/app/') ? '/index.html' : decoded;
     const filePath = path.resolve(PUBLIC_DIR, '.' + safePath);
     if (!(filePath === PUBLIC_DIR || filePath.startsWith(PUBLIC_DIR + path.sep))) {
+        return sendJson(res, 404, { error: 'Not found' });
+    }
+
+    // Reject hidden dotfiles (e.g. .env, .git)
+    if (path.basename(filePath).startsWith('.')) {
         return sendJson(res, 404, { error: 'Not found' });
     }
 
@@ -488,6 +502,16 @@ async function serveStatic(req, res, pathname) {
         return sendJson(res, 404, { error: 'Not found' });
     }
     if (!stat.isFile()) return sendJson(res, 404, { error: 'Not found' });
+
+    // Verify realpath to prevent symlink escape
+    try {
+        const real = await fs.promises.realpath(filePath);
+        if (!(real === PUBLIC_DIR || real.startsWith(PUBLIC_DIR + path.sep))) {
+            return sendJson(res, 404, { error: 'Not found' });
+        }
+    } catch (e) {
+        return sendJson(res, 404, { error: 'Not found' });
+    }
 
     res.writeHead(200, Object.assign({
         'Content-Type': MIME_TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
@@ -541,7 +565,28 @@ const server = http.createServer((req, res) => {
 // WebSocket server (live push)
 // ---------------------------------------------------------------------------
 
-const wss = new WebSocketServer({ server, path: '/api/v2/live', maxPayload: WS_MAX_PAYLOAD });
+const wss = new WebSocketServer({
+    server,
+    path: '/api/v2/live',
+    maxPayload: WS_MAX_PAYLOAD,
+    verifyClient: (info, callback) => {
+        const origin = info.origin;
+        if (!origin) {
+            // Native apps (e.g. Kotlin OkHttp on Android) send no Origin header; permit
+            return callback(true);
+        }
+        try {
+            const parsed = new URL(origin);
+            const host = parsed.hostname.toLowerCase();
+            if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.onion')) {
+                return callback(true);
+            }
+            return callback(false, 403, 'Forbidden Origin');
+        } catch (e) {
+            return callback(false, 400, 'Invalid Origin');
+        }
+    }
+});
 
 function wsSend(ws, obj) {
     if (ws.readyState !== 1 /* OPEN */) return;
