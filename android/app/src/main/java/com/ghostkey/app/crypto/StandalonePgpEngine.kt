@@ -1,6 +1,7 @@
 package com.ghostkey.app.crypto
 
 import org.bouncycastle.bcpg.ArmoredOutputStream
+import org.bouncycastle.bcpg.CompressionAlgorithmTags
 import org.bouncycastle.bcpg.HashAlgorithmTags
 import org.bouncycastle.bcpg.SymmetricKeyAlgorithmTags
 import org.bouncycastle.bcpg.sig.KeyFlags
@@ -16,7 +17,9 @@ import java.security.MessageDigest
 import java.security.Provider
 import java.security.SecureRandom
 import java.security.Security
+import java.util.Collections
 import java.util.Date
+import java.util.LinkedHashMap
 
 /**
  * Everything the app needs after creating a new identity.
@@ -70,11 +73,17 @@ object StandalonePgpEngine {
 
     private val secureRandom = SecureRandom()
 
-    // Thread-safe key caches for instant crypto operations (optimization 3.1)
-    private val publicKeyCache = java.util.concurrent.ConcurrentHashMap<String, PGPPublicKey>()
-    private val signingKeyCache = java.util.concurrent.ConcurrentHashMap<String, Pair<PGPSecretKey, PGPPrivateKey>>()
-    private val secretRingCollectionCache = java.util.concurrent.ConcurrentHashMap<String, PGPSecretKeyRingCollection>()
-    private val peerKeyInfoCache = java.util.concurrent.ConcurrentHashMap<String, PeerKeyInfo>()
+    // Bounded thread-safe LRU key caches to prevent memory exhaustion
+    private class BoundedLruMap<K, V>(private val maxEntries: Int) : LinkedHashMap<K, V>(maxEntries, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean {
+            return size > maxEntries
+        }
+    }
+
+    private val publicKeyCache: MutableMap<String, PGPPublicKey> = Collections.synchronizedMap(BoundedLruMap(100))
+    private val signingKeyCache: MutableMap<String, Pair<PGPSecretKey, PGPPrivateKey>> = Collections.synchronizedMap(BoundedLruMap(50))
+    private val secretRingCollectionCache: MutableMap<String, PGPSecretKeyRingCollection> = Collections.synchronizedMap(BoundedLruMap(50))
+    private val peerKeyInfoCache: MutableMap<String, PeerKeyInfo> = Collections.synchronizedMap(BoundedLruMap(100))
 
     fun clearCache() {
         publicKeyCache.clear()
@@ -127,7 +136,9 @@ object StandalonePgpEngine {
     fun generateKeyPair(alias: String? = null): PgpKeyPairArmored {
         val readToken = randomHex32()
         val dropId = deriveDropId(readToken)
-        val cleanAlias = alias?.trim()?.replace("<", "")?.replace(">", "")
+        val cleanAlias = alias?.trim()
+            ?.replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F<>]"), "")
+            ?.take(64)
         val userId = if (!cleanAlias.isNullOrBlank()) "$cleanAlias <ghostkey drop:$dropId>" else "ghostkey drop:$dropId"
 
         val edGen = KeyPairGenerator.getInstance("EdDSA", bcProvider)
@@ -158,6 +169,13 @@ object StandalonePgpEngine {
                 HashAlgorithmTags.SHA256,
                 HashAlgorithmTags.SHA384,
                 HashAlgorithmTags.SHA512
+            )
+        )
+        masterSubpacketGen.setPreferredCompressionAlgorithms(
+            false,
+            intArrayOf(
+                CompressionAlgorithmTags.UNCOMPRESSED,
+                CompressionAlgorithmTags.ZLIB
             )
         )
 
@@ -317,8 +335,9 @@ object StandalonePgpEngine {
                 val uid = uids.next() as String
                 val match = aliasRegex.find(uid)
                 if (match != null && selfCertificationValid(master, uid)) {
-                    val alias = match.groupValues[1].trim()
-                    if (alias.isNotBlank()) return alias
+                    val raw = match.groupValues[1].trim()
+                    val clean = raw.replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F]"), "").take(64)
+                    if (clean.isNotBlank()) return clean
                 }
             }
         }
@@ -489,24 +508,38 @@ object StandalonePgpEngine {
             throw IllegalArgumentException("Could not find matching private key to decrypt payload")
         }
 
+        val algo = pbe.symmetricAlgorithm
+        if (algo != SymmetricKeyAlgorithmTags.AES_256 &&
+            algo != SymmetricKeyAlgorithmTags.AES_192 &&
+            algo != SymmetricKeyAlgorithmTags.AES_128) {
+            throw IllegalArgumentException("Insecure or unsupported symmetric algorithm ($algo); AES required")
+        }
+
         val clearStream: InputStream = pbe.getDataStream(
             JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
         )
 
         var plainFact = PGPObjectFactory(clearStream, fingerprintCalc())
-        var onePass: PGPOnePassSignature? = null
-        var signature: PGPSignature? = null
+        val onePassList = mutableListOf<PGPOnePassSignature>()
+        val sigList = mutableListOf<PGPSignature>()
         var literal: ByteArray? = null
+        var compressionDepth = 0
 
         // Walk the decrypted packet stream: [compressed] -> [one-pass sig] -> literal -> [signature]
         var plainObj = plainFact.nextObject()
         while (plainObj != null) {
             when (plainObj) {
                 is PGPCompressedData -> {
+                    compressionDepth++
+                    if (compressionDepth > 2) {
+                        throw IllegalArgumentException("Nested compression depth exceeded limit (possible decompression bomb)")
+                    }
                     plainFact = PGPObjectFactory(plainObj.dataStream, fingerprintCalc())
                 }
                 is PGPOnePassSignatureList -> {
-                    if (plainObj.size() > 0) onePass = plainObj.get(0)
+                    for (i in 0 until plainObj.size()) {
+                        onePassList.add(plainObj.get(i))
+                    }
                 }
                 is PGPLiteralData -> {
                     val inStream = plainObj.inputStream
@@ -524,7 +557,9 @@ object StandalonePgpEngine {
                     literal = buf.toByteArray()
                 }
                 is PGPSignatureList -> {
-                    if (plainObj.size() > 0) signature = plainObj.get(0)
+                    for (i in 0 until plainObj.size()) {
+                        sigList.add(plainObj.get(i))
+                    }
                 }
             }
             plainObj = plainFact.nextObject()
@@ -544,11 +579,13 @@ object StandalonePgpEngine {
         var status = SignatureStatus.UNSIGNED
         var signer: String? = null
 
-        val sig = signature
-        val ops = onePass
-        if (sig != null || ops != null) {
+        if (onePassList.isNotEmpty() || sigList.isNotEmpty()) {
             status = SignatureStatus.INVALID_SIGNATURE
-            if (sig != null && ops != null) {
+            outer@ for (ops in onePassList) {
+                val sig = sigList.firstOrNull { it.keyID == ops.keyID } ?: continue
+                if (sig.signatureType != PGPSignature.BINARY_DOCUMENT || sig.hashAlgorithm !in acceptedSignatureHashes) {
+                    continue
+                }
                 for (candArmored in candidatePeerKeysArmored) {
                     if (candArmored.isBlank()) continue
                     try {
@@ -564,7 +601,7 @@ object StandalonePgpEngine {
                             val masterKey = peerRing.publicKey
                             val now = Date()
                             val masterValid = !masterKey.isRevoked && !isExpired(masterKey, now)
-                            val signingValid = !signingKey.isRevoked && !isExpired(signingKey, now)
+                            val signingValid = !signingKey.isRevoked && !isExpired(signingKey, now) && hasSignDataFlag(signingKey)
                             var subkeyValid = true
                             if (signingKey.keyID != masterKey.keyID) {
                                 var hasBinding = false
@@ -581,17 +618,13 @@ object StandalonePgpEngine {
                                 subkeyValid = hasBinding
                             }
 
-                            if (masterValid && signingValid && subkeyValid &&
-                                sig.keyID == ops.keyID &&
-                                sig.signatureType == PGPSignature.BINARY_DOCUMENT &&
-                                sig.hashAlgorithm in acceptedSignatureHashes
-                            ) {
+                            if (masterValid && signingValid && subkeyValid) {
                                 ops.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), signingKey)
                                 ops.update(literal)
                                 if (ops.verify(sig)) {
                                     status = SignatureStatus.VERIFIED
                                     signer = hex(peerRing.publicKey.fingerprint, upper = true)
-                                    break
+                                    break@outer
                                 }
                             }
                         }
@@ -601,6 +634,20 @@ object StandalonePgpEngine {
         }
 
         return DecryptedMessage(literal, status, signer)
+    }
+
+    private fun hasSignDataFlag(key: PGPPublicKey): Boolean {
+        if (!key.isSigningKey) return false
+        val sigs = key.signatures
+        while (sigs.hasNext()) {
+            val sig = sigs.next() as? PGPSignature ?: continue
+            val hashedSubpackets = sig.hashedSubPackets ?: continue
+            val keyFlags = hashedSubpackets.keyFlags
+            if (keyFlags != 0) {
+                return (keyFlags and KeyFlags.SIGN_DATA) != 0
+            }
+        }
+        return key.isSigningKey
     }
 
     // ---------------------------------------------------------------------------------------
@@ -619,12 +666,12 @@ object StandalonePgpEngine {
         val hash = md.digest(sorted.toByteArray(Charsets.UTF_8))
 
         val fullDigits = StringBuilder()
-        for (i in 0 until 15) {
+        for (i in 0 until 6) {
             val b1 = hash[i * 2].toInt() and 0xFF
             val b2 = hash[i * 2 + 1].toInt() and 0xFF
             val num = ((b1 shl 8) or b2) % 100000
             fullDigits.append(String.format("%05d", num))
         }
-        return fullDigits.toString().chunked(5).take(6).joinToString(" ")
+        return fullDigits.toString().chunked(5).joinToString(" ")
     }
 }

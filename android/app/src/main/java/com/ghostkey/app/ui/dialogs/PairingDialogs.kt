@@ -460,7 +460,10 @@ fun PairContactDialog(
                             }
 
                             OutlinedButton(
-                                onClick = { imagePickerLauncher.launch("image/*") },
+                                onClick = {
+                                    com.ghostkey.app.MainActivity.isExternalPickerActive = true
+                                    imagePickerLauncher.launch("image/*")
+                                },
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicTerracotta)
                             ) {

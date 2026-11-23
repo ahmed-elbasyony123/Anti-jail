@@ -132,12 +132,17 @@ class MainActivity : ComponentActivity() {
     // Embedded Arti Tor Engine (Rust) State
     private var artiState by mutableStateOf<ArtiTorState>(ArtiTorState.Idle)
 
+    companion object {
+        var isExternalPickerActive = false
+    }
+
     // Foreground / Background Tracking for Tor Push Notifications
     private var isForeground = false
 
     override fun onResume() {
         super.onResume()
         isForeground = true
+        isExternalPickerActive = false
         PushNotificationManager.clearMessageNotifications(this)
     }
 
@@ -159,7 +164,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        if (lockEnabled && (!appPinHash.isNullOrBlank() || !duressPinHash.isNullOrBlank())) {
+        if (!isExternalPickerActive && lockEnabled && (!appPinHash.isNullOrBlank() || !duressPinHash.isNullOrBlank())) {
             isLocked = true
         }
         if (!ephemeralMode) {
@@ -1285,7 +1290,10 @@ class MainActivity : ComponentActivity() {
 
     private fun computeChatSummaries(): List<ChatSummary> {
         val list = mutableListOf<ChatSummary>()
+        val knownChatIds = mutableSetOf<String>()
         for (g in groups) {
+            knownChatIds.add(g.id)
+            knownChatIds.add(g.groupDropId)
             val lastMsg = messagesState.filter { it.chatId == g.id }.lastOrNull()
             list.add(
                 ChatSummary(
@@ -1300,6 +1308,7 @@ class MainActivity : ComponentActivity() {
             )
         }
         for (c in contacts) {
+            knownChatIds.add(c.dropId)
             val lastMsg = messagesState.filter { it.chatId == c.dropId }.lastOrNull()
             list.add(
                 ChatSummary(
@@ -1311,6 +1320,24 @@ class MainActivity : ComponentActivity() {
                     lastMessageTime = lastMsg?.timestamp ?: c.addedAt,
                     avatarLetter = c.alias.take(1),
                     isVerified = c.isVerified
+                )
+            )
+        }
+        // Include unknown / mailbox incoming messages so they are never silently hidden
+        val unknownMessages = messagesState.filter { it.chatId !in knownChatIds && !it.isOutgoing }
+        val unknownByChat = unknownMessages.groupBy { it.chatId }
+        for ((cid, msgs) in unknownByChat) {
+            val lastMsg = msgs.lastOrNull() ?: continue
+            val sender = lastMsg.senderAlias ?: lastMsg.signerFingerprint?.take(8) ?: "Unknown"
+            list.add(
+                ChatSummary(
+                    chatId = cid,
+                    title = "Unknown ($sender)",
+                    subtitle = "Unsaved Contact",
+                    isGroup = false,
+                    lastMessageText = lastMsg.plaintext ?: if (lastMsg.isAudio) "🎙️ Voice note" else if (lastMsg.isMedia) "📎 Attachment" else "Incoming message",
+                    lastMessageTime = lastMsg.timestamp,
+                    avatarLetter = sender.take(1).uppercase()
                 )
             )
         }

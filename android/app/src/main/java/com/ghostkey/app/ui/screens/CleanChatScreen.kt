@@ -348,7 +348,10 @@ fun CleanChatScreen(
                     ) {
                         // Attachment Clip
                         IconButton(
-                            onClick = { filePicker.launch("*/*") },
+                            onClick = {
+                                com.ghostkey.app.MainActivity.isExternalPickerActive = true
+                                filePicker.launch("*/*")
+                            },
                             modifier = Modifier.size(42.dp)
                         ) {
                             Icon(

@@ -218,6 +218,17 @@ object WireFormat {
                     )
                 }
                 WireMessage.TYPE_GROUP_INVITE -> {
+                    val gDrop = optSafeString(obj, "groupDropId")?.lowercase()
+                    val gToken = optSafeString(obj, "groupReadToken")?.lowercase()
+                    val sKey = optSafeString(obj, "sharedKey")
+                    // Cryptographically verify group invite tokens to prevent drop squatting
+                    if (gDrop == null || gToken == null || sKey == null ||
+                        !StandalonePgpEngine.isValidHex32(gDrop) ||
+                        !StandalonePgpEngine.isValidHex32(gToken) ||
+                        StandalonePgpEngine.deriveDropId(gToken) != gDrop ||
+                        sKey.length != 64) {
+                        return null
+                    }
                     WireMessage(
                         type = type,
                         text = null,
@@ -229,13 +240,22 @@ object WireFormat {
                         senderAlias = senderAlias,
                         groupId = optSafeString(obj, "groupId"),
                         groupName = optSafeString(obj, "groupName"),
-                        groupDropId = optSafeString(obj, "groupDropId"),
-                        groupReadToken = optSafeString(obj, "groupReadToken"),
-                        sharedKey = optSafeString(obj, "sharedKey"),
+                        groupDropId = gDrop,
+                        groupReadToken = gToken,
+                        sharedKey = sKey,
                         ttlSeconds = ttlSeconds
                     )
                 }
                 WireMessage.TYPE_INTRODUCTION -> {
+                    val introDrop = optSafeString(obj, "introDropId")?.lowercase()
+                    val introKey = optSafeString(obj, "introArmoredKey")
+                    val rawAlias = optSafeString(obj, "introAlias") ?: "Peer"
+                    val cleanIntroAlias = rawAlias.replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F<>]"), "").take(64)
+                    // Validate peer introduction Drop-ID and PGP public key envelope
+                    if (introDrop == null || !StandalonePgpEngine.isValidHex32(introDrop) ||
+                        introKey == null || !introKey.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----")) {
+                        return null
+                    }
                     WireMessage(
                         type = type,
                         text = null,
@@ -245,9 +265,9 @@ object WireFormat {
                         timestamp = ts,
                         nonce = nonce,
                         senderAlias = senderAlias,
-                        introAlias = optSafeString(obj, "introAlias"),
-                        introDropId = optSafeString(obj, "introDropId"),
-                        introArmoredKey = optSafeString(obj, "introArmoredKey"),
+                        introAlias = cleanIntroAlias,
+                        introDropId = introDrop,
+                        introArmoredKey = introKey,
                         introSafetyCode = optSafeString(obj, "introSafetyCode"),
                         ttlSeconds = ttlSeconds
                     )
