@@ -105,7 +105,8 @@ object WireFormat {
         groupDropId: String,
         groupReadToken: String,
         sharedKey: String,
-        senderAlias: String? = null
+        senderAlias: String? = null,
+        ttlSeconds: Long? = null
     ): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
@@ -118,6 +119,7 @@ object WireFormat {
         obj.put("ts", System.currentTimeMillis())
         obj.put("nonce", randomHex16())
         if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
+        if (ttlSeconds != null && ttlSeconds > 0) obj.put("ttl", ttlSeconds)
         return withPad(obj)
     }
 
@@ -130,7 +132,8 @@ object WireFormat {
         introDropId: String,
         introArmoredKey: String,
         introSafetyCode: String? = null,
-        senderAlias: String? = null
+        senderAlias: String? = null,
+        ttlSeconds: Long? = null
     ): ByteArray {
         val obj = JSONObject()
         obj.put("v", VERSION)
@@ -142,6 +145,7 @@ object WireFormat {
         obj.put("ts", System.currentTimeMillis())
         obj.put("nonce", randomHex16())
         if (!senderAlias.isNullOrBlank()) obj.put("senderAlias", senderAlias.trim())
+        if (ttlSeconds != null && ttlSeconds > 0) obj.put("ttl", ttlSeconds)
         return withPad(obj)
     }
 
@@ -162,20 +166,27 @@ object WireFormat {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(raw).substring(0, chars)
     }
 
+    private fun optSafeString(obj: JSONObject, key: String): String? {
+        if (!obj.has(key) || obj.isNull(key)) return null
+        val s = obj.optString(key, "").trim()
+        return if (s.isEmpty() || s.equals("null", ignoreCase = true)) null else s
+    }
+
     /** Returns null if the bytes are not a valid v2 message. */
     fun parse(bytes: ByteArray): WireMessage? {
         return try {
             val obj = JSONObject(String(bytes, Charsets.UTF_8))
             if (obj.optInt("v", -1) != VERSION) return null
-            val ts = if (obj.has("ts")) obj.getLong("ts") else null
-            val nonce = obj.optString("nonce", null)
-            val senderAlias = obj.optString("senderAlias", null)?.ifBlank { null }
-            val groupId = obj.optString("groupId", null)?.ifBlank { null }
-            val ttlSeconds = if (obj.has("ttl")) obj.getLong("ttl") else null
+            val ts = if (obj.has("ts") && !obj.isNull("ts")) obj.optLong("ts") else null
+            val nonce = optSafeString(obj, "nonce")
+            val senderAlias = optSafeString(obj, "senderAlias")
+            val groupId = optSafeString(obj, "groupId")
+            val rawTtl = if (obj.has("ttl") && !obj.isNull("ttl")) obj.optLong("ttl", 0L) else null
+            val ttlSeconds = if (rawTtl != null && rawTtl > 0) Math.min(rawTtl, 30L * 86400L) else null
 
             when (val type = obj.optString("type")) {
                 WireMessage.TYPE_TEXT -> {
-                    if (!obj.has("text")) return null
+                    if (!obj.has("text") || obj.isNull("text")) return null
                     WireMessage(
                         type = type,
                         text = obj.getString("text"),
@@ -190,12 +201,14 @@ object WireFormat {
                     )
                 }
                 WireMessage.TYPE_MEDIA -> {
-                    if (!obj.has("data")) return null
+                    if (!obj.has("data") || obj.isNull("data")) return null
+                    val rawFilename = optSafeString(obj, "filename") ?: "file"
+                    val safeFilename = rawFilename.replace("/", "_").replace("\\", "_").replace("..", "_")
                     WireMessage(
                         type = type,
                         text = null,
-                        mimeType = obj.optString("mimeType", "application/octet-stream"),
-                        filename = obj.optString("filename", "file"),
+                        mimeType = optSafeString(obj, "mimeType") ?: "application/octet-stream",
+                        filename = safeFilename,
                         data = obj.getString("data"),
                         timestamp = ts,
                         nonce = nonce,
@@ -214,11 +227,12 @@ object WireFormat {
                         timestamp = ts,
                         nonce = nonce,
                         senderAlias = senderAlias,
-                        groupId = obj.optString("groupId", null),
-                        groupName = obj.optString("groupName", null),
-                        groupDropId = obj.optString("groupDropId", null),
-                        groupReadToken = obj.optString("groupReadToken", null),
-                        sharedKey = obj.optString("sharedKey", null)
+                        groupId = optSafeString(obj, "groupId"),
+                        groupName = optSafeString(obj, "groupName"),
+                        groupDropId = optSafeString(obj, "groupDropId"),
+                        groupReadToken = optSafeString(obj, "groupReadToken"),
+                        sharedKey = optSafeString(obj, "sharedKey"),
+                        ttlSeconds = ttlSeconds
                     )
                 }
                 WireMessage.TYPE_INTRODUCTION -> {
@@ -231,10 +245,11 @@ object WireFormat {
                         timestamp = ts,
                         nonce = nonce,
                         senderAlias = senderAlias,
-                        introAlias = obj.optString("introAlias", null),
-                        introDropId = obj.optString("introDropId", null),
-                        introArmoredKey = obj.optString("introArmoredKey", null),
-                        introSafetyCode = obj.optString("introSafetyCode", null)
+                        introAlias = optSafeString(obj, "introAlias"),
+                        introDropId = optSafeString(obj, "introDropId"),
+                        introArmoredKey = optSafeString(obj, "introArmoredKey"),
+                        introSafetyCode = optSafeString(obj, "introSafetyCode"),
+                        ttlSeconds = ttlSeconds
                     )
                 }
                 else -> null
