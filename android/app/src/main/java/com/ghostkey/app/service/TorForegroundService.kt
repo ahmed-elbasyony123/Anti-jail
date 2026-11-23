@@ -51,7 +51,11 @@ class TorForegroundService : Service() {
 
     override fun onTimeout(startId: Int) {
         super.onTimeout(startId)
-        stopSelf()
+        android.util.Log.w("TorForegroundService", "Android 14+ dataSync foreground service timeout reached; stopping service gracefully")
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Throwable) {}
+        stopSelf(startId)
     }
 
     private fun buildNotification(): Notification {

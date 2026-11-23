@@ -78,6 +78,8 @@ object PushNotificationManager {
 
     /**
      * Posts a stealth notification when an encrypted message arrives while app is in background.
+     * Strips plaintext message body from background system notifications to prevent Android
+     * notification history leaks. Uses generic notifications for privacy.
      */
     fun postMessageNotification(
         context: Context,
@@ -110,20 +112,20 @@ object PushNotificationManager {
             .setContentIntent(openIntent)
             .build()
 
-        // Content description when unlocked
-        val privateText = when {
-            isAudio -> "🎙️ Encrypted Opus voice note"
-            hasMedia -> "📎 Encrypted file attachment"
-            count > 1 -> "$count encrypted messages received"
-            !previewText.isNullOrBlank() -> "💬 $previewText"
-            else -> "💬 New encrypted message received"
+        // Content description when unlocked:
+        // Strip plaintext preview to protect against Android notification history logs and lock-screen leaks
+        val genericText = when {
+            count > 1 -> "$count new encrypted messages"
+            isAudio -> "New encrypted voice note"
+            hasMedia -> "New encrypted attachment"
+            else -> "New encrypted message received"
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("GhostKey // Secure Relay")
-            .setContentText(privateText)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(privateText))
+            .setContentText(genericText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(genericText))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)

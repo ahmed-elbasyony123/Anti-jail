@@ -91,7 +91,7 @@ class TorRelayClient(
     // ---------------------------------------------------------------------------------------
 
     private fun buildClient(): OkHttpClient {
-        val torActive = useTorProxy
+        val torActive = useTorProxy || serverBaseUrl.contains(".onion")
         val builder = OkHttpClient.Builder()
             .connectTimeout(60, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -102,12 +102,16 @@ class TorRelayClient(
             builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved(torSocksHost, torSocksPort)))
         }
 
-        // DNS resolver: Bypasses Android OS UnknownHostException for .onion addresses
-        // while allowing direct numeric IPs and clearnet addresses to resolve correctly.
+        // DNS resolver: Prevent clearnet DNS leaks by never calling Dns.SYSTEM.lookup when Tor is active.
+        // With SOCKS proxy set, OkHttp delegates remote host resolution (including .onion) to Tor via
+        // InetSocketAddress.createUnresolved(host, port), avoiding any routing to 1.1.1.1.
         builder.dns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
-                if (torActive && hostname.endsWith(".onion")) {
-                    return listOf(InetAddress.getByAddress(hostname, byteArrayOf(1, 1, 1, 1)))
+                if (torActive) {
+                    if (hostname.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$""")) || hostname == "localhost" || hostname == "::1") {
+                        return listOf(InetAddress.getByName(hostname))
+                    }
+                    throw UnknownHostException("Direct DNS lookup for '$hostname' is blocked when Tor is active to prevent clearnet DNS leaks")
                 }
                 return Dns.SYSTEM.lookup(hostname)
             }
@@ -128,6 +132,14 @@ class TorRelayClient(
         return clean.trimEnd('/')
     }
 
+    private fun closeHttpClient(client: OkHttpClient) {
+        try {
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+            client.cache?.close()
+        } catch (_: Exception) {}
+    }
+
     /**
      * Apply new network settings. If a live subscription exists it is restarted with the new
      * settings. Passing [useTor] = false is only honoured for non-.onion hosts.
@@ -142,7 +154,9 @@ class TorRelayClient(
         useTorProxy = useTor || serverBaseUrl.contains(".onion")
         torSocksHost = socksHost
         torSocksPort = socksPort
+        val oldClient = httpClient
         httpClient = buildClient()
+        closeHttpClient(oldClient)
 
         if (isSubscribed) {
             authFailed = false
@@ -207,24 +221,29 @@ class TorRelayClient(
     /** POST /api/v2/ack: tells the relay these messages were received and may be deleted. */
     suspend fun ackMessages(dropId: String, readToken: String, messageIds: List<String>): Result<Int> =
         withContext(Dispatchers.IO) {
+            if (messageIds.isEmpty()) return@withContext Result.success(0)
             try {
-                val ids = JSONArray()
-                messageIds.forEach { ids.put(it) }
-                val body = JSONObject()
-                    .put("dropId", dropId)
-                    .put("messageIds", ids)
-                    .toString()
-                    .toRequestBody(jsonType)
-                val request = Request.Builder()
-                    .url("$serverBaseUrl/api/v2/ack")
-                    .header("X-Mailbox-Token", readToken)
-                    .post(body)
-                    .build()
-                httpClient.newCall(request).execute().use { response: Response ->
-                    if (!response.isSuccessful) throw RelayHttpException(response.code)
-                    val json = JSONObject(response.body?.string() ?: "{}")
-                    Result.success(json.optInt("removed", 0))
+                var totalRemoved = 0
+                for (chunk in messageIds.chunked(1000)) {
+                    val ids = JSONArray()
+                    chunk.forEach { ids.put(it) }
+                    val body = JSONObject()
+                        .put("dropId", dropId)
+                        .put("messageIds", ids)
+                        .toString()
+                        .toRequestBody(jsonType)
+                    val request = Request.Builder()
+                        .url("$serverBaseUrl/api/v2/ack")
+                        .header("X-Mailbox-Token", readToken)
+                        .post(body)
+                        .build()
+                    httpClient.newCall(request).execute().use { response: Response ->
+                        if (!response.isSuccessful) throw RelayHttpException(response.code)
+                        val json = JSONObject(response.body?.string() ?: "{}")
+                        totalRemoved += json.optInt("removed", 0)
+                    }
                 }
+                Result.success(totalRemoved)
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -276,37 +295,76 @@ class TorRelayClient(
                     .put("readToken", readToken)
                     .toString()
             )
-            val gen = socketGeneration.get()
-            pollPending(gen, dropId, readToken)
         }
+    }
+
+    /** Unsubscribe a mailbox from live connection and clean up subscription state. */
+    fun removeSubscription(dropId: String) {
+        activeSubscriptions.remove(dropId)
+        val ws = currentWebSocket
+        if (ws != null && subscriptionConfirmed) {
+            try {
+                ws.send(
+                    JSONObject()
+                        .put("type", "UNSUBSCRIBE")
+                        .put("dropId", dropId)
+                        .toString()
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Clear all active subscriptions and notify relay for each. */
+    fun clearSubscriptions() {
+        for (dropId in activeSubscriptions.keys) {
+            val ws = currentWebSocket
+            if (ws != null && subscriptionConfirmed) {
+                try {
+                    ws.send(
+                        JSONObject()
+                            .put("type", "UNSUBSCRIBE")
+                            .put("dropId", dropId)
+                            .toString()
+                    )
+                } catch (_: Exception) {}
+            }
+        }
+        activeSubscriptions.clear()
     }
 
     /**
      * Confirm receipt. Uses the open WebSocket when possible, otherwise HTTP. If the ACK is
      * lost the relay simply delivers the message again, which the caller de-duplicates.
+     * Chunks ACKs into batches of at most 1000 IDs to respect server limits.
      */
     fun ack(messageIds: List<String>, dropId: String? = null) {
         val targetDropId = dropId ?: activeDropId ?: return
         val token = activeSubscriptions[targetDropId] ?: activeReadToken ?: return
         if (messageIds.isEmpty()) return
+        val chunks = messageIds.chunked(1000)
         val ws = currentWebSocket
-        if (ws != null && subscriptionConfirmed) {
-            val ids = JSONArray()
-            messageIds.forEach { ids.put(it) }
-            val sent = ws.send(
-                JSONObject().put("type", "ACK").put("dropId", targetDropId).put("messageIds", ids).toString()
-            )
-            if (sent) return
+        for (chunk in chunks) {
+            if (ws != null && subscriptionConfirmed) {
+                val ids = JSONArray()
+                chunk.forEach { ids.put(it) }
+                val sent = ws.send(
+                    JSONObject().put("type", "ACK").put("dropId", targetDropId).put("messageIds", ids).toString()
+                )
+                if (sent) continue
+            }
+            scope.launch { ackMessages(targetDropId, token, chunk) }
         }
-        scope.launch { ackMessages(targetDropId, token, messageIds) }
     }
 
-    /** Stop everything: no further reconnects. */
+    /** Stop everything: no further reconnects. Clean up connection pool. */
     fun disconnectWebSocket() {
         isSubscribed = false
         reconnectJob?.cancel()
         reconnectJob = null
         closeSocketOnly()
+        try {
+            httpClient.connectionPool.evictAll()
+        } catch (_: Exception) {}
     }
 
     /**
@@ -363,7 +421,6 @@ class TorRelayClient(
                             .put("readToken", rToken)
                             .toString()
                     )
-                    pollPending(generation, dId, rToken)
                 }
             }
 

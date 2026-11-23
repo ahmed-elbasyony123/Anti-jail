@@ -26,6 +26,7 @@ object ArtiTorManager {
     private var activePort: Int = 0
     private var progressJob: Job? = null
     private var isLibraryLoaded = false
+    private val artiScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     init {
         try {
@@ -40,7 +41,7 @@ object ArtiTorManager {
     val isAvailable: Boolean get() = isLibraryLoaded
 
     @Synchronized
-    fun start(context: Context, scope: CoroutineScope = CoroutineScope(Dispatchers.IO)): Boolean {
+    fun start(context: Context, scope: CoroutineScope = artiScope): Boolean {
         if (!isLibraryLoaded) {
             _state.value = ArtiTorState.Error("Arti native library (libarti_mobile.so) not present")
             return false
@@ -65,23 +66,38 @@ object ArtiTorManager {
         val stateDir = stateDirFile.absolutePath
         val cacheDir = cacheDirFile.absolutePath
 
-        val port = startNative(stateDir, cacheDir)
-        if (port <= 0) {
-            val nativeErr = try { getLastErrorNative() } catch (_: Throwable) { null }
-            val detail = if (!nativeErr.isNullOrBlank()) ": $nativeErr" else ""
-            _state.value = ArtiTorState.Error("Failed to bind Arti local SOCKS5 proxy$detail")
-            return false
-        }
+        _state.value = ArtiTorState.Starting(0, socksPort = 0)
 
-        activePort = port
-        _state.value = ArtiTorState.Starting(0, socksPort = port)
-
-        // Poll bootstrap progress until 100% or timeout
+        // Run startNative asynchronously on background IO dispatcher to avoid UI ANR
         progressJob?.cancel()
-        progressJob = scope.launch {
+        progressJob = scope.launch(Dispatchers.IO) {
+            val port = try {
+                startNative(stateDir, cacheDir)
+            } catch (t: Throwable) {
+                android.util.Log.e("GhostKey-Arti", "startNative threw exception: ${t.message}", t)
+                -1
+            }
+
+            if (port <= 0) {
+                val nativeErr = try { getLastErrorNative() } catch (_: Throwable) { null }
+                val detail = if (!nativeErr.isNullOrBlank()) ": $nativeErr" else ""
+                _state.value = ArtiTorState.Error("Failed to bind Arti local SOCKS5 proxy$detail")
+                activePort = 0
+                return@launch
+            }
+
+            activePort = port
+            _state.value = ArtiTorState.Starting(0, socksPort = port)
+
+            // Poll bootstrap progress until 100% or timeout. Do NOT declare connected at 40%.
             var elapsedMs = 0L
             while (isActive) {
-                val progress = getBootstrapProgressNative()
+                val progress = try {
+                    getBootstrapProgressNative()
+                } catch (_: Throwable) {
+                    -1
+                }
+
                 if (progress >= 100) {
                     _state.value = ArtiTorState.Connected(port)
                     break
@@ -96,17 +112,11 @@ object ArtiTorManager {
                 }
                 delay(300)
                 elapsedMs += 300
-                // After 60 seconds: if partial bootstrap succeeded (>= 40%), allow connection; otherwise report error
+                // Strict 60s timeout: Require 100% bootstrap; do not declare connected on partial bootstrap
                 if (elapsedMs >= 60_000L) {
-                    if (progress >= 40) {
-                        android.util.Log.i("GhostKey-Arti", "Proceeding with partially bootstrapped Tor ($progress%)")
-                        _state.value = ArtiTorState.Connected(port)
-                        break
-                    } else {
-                        android.util.Log.e("GhostKey-Arti", "Tor bootstrap timed out at $progress% after 60s")
-                        _state.value = ArtiTorState.Error("Tor circuit bootstrap timed out ($progress%)")
-                        break
-                    }
+                    android.util.Log.e("GhostKey-Arti", "Tor bootstrap timed out at $progress% after 60s")
+                    _state.value = ArtiTorState.Error("Tor circuit bootstrap timed out ($progress%)")
+                    break
                 }
             }
         }
@@ -119,10 +129,55 @@ object ArtiTorManager {
         progressJob?.cancel()
         progressJob = null
         if (isLibraryLoaded) {
-            stopNative()
+            // Run stopNative asynchronously on background IO dispatcher to avoid blocking UI thread / ANR
+            artiScope.launch(Dispatchers.IO) {
+                try {
+                    stopNative()
+                } catch (t: Throwable) {
+                    android.util.Log.e("GhostKey-Arti", "Error stopping native Arti engine: ${t.message}", t)
+                }
+            }
         }
         activePort = 0
         _state.value = ArtiTorState.Idle
+    }
+
+    /**
+     * Panic Wipe / Zero-Disk compliance:
+     * Completely stops Arti Tor and deletes arti_state and arti_cache directories from storage.
+     */
+    @Synchronized
+    fun wipe(context: Context) {
+        progressJob?.cancel()
+        progressJob = null
+        if (isLibraryLoaded) {
+            try {
+                stopNative()
+            } catch (t: Throwable) {
+                android.util.Log.e("GhostKey-Arti", "Error stopping native Arti during wipe: ${t.message}", t)
+            }
+        }
+        activePort = 0
+        _state.value = ArtiTorState.Idle
+
+        // Recursively delete state and cache directories
+        try {
+            val stateDirFile = File(context.filesDir, "arti_state")
+            if (stateDirFile.exists()) {
+                stateDirFile.deleteRecursively()
+            }
+        } catch (t: Throwable) {
+            android.util.Log.e("GhostKey-Arti", "Failed to wipe arti_state: ${t.message}", t)
+        }
+
+        try {
+            val cacheDirFile = File(context.cacheDir, "arti_cache")
+            if (cacheDirFile.exists()) {
+                cacheDirFile.deleteRecursively()
+            }
+        } catch (t: Throwable) {
+            android.util.Log.e("GhostKey-Arti", "Failed to wipe arti_cache: ${t.message}", t)
+        }
     }
 
     // Native JNI functions implemented in Rust (rust/arti-mobile/src/lib.rs)

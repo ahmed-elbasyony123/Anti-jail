@@ -43,9 +43,20 @@ class OrbotPortWatcher(
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action != ACTION_STATUS) return
             if (!intent.hasExtra(EXTRA_SOCKS_PROXY_PORT)) return
+
+            // Handle EXTRA_SOCKS_PROXY_PORT whether delivered as an Int, String, or other representation
+            val rawPort = intent.getIntExtra(EXTRA_SOCKS_PROXY_PORT, -1).let { intPort ->
+                if (intPort != -1) {
+                    intPort
+                } else {
+                    intent.getStringExtra(EXTRA_SOCKS_PROXY_PORT)?.toIntOrNull()
+                        ?: (intent.extras?.get(EXTRA_SOCKS_PROXY_PORT)?.toString()?.toIntOrNull() ?: -1)
+                }
+            }
+
             val port = acceptablePort(
                 intent.getStringExtra(EXTRA_SOCKS_PROXY_HOST),
-                intent.getIntExtra(EXTRA_SOCKS_PROXY_PORT, -1)
+                rawPort
             ) ?: return
             onPort(port)
         }

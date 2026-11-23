@@ -6,9 +6,11 @@ import android.util.Log
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.*
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -28,6 +30,8 @@ class LocalLanMesh(
         const val DEFAULT_MESH_PORT = 8766
         private const val BEACON_INTERVAL_MS = 10_000L
         private const val PEER_EXPIRY_MS = 60_000L
+        // 4 MB line limit to allow encrypted attachments while strictly preventing DoS / OOM
+        private const val MAX_LINE_LENGTH = 4 * 1024 * 1024
     }
 
     data class LanPeer(
@@ -37,9 +41,12 @@ class LocalLanMesh(
         val lastSeen: Long
     )
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var meshJob: CompletableJob? = null
+    private var scope: CoroutineScope? = null
     private var isRunning = false
     private var myDropId: String = ""
+    // Ephemeral node ID regenerated per session so persistent myDropId is never broadcast in cleartext over UDP
+    private var ephemeralNodeId: String = UUID.randomUUID().toString().replace("-", "").take(16)
 
     private var multicastLock: WifiManager.MulticastLock? = null
     private var udpSocket: DatagramSocket? = null
@@ -47,6 +54,8 @@ class LocalLanMesh(
 
     // In-memory peer directory: dropId -> LanPeer
     private val discoveredPeers = ConcurrentHashMap<String, LanPeer>()
+    // Rate-limit mutual identity exchange to once every 30s per host
+    private val lastExchangeAttempt = ConcurrentHashMap<String, Long>()
 
     val activePeersCount: Int
         get() {
@@ -70,12 +79,20 @@ class LocalLanMesh(
     fun start(myDropId: String) {
         if (isRunning && this.myDropId == myDropId) return
         this.myDropId = myDropId
+        ephemeralNodeId = UUID.randomUUID().toString().replace("-", "").take(16)
         isRunning = true
 
+        // Create a new Cancellable Job/Scope on every start so the mesh can be stopped and restarted cleanly
+        meshJob?.cancel()
+        val job = SupervisorJob()
+        meshJob = job
+        val currentScope = CoroutineScope(Dispatchers.IO + job)
+        scope = currentScope
+
         acquireMulticastLock()
-        startTcpServer()
-        startUdpListener()
-        startBeaconAnnouncer()
+        startTcpServer(currentScope)
+        startUdpListener(currentScope)
+        startBeaconAnnouncer(currentScope)
     }
 
     /**
@@ -95,7 +112,35 @@ class LocalLanMesh(
 
         releaseMulticastLock()
         discoveredPeers.clear()
-        scope.cancel()
+        lastExchangeAttempt.clear()
+
+        // Cancel job and clear scope references so start() can initialize fresh
+        meshJob?.cancel()
+        meshJob = null
+        scope = null
+    }
+
+    /**
+     * Safe line reader that enforces a maximum character limit to prevent TCP port 8766 DoS/OOM attacks.
+     */
+    private fun readLineWithLimit(reader: BufferedReader, maxChars: Int = MAX_LINE_LENGTH): String? {
+        val sb = StringBuilder()
+        var charCount = 0
+        while (true) {
+            val c = reader.read()
+            if (c == -1) {
+                return if (sb.isEmpty()) null else sb.toString()
+            }
+            if (c == '\n'.code) {
+                val str = sb.toString()
+                return if (str.endsWith("\r")) str.dropLast(1) else str
+            }
+            sb.append(c.toChar())
+            charCount++
+            if (charCount > maxChars) {
+                throw IOException("TCP line exceeded maximum limit of $maxChars characters")
+            }
+        }
     }
 
     /**
@@ -121,7 +166,7 @@ class LocalLanMesh(
                 }
                 writer.println(envelope.toString())
 
-                val ack = reader.readLine()
+                val ack = readLineWithLimit(reader, 1024)
                 return@withContext ack == "ACK"
             }
         } catch (e: Exception) {
@@ -130,8 +175,8 @@ class LocalLanMesh(
         }
     }
 
-    private fun startTcpServer() {
-        scope.launch {
+    private fun startTcpServer(serviceScope: CoroutineScope) {
+        serviceScope.launch {
             try {
                 tcpServerSocket = ServerSocket(DEFAULT_MESH_PORT).apply {
                     reuseAddress = true
@@ -141,7 +186,7 @@ class LocalLanMesh(
                 while (isRunning && tcpServerSocket != null && !tcpServerSocket!!.isClosed) {
                     try {
                         val clientSocket = tcpServerSocket!!.accept()
-                        handleClientConnection(clientSocket)
+                        handleClientConnection(serviceScope, clientSocket)
                     } catch (e: Exception) {
                         if (!isRunning) break
                     }
@@ -152,27 +197,48 @@ class LocalLanMesh(
         }
     }
 
-    private fun handleClientConnection(socket: Socket) {
-        scope.launch {
+    private fun handleClientConnection(serviceScope: CoroutineScope, socket: Socket) {
+        serviceScope.launch {
             try {
                 socket.use { s ->
                     s.soTimeout = 5000
                     val reader = BufferedReader(InputStreamReader(s.getInputStream()))
                     val writer = PrintWriter(s.getOutputStream(), true)
 
-                    val line = reader.readLine()
+                    val line = readLineWithLimit(reader, MAX_LINE_LENGTH)
                     if (!line.isNullOrBlank()) {
                         val json = JSONObject(line)
-                        if (json.optString("type") == "direct_mesh") {
-                            val senderDrop = json.optString("senderDropId")
-                            val ciphertext = json.optString("ciphertext")
+                        when (json.optString("type")) {
+                            "direct_mesh" -> {
+                                val senderDrop = json.optString("senderDropId")
+                                val ciphertext = json.optString("ciphertext")
 
-                            if (senderDrop.isNotBlank() && ciphertext.isNotBlank()) {
-                                writer.println("ACK")
-                                withContext(Dispatchers.Main) {
-                                    onDirectMessageReceived(senderDrop, ciphertext)
+                                if (senderDrop.isNotBlank() && ciphertext.isNotBlank()) {
+                                    writer.println("ACK")
+                                    withContext(Dispatchers.Main) {
+                                        onDirectMessageReceived(senderDrop, ciphertext)
+                                    }
+                                    return@launch
                                 }
-                                return@launch
+                            }
+                            "mesh_id_exchange" -> {
+                                val peerDrop = json.optString("dropId")
+                                if (peerDrop.isNotBlank() && peerDrop != myDropId) {
+                                    val peerPort = json.optInt("port", DEFAULT_MESH_PORT)
+                                    discoveredPeers[peerDrop] = LanPeer(
+                                        dropId = peerDrop,
+                                        ipAddress = s.inetAddress,
+                                        port = peerPort,
+                                        lastSeen = System.currentTimeMillis()
+                                    )
+                                    val reply = JSONObject().apply {
+                                        put("type", "mesh_id_exchange_ack")
+                                        put("dropId", myDropId)
+                                        put("port", DEFAULT_MESH_PORT)
+                                    }
+                                    writer.println(reply.toString())
+                                    return@launch
+                                }
                             }
                         }
                     }
@@ -184,8 +250,8 @@ class LocalLanMesh(
         }
     }
 
-    private fun startUdpListener() {
-        scope.launch {
+    private fun startUdpListener(serviceScope: CoroutineScope) {
+        serviceScope.launch {
             try {
                 udpSocket = DatagramSocket(null).apply {
                     reuseAddress = true
@@ -200,7 +266,19 @@ class LocalLanMesh(
                         udpSocket!!.receive(packet)
 
                         val data = String(packet.data, 0, packet.length, Charsets.UTF_8).trim()
-                        if (data.startsWith("GHOSTKEY:ANNOUNCE:")) {
+                        // 1. Safe beacon discovery (ephemeral node ID over UDP, no cleartext persistent dropId)
+                        if (data.startsWith("GHOSTKEY:BEACON:")) {
+                            val parts = data.split(":")
+                            if (parts.size >= 4) {
+                                val peerNodeId = parts[2]
+                                val peerPort = parts[3].toIntOrNull() ?: DEFAULT_MESH_PORT
+                                if (peerNodeId.isNotBlank() && peerNodeId != ephemeralNodeId) {
+                                    initiateIdentityExchange(serviceScope, packet.address, peerPort)
+                                }
+                            }
+                        }
+                        // 2. Backward compatibility with older clients broadcasting announce
+                        else if (data.startsWith("GHOSTKEY:ANNOUNCE:")) {
                             val parts = data.split(":")
                             if (parts.size >= 4) {
                                 val peerDropId = parts[2]
@@ -213,7 +291,7 @@ class LocalLanMesh(
                                         port = peerPort,
                                         lastSeen = System.currentTimeMillis()
                                     )
-                                    Log.d(TAG, "Discovered LAN peer: $peerDropId at ${packet.address}:$peerPort")
+                                    Log.d(TAG, "Discovered LAN peer via legacy announce: $peerDropId at ${packet.address}:$peerPort")
                                 }
                             }
                         }
@@ -227,12 +305,64 @@ class LocalLanMesh(
         }
     }
 
-    private fun startBeaconAnnouncer() {
-        scope.launch {
+    /**
+     * Authenticated point-to-point TCP identity exchange triggered by safe UDP beacon.
+     * Prevents broadcast eavesdropping of persistent myDropId while securely discovering LAN peers.
+     */
+    private fun initiateIdentityExchange(serviceScope: CoroutineScope, address: InetAddress, port: Int) {
+        val host = address.hostAddress ?: return
+        val now = System.currentTimeMillis()
+        val last = lastExchangeAttempt[host] ?: 0L
+        if (now - last < 30_000L) return
+        lastExchangeAttempt[host] = now
+
+        serviceScope.launch {
+            try {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(address, port), 3000)
+                    socket.soTimeout = 5000
+
+                    val writer = PrintWriter(socket.getOutputStream(), true)
+                    val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+
+                    val req = JSONObject().apply {
+                        put("type", "mesh_id_exchange")
+                        put("dropId", myDropId)
+                        put("port", DEFAULT_MESH_PORT)
+                    }
+                    writer.println(req.toString())
+
+                    val responseLine = readLineWithLimit(reader, 4096)
+                    if (!responseLine.isNullOrBlank()) {
+                        val json = JSONObject(responseLine)
+                        if (json.optString("type") == "mesh_id_exchange_ack") {
+                            val peerDrop = json.optString("dropId")
+                            val peerPort = json.optInt("port", DEFAULT_MESH_PORT)
+                            if (peerDrop.isNotBlank() && peerDrop != myDropId) {
+                                discoveredPeers[peerDrop] = LanPeer(
+                                    dropId = peerDrop,
+                                    ipAddress = address,
+                                    port = peerPort,
+                                    lastSeen = System.currentTimeMillis()
+                                )
+                                Log.d(TAG, "Discovered LAN peer via safe exchange: $peerDrop at $address:$peerPort")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Identity exchange with $address:$port failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun startBeaconAnnouncer(serviceScope: CoroutineScope) {
+        serviceScope.launch {
             while (isRunning) {
                 try {
                     if (myDropId.isNotBlank()) {
-                        val beaconMsg = "GHOSTKEY:ANNOUNCE:$myDropId:$DEFAULT_MESH_PORT"
+                        // Announce using ephemeral session node ID instead of persistent cleartext myDropId
+                        val beaconMsg = "GHOSTKEY:BEACON:$ephemeralNodeId:$DEFAULT_MESH_PORT"
                         val bytes = beaconMsg.toByteArray(Charsets.UTF_8)
 
                         val broadcastAddresses = getBroadcastAddresses()
@@ -254,17 +384,26 @@ class LocalLanMesh(
         }
     }
 
+    /**
+     * Resolves broadcast addresses on valid local Wi-Fi / LAN interfaces only.
+     * Excludes VPNs (tun, tap, ppp), cellular (rmnet, ccmni), and virtual interfaces to prevent privacy leaks.
+     */
     private fun getBroadcastAddresses(): List<InetAddress> {
         val list = mutableListOf<InetAddress>()
         try {
-            list.add(InetAddress.getByName("255.255.255.255"))
-            val interfaces = NetworkInterface.getNetworkInterfaces()
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return list
             while (interfaces.hasMoreElements()) {
                 val netIf = interfaces.nextElement()
-                if (netIf.isLoopback || !netIf.isUp) continue
+                if (netIf.isLoopback || !netIf.isUp || netIf.isVirtual) continue
+                val name = netIf.name.lowercase()
+                if (name.startsWith("tun") || name.startsWith("tap") || name.startsWith("ppp") ||
+                    name.startsWith("p2p") || name.startsWith("dummy") || name.contains("vpn") ||
+                    name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("usbnet")) {
+                    continue
+                }
                 for (interfaceAddress in netIf.interfaceAddresses) {
                     val broadcast = interfaceAddress.broadcast
-                    if (broadcast != null) {
+                    if (broadcast != null && !broadcast.isLoopbackAddress && !broadcast.isAnyLocalAddress) {
                         list.add(broadcast)
                     }
                 }
@@ -286,10 +425,16 @@ class LocalLanMesh(
 
     private fun acquireMulticastLock() {
         try {
-            val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            multicastLock = wifi?.createMulticastLock("ghostkey_lan_mesh")?.apply {
-                setReferenceCounted(true)
-                acquire()
+            if (multicastLock == null) {
+                val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                multicastLock = wifi?.createMulticastLock("ghostkey_lan_mesh")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            multicastLock?.let {
+                if (!it.isHeld) {
+                    it.acquire()
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not acquire MulticastLock: ${e.message}")
@@ -299,7 +444,9 @@ class LocalLanMesh(
     private fun releaseMulticastLock() {
         try {
             multicastLock?.let {
-                if (it.isHeld) it.release()
+                while (it.isHeld) {
+                    it.release()
+                }
             }
             multicastLock = null
         } catch (_: Exception) {}
