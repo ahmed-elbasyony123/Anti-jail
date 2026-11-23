@@ -135,23 +135,26 @@ class SecureStore(private val context: Context) {
         json.put("groups", groupsArray)
 
         val plain = json.toString().toByteArray(Charsets.UTF_8)
-
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        cipher.updateAAD(AAD)
-        val encrypted = cipher.doFinal(plain)
-        val iv = cipher.iv
-
-        val file = atomicFile
-        val out = file.startWrite()
         try {
-            out.write(byteArrayOf(FORMAT_VERSION))
-            out.write(iv)
-            out.write(encrypted)
-            file.finishWrite(out)
-        } catch (e: Exception) {
-            file.failWrite(out)
-            throw e
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            cipher.updateAAD(AAD)
+            val encrypted = cipher.doFinal(plain)
+            val iv = cipher.iv
+
+            val file = atomicFile
+            val out = file.startWrite()
+            try {
+                out.write(byteArrayOf(FORMAT_VERSION))
+                out.write(iv)
+                out.write(encrypted)
+                file.finishWrite(out)
+            } catch (e: Exception) {
+                file.failWrite(out)
+                throw e
+            }
+        } finally {
+            plain.fill(0)
         }
     }
 
@@ -163,10 +166,20 @@ class SecureStore(private val context: Context) {
         val iv = data.copyOfRange(1, 1 + IV_BYTES)
         val body = data.copyOfRange(1 + IV_BYTES, data.size)
 
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
-        cipher.updateAAD(AAD)
-        val json = JSONObject(String(cipher.doFinal(body), Charsets.UTF_8))
+        val decryptedBytes: ByteArray
+        try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
+            cipher.updateAAD(AAD)
+            decryptedBytes = cipher.doFinal(body)
+        } finally {
+            data.fill(0)
+            body.fill(0)
+        }
+
+        val jsonStr = String(decryptedBytes, Charsets.UTF_8)
+        decryptedBytes.fill(0)
+        val json = JSONObject(jsonStr)
 
         val mine = PgpKeyPairArmored(
             publicKeyArmored = json.getString("publicKeyArmored"),
@@ -257,6 +270,10 @@ class SecureStore(private val context: Context) {
         try {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (keyStore.containsAlias(KEY_ALIAS)) keyStore.deleteEntry(KEY_ALIAS)
+        } catch (_: Exception) {
+        }
+        try {
+            com.ghostkey.app.crypto.StandalonePgpEngine.clearCache()
         } catch (_: Exception) {
         }
     }

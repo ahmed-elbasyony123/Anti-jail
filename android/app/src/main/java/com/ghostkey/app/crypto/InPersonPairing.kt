@@ -81,14 +81,16 @@ object InPersonPairing {
         return try {
             val plane = imageProxy.planes[0]
             val buffer = plane.buffer
+            buffer.rewind()
             val data = ByteArray(buffer.remaining())
             buffer.get(data)
+            val rowStride = plane.rowStride
             val width = imageProxy.width
             val height = imageProxy.height
 
             val source = PlanarYUVLuminanceSource(
                 data,
-                width,
+                rowStride,
                 height,
                 0,
                 0,
@@ -97,8 +99,9 @@ object InPersonPairing {
                 false
             )
             val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-            val reader = MultiFormatReader()
-            val result = reader.decode(binaryBitmap)
+            val hints = mapOf(com.google.zxing.DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE))
+            val reader = MultiFormatReader().apply { setHints(hints) }
+            val result = reader.decodeWithState(binaryBitmap)
             result.text
         } catch (_: Exception) {
             null
@@ -132,16 +135,27 @@ object InPersonPairing {
             try {
                 val json = JSONObject(trimmed)
                 val key = json.getString("key")
-                val parsed = try { StandalonePgpEngine.parsePeerKey(key) } catch (_: Exception) { null }
-                val dropId = json.optString("dropId", "").ifBlank {
-                    parsed?.dropId ?: ""
+                // Validate key cryptographically
+                val parsed = StandalonePgpEngine.parsePeerKey(key)
+                val verifiedDropId = parsed.dropId ?: ""
+                val verifiedFp = parsed.fingerprint
+                val jsonDropId = json.optString("dropId", "").trim().lowercase()
+                val jsonFp = json.optString("fp", "").trim().uppercase()
+
+                // Reject if unverified JSON values contradict the cryptographically verified key
+                if (jsonDropId.isNotBlank() && verifiedDropId.isNotBlank() && jsonDropId != verifiedDropId.lowercase()) {
+                    return null
                 }
-                val fp = json.optString("fp", "").ifBlank {
-                    parsed?.fingerprint ?: ""
+                if (jsonFp.isNotBlank() && verifiedFp.isNotBlank() && jsonFp.replace(" ", "") != verifiedFp.replace(" ", "")) {
+                    return null
                 }
-                val alias = json.optString("alias", parsed?.alias ?: "Peer")
-                return ContactCard(alias = alias, dropId = dropId, fingerprint = fp, publicKeyArmored = key)
-            } catch (_: Exception) {}
+
+                val rawAlias = json.optString("alias", parsed.alias ?: "Peer")
+                val cleanAlias = rawAlias.replace(Regex("""[\u200E\u200F\u202A-\u202E\r\n\t<>]"""), "").trim().ifBlank { "Peer" }
+                return ContactCard(alias = cleanAlias, dropId = verifiedDropId, fingerprint = verifiedFp, publicKeyArmored = key)
+            } catch (_: Exception) {
+                return null
+            }
         }
 
         // Format 2: Raw PGP Public Key Block
