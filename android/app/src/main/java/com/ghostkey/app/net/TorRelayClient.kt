@@ -272,6 +272,7 @@ class TorRelayClient(
         onMessageReceived: (EncryptedMessageRecord) -> Unit,
         onStatusChanged: (RelayStatus) -> Unit
     ) {
+        this.activeSubscriptions.clear()
         this.activeDropId = dropId
         this.activeReadToken = readToken
         this.activeSubscriptions[dropId] = readToken
@@ -296,6 +297,30 @@ class TorRelayClient(
                     .toString()
             )
         }
+    }
+
+    /** Remove a mailbox subscription (e.g. when leaving or deleting a group). */
+    fun removeSubscription(dropId: String) {
+        activeSubscriptions.remove(dropId)
+        val ws = currentWebSocket
+        if (ws != null && subscriptionConfirmed) {
+            ws.send(
+                JSONObject()
+                    .put("type", "UNSUBSCRIBE")
+                    .put("dropId", dropId)
+                    .toString()
+            )
+        }
+    }
+
+    /** Zero out secrets from memory on Panic Wipe. */
+    fun wipe() {
+        disconnectWebSocket()
+        activeDropId = null
+        activeReadToken = null
+        activeSubscriptions.clear()
+        messageListener = null
+        statusListener = null
     }
 
     /** Unsubscribe a mailbox from live connection and clean up subscription state. */

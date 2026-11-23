@@ -131,6 +131,7 @@ class MainActivity : ComponentActivity() {
 
     // Embedded Arti Tor Engine (Rust) State
     private var artiState by mutableStateOf<ArtiTorState>(ArtiTorState.Idle)
+    private var artiRetryCount = 0
 
     companion object {
         var isExternalPickerActive = false
@@ -345,7 +346,8 @@ class MainActivity : ComponentActivity() {
                             relayStatus.value = RelayStatus.BUILDING_CIRCUIT
                             CoroutineScope(Dispatchers.IO).launch {
                                 delay(3000)
-                                if (artiState is ArtiTorState.Error && (useTorSocks || relayServerUrl.contains(".onion"))) {
+                                if (artiRetryCount < 2 && (useTorSocks || relayServerUrl.contains(".onion"))) {
+                                    artiRetryCount++
                                     ArtiTorManager.start(applicationContext)
                                 } else {
                                     runOnUiThread { startOrbotWatcher() }
@@ -562,7 +564,13 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     myPgpKeys = pair
                     isGeneratingKey = false
+                    for (m in messagesState) {
+                        m.zeroOut()
+                    }
                     messagesState.clear()
+                    synchronized(seenNonces) { seenNonces.clear() }
+                    synchronized(sentCiphertexts) { sentCiphertexts.clear() }
+                    StandalonePgpEngine.clearCache()
                     persistIdentity()
                     val requiresTor = useTorSocks || relayServerUrl.contains(".onion")
                     if (requiresTor && ArtiTorManager.isAvailable && artiState !is ArtiTorState.Connected) {
@@ -1222,7 +1230,7 @@ class MainActivity : ComponentActivity() {
         recipientArmoredKey = ""
         recipientFingerprint = ""
         recipientDropId = ""
-        torClient.disconnectWebSocket()
+        torClient.wipe()
         TorForegroundService.stop(this)
         finishAffinity()
         exitProcess(0)
@@ -1602,24 +1610,39 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun addIntroducedContact(alias: String, dropId: String, armoredKey: String, safetyCode: String?) {
-        if (contacts.any { it.dropId == dropId }) {
-            Toast.makeText(this, "Contact already exists in your address book", Toast.LENGTH_SHORT).show()
+        val cleanDropId = dropId.trim().lowercase()
+        if (!StandalonePgpEngine.isValidHex32(cleanDropId)) {
+            Toast.makeText(this, "Invalid Drop-ID in contact introduction", Toast.LENGTH_SHORT).show()
             return
         }
         val info = try { StandalonePgpEngine.parsePeerKey(armoredKey) } catch (_: Exception) { null }
-        val fp = info?.fingerprint ?: ""
+        if (info == null) {
+            Toast.makeText(this, "Invalid PGP key in contact introduction", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (info.dropId != null && info.dropId != cleanDropId) {
+            Toast.makeText(this, "Security warning: Introduced Drop-ID does not match key!", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (contacts.any { it.dropId == cleanDropId || it.fingerprint == info.fingerprint }) {
+            Toast.makeText(this, "Contact already exists in your address book", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val cleanAlias = alias.trim().replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F<>]"), "").take(64)
+        val verifiedSas = myPgpKeys?.let { StandalonePgpEngine.generateSafetyCode(it.fingerprint, info.fingerprint) }
+        val isVerified = safetyCode != null && verifiedSas != null && safetyCode.replace(" ", "") == verifiedSas.replace(" ", "")
         val newContact = Contact(
-            id = dropId,
-            alias = alias,
-            dropId = dropId,
-            publicKeyArmored = armoredKey,
-            fingerprint = fp,
-            isVerified = !safetyCode.isNullOrBlank(),
-            safetyCode = safetyCode
+            id = cleanDropId,
+            alias = if (cleanAlias.isNotBlank()) cleanAlias else info.alias ?: "Peer",
+            dropId = cleanDropId,
+            publicKeyArmored = info.publicKeyArmored,
+            fingerprint = info.fingerprint,
+            isVerified = isVerified,
+            safetyCode = verifiedSas
         )
         contacts.add(newContact)
         persistIdentity()
-        Toast.makeText(this, "Added $alias to contacts 🛡️", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Added ${newContact.alias} to contacts 🛡️", Toast.LENGTH_SHORT).show()
     }
 
     @OptIn(ExperimentalMaterial3Api::class)

@@ -146,17 +146,18 @@ function authenticate(dropId, tokenHex) {
     const token = normId(tokenHex);
     if (!token) return { ok: false, reason: 'unauthorized' };
 
-    const now = Date.now();
-    const failRecord = authFailures.get(dropId);
-    if (failRecord && failRecord.lockedUntil > now) {
-        return { ok: false, reason: 'rate_limited' };
-    }
-
     const expectedDropId = deriveDropId(token);
     const expectedBuf = expectedDropId ? Buffer.from(expectedDropId, 'utf8') : null;
     const dropBuf = dropId ? Buffer.from(dropId, 'utf8') : null;
+    const isValidToken = expectedBuf && dropBuf && expectedBuf.length === dropBuf.length && crypto.timingSafeEqual(expectedBuf, dropBuf);
 
-    if (!expectedBuf || !dropBuf || expectedBuf.length !== dropBuf.length || !crypto.timingSafeEqual(expectedBuf, dropBuf)) {
+    const now = Date.now();
+    const failRecord = authFailures.get(dropId);
+
+    if (!isValidToken) {
+        if (failRecord && failRecord.lockedUntil > now) {
+            return { ok: false, reason: 'rate_limited' };
+        }
         if (authFailures.size >= 10000) {
             const oldestKey = authFailures.keys().next().value;
             if (oldestKey) authFailures.delete(oldestKey);
@@ -171,6 +172,7 @@ function authenticate(dropId, tokenHex) {
         return { ok: false, reason: 'unauthorized' };
     }
 
+    // Owner presented valid cryptographic proof; clear lock record
     authFailures.delete(dropId);
 
     let drop = drops.get(dropId);
@@ -245,6 +247,15 @@ function rejectTooLarge(req, res) {
 /** Reads and parses a JSON object body. Resolves null after having replied on failure. */
 function readJsonBody(req, res) {
     return new Promise((resolve) => {
+        const ct = req.headers['content-type'];
+        if (ct && !ct.toLowerCase().includes('application/json')) {
+            sendJson(res, 415, { error: 'Unsupported media type; application/json expected' });
+            return resolve(null);
+        }
+        if (req.headers['sec-fetch-site'] === 'cross-site') {
+            sendJson(res, 403, { error: 'Cross-site requests forbidden' });
+            return resolve(null);
+        }
         const declared = Number(req.headers['content-length']);
         if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
             rejectTooLarge(req, res);
