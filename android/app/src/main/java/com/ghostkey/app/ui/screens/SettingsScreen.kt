@@ -66,7 +66,8 @@ fun SettingsScreen(
     duressPinConfigured: Boolean = false,
     onSetDuressPin: (String?) -> Unit = {},
     appPinConfigured: Boolean = false,
-    onSetAppPin: (String?) -> Unit = {}
+    onSetAppPin: (String?) -> Unit = {},
+    onAutoSave: (relayUrl: String, alias: String) -> Unit = { _, _ -> }
 ) {
     var relayUrl by remember { mutableStateOf(initialRelayUrl) }
     var useTorSocks by remember { mutableStateOf(initialUseTorSocks) }
@@ -87,6 +88,14 @@ fun SettingsScreen(
         val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
         onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
         onBack()
+    }
+
+    // Persist changes if screen is disposed or activity is stopped
+    DisposableEffect(Unit) {
+        onDispose {
+            val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
+            onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
+        }
     }
 
     Scaffold(
@@ -184,7 +193,10 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(14.dp))
                     OutlinedTextField(
                         value = alias,
-                        onValueChange = { alias = it },
+                        onValueChange = {
+                            alias = it
+                            onAutoSave(relayUrl, alias)
+                        },
                         label = { Text("Display Pseudonym (اسم مستعار)") },
                         placeholder = { Text("e.g. Shadow, Cipher, Alice") },
                         singleLine = true,
@@ -214,6 +226,7 @@ fun SettingsScreen(
                             if (relayUrl.contains(".onion", ignoreCase = true)) {
                                 useTorSocks = true
                             }
+                            onAutoSave(relayUrl, alias)
                         },
                         label = { Text("Relay (.onion or IP:Port)") },
                         placeholder = { Text("e.g. xyz...onion:8765") },
@@ -221,7 +234,10 @@ fun SettingsScreen(
                         textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
                         trailingIcon = {
                             if (relayUrl.isNotEmpty()) {
-                                IconButton(onClick = { relayUrl = "" }) {
+                                IconButton(onClick = {
+                                    relayUrl = ""
+                                    onAutoSave(relayUrl, alias)
+                                }) {
                                     Icon(Icons.Default.Clear, contentDescription = "Clear", tint = AnthropicTextMuted)
                                 }
                             }
@@ -246,6 +262,7 @@ fun SettingsScreen(
                                     if (relayUrl.contains(".onion", ignoreCase = true)) {
                                         useTorSocks = true
                                     }
+                                    onAutoSave(relayUrl, alias)
                                     Toast.makeText(context, "Pasted from clipboard! (تم اللصق)", Toast.LENGTH_SHORT).show()
                                 }
                             }

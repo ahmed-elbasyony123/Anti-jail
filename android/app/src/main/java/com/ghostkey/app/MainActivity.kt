@@ -144,12 +144,26 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         isForeground = false
+        if (!ephemeralMode) {
+            getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+                .putString("relay_url", relayServerUrl)
+                .putString("user_alias", userAlias)
+                .commit()
+            persistIdentitySync()
+        }
     }
 
     override fun onStop() {
         super.onStop()
         if (lockEnabled && (!appPinHash.isNullOrBlank() || !duressPinHash.isNullOrBlank())) {
             isLocked = true
+        }
+        if (!ephemeralMode) {
+            getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+                .putString("relay_url", relayServerUrl)
+                .putString("user_alias", userAlias)
+                .commit()
+            persistIdentitySync()
         }
     }
 
@@ -244,7 +258,7 @@ class MainActivity : ComponentActivity() {
                                 duressPinHash = hash
                                 editor.putString("duress_pin_hash", hash)
                             }
-                            editor.apply()
+                            editor.commit()
 
                             generateFreshKeys(alias)
                             isOnboarding = false
@@ -421,9 +435,19 @@ class MainActivity : ComponentActivity() {
         myPgpKeys = stored.mine
         if (stored.userAlias.isNotBlank()) {
             userAlias = stored.userAlias
+        } else {
+            val prefAlias = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).getString("user_alias", "") ?: ""
+            if (prefAlias.isNotBlank()) {
+                userAlias = prefAlias
+            }
         }
         if (stored.relayUrl.isNotBlank()) {
             relayServerUrl = stored.relayUrl
+        } else {
+            val prefRelay = getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).getString("relay_url", "") ?: ""
+            if (prefRelay.isNotBlank()) {
+                relayServerUrl = prefRelay
+            }
         }
         duressPinHash = stored.duressPinHash
         contacts.clear()
@@ -459,7 +483,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun persistIdentity() {
+    private fun persistIdentitySync() {
         if (ephemeralMode) return
         val mine = myPgpKeys ?: return
         val peer = if (recipientArmoredKey.isNotBlank()) {
@@ -474,15 +498,15 @@ class MainActivity : ComponentActivity() {
             groups = groups.toList(),
             duressPinHash = duressPinHash
         )
-        CoroutineScope(persistDispatcher).launch {
-            try {
-                secureStore.save(snapshot)
-            } catch (e: Exception) {
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Could not save identity: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-            }
+        try {
+            secureStore.save(snapshot)
+        } catch (e: Exception) {
+            android.util.Log.e("GhostKey", "Sync identity save failed", e)
         }
+    }
+
+    private fun persistIdentity() {
+        persistIdentitySync()
     }
 
     private fun updateEphemeralMode(enabled: Boolean) {
@@ -492,13 +516,13 @@ class MainActivity : ComponentActivity() {
         if (enabled) {
             editor.remove("relay_url")
             editor.remove("user_alias")
-            editor.apply()
+            editor.commit()
             CoroutineScope(persistDispatcher).launch { secureStore.wipe() }
         } else {
             editor.putString("relay_url", relayServerUrl)
             editor.putString("user_alias", userAlias)
-            editor.apply()
-            persistIdentity()
+            editor.commit()
+            persistIdentitySync()
         }
     }
 
@@ -1196,8 +1220,29 @@ class MainActivity : ComponentActivity() {
         editor.putBoolean("use_tor", useTorSocks)
         editor.commit()
         applyNetworkConfig()
-        persistIdentity()
+        persistIdentitySync()
         myPgpKeys?.let { connectToRelayMailbox(it) }
+    }
+
+    private fun onAutoSaveSettings(newUrl: String, newAlias: String) {
+        var cleanUrl = newUrl.trim().trimEnd('/')
+        if (cleanUrl.isNotBlank() && !cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            cleanUrl = if (cleanUrl.contains(".onion", ignoreCase = true) || cleanUrl.startsWith("127.0.0.1") || cleanUrl.startsWith("localhost") || cleanUrl.startsWith("10.0.2.2")) {
+                "http://$cleanUrl"
+            } else {
+                "https://$cleanUrl"
+            }
+        }
+        relayServerUrl = cleanUrl
+        userAlias = newAlias.trim()
+        if (!ephemeralMode) {
+            getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
+                .putString("relay_url", relayServerUrl)
+                .putString("user_alias", userAlias)
+                .putBoolean("has_completed_onboarding", true)
+                .commit()
+            persistIdentitySync()
+        }
     }
 
     private fun computeChatSummaries(): List<ChatSummary> {
@@ -1672,6 +1717,9 @@ class MainActivity : ComponentActivity() {
                         onBack = { currentNavScreen = AppNavScreen.CHATS_LIST },
                         onSaveSettings = { url, tor, keep, eph, lock, alias ->
                             saveAllSettings(url, tor, keep, eph, lock, alias)
+                        },
+                        onAutoSave = { url, alias ->
+                            onAutoSaveSettings(url, alias)
                         },
                         onGenerateNewKey = { showNewIdentityConfirm = true },
                         onCopyKey = { myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) } },
