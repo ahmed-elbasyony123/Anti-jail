@@ -144,6 +144,10 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         isForeground = false
+        if (isRecordingAudio) {
+            audioRecorderManager.cancelRecording()
+            isRecordingAudio = false
+        }
         if (!ephemeralMode) {
             getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE).edit()
                 .putString("relay_url", relayServerUrl)
@@ -806,14 +810,16 @@ class MainActivity : ComponentActivity() {
 
                     // Anti-replay check for group messages
                     if (wire != null && wire.nonce != null) {
-                        if (seenNonces.contains(wire.nonce)) {
-                            torClient.ack(listOf(msg.id), dropId = group.groupDropId)
-                            return@launch
-                        }
-                        seenNonces.add(wire.nonce)
-                        if (seenNonces.size > 2000) {
-                            val first = seenNonces.iterator().next()
-                            seenNonces.remove(first)
+                        synchronized(seenNonces) {
+                            if (seenNonces.contains(wire.nonce)) {
+                                torClient.ack(listOf(msg.id), dropId = group.groupDropId)
+                                return@launch
+                            }
+                            seenNonces.add(wire.nonce)
+                            if (seenNonces.size > 2000) {
+                                val first = seenNonces.iterator().next()
+                                seenNonces.remove(first)
+                            }
                         }
                     }
 
@@ -949,14 +955,16 @@ class MainActivity : ComponentActivity() {
 
                 // Anti-replay check
                 if (wire != null && wire.nonce != null) {
-                    if (seenNonces.contains(wire.nonce)) {
-                        torClient.ack(listOf(msg.id), dropId = dropId)
-                        return@launch
-                    }
-                    seenNonces.add(wire.nonce)
-                    if (seenNonces.size > 2000) {
-                        val first = seenNonces.iterator().next()
-                        seenNonces.remove(first)
+                    synchronized(seenNonces) {
+                        if (seenNonces.contains(wire.nonce)) {
+                            torClient.ack(listOf(msg.id), dropId = dropId)
+                            return@launch
+                        }
+                        seenNonces.add(wire.nonce)
+                        if (seenNonces.size > 2000) {
+                            val first = seenNonces.iterator().next()
+                            seenNonces.remove(first)
+                        }
                     }
                 }
 
@@ -975,7 +983,27 @@ class MainActivity : ComponentActivity() {
                 var introArmoredKey: String? = null
                 var introSafetyCode: String? = null
 
-                if (wire != null && wire.isIntroduction) {
+                if (wire != null && wire.isGroupInvite) {
+                    val groupName = wire.groupName ?: "New Group"
+                    displayText = "Group invitation: $groupName"
+                    if (!wire.groupId.isNullOrBlank() && !wire.sharedKey.isNullOrBlank() && !wire.groupDropId.isNullOrBlank() && !wire.groupReadToken.isNullOrBlank()) {
+                        val newGroup = GroupChat(
+                            id = wire.groupId,
+                            name = groupName,
+                            groupDropId = wire.groupDropId,
+                            groupReadToken = wire.groupReadToken,
+                            sharedKeyBase64 = wire.sharedKey,
+                            createdAt = System.currentTimeMillis()
+                        )
+                        if (!groups.any { it.id == newGroup.id || it.groupDropId == newGroup.groupDropId }) {
+                            runOnUiThread {
+                                groups.add(newGroup)
+                                torClient.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
+                                persistIdentity()
+                            }
+                        }
+                    }
+                } else if (wire != null && wire.isIntroduction) {
                     isIntro = true
                     introAlias = wire.introAlias
                     introDropId = wire.introDropId
@@ -1091,9 +1119,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun hashPin(pin: String): String {
-        val md = java.security.MessageDigest.getInstance("SHA-256")
-        val digest = md.digest(pin.toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
+        val normalized = pin.trim()
+        val salt = "ghostkey-pin-salt-v2".toByteArray(Charsets.UTF_8)
+        val spec = javax.crypto.spec.PBEKeySpec(normalized.toCharArray(), salt, 65536, 256)
+        val factory = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val hash = factory.generateSecret(spec).encoded
+        return hash.joinToString("") { "%02x".format(it) }
     }
 
     private fun setAppPin(pin: String?) {
@@ -1159,6 +1190,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun triggerEmergencyPanicWipe() {
+        try { persistDispatcher.cancel() } catch (_: Exception) {}
+        for (m in messagesState) {
+            m.zeroOut()
+        }
+        messagesState.clear()
+        ArtiTorManager.wipe(applicationContext)
         ArtiTorManager.stop()
         audioPlayerManager.wipe()
         audioRecorderManager.cancelRecording()
@@ -1170,15 +1207,16 @@ class MainActivity : ComponentActivity() {
             clipboard.setPrimaryClip(ClipData.newPlainText("", ""))
         } catch (_: Exception) {}
         seenNonces.clear()
+        sentCiphertexts.clear()
         myPgpKeys = null
         duressPinHash = null
+        appPinHash = null
         contacts.clear()
         groups.clear()
         userAlias = ""
         recipientArmoredKey = ""
         recipientFingerprint = ""
         recipientDropId = ""
-        messagesState.clear()
         torClient.disconnectWebSocket()
         TorForegroundService.stop(this)
         finishAffinity()

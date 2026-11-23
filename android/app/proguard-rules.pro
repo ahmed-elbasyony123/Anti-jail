@@ -1,7 +1,9 @@
 # Proguard / R8 rules for GhostKey
-# Retain BouncyCastle provider classes that are loaded via JCA reflection
+# Retain BouncyCastle provider and OpenPGP classes that are loaded via JCA reflection
 -keep class org.bouncycastle.jce.provider.BouncyCastleProvider { *; }
 -keep class org.bouncycastle.jcajce.provider.** { *; }
+-keep class org.bouncycastle.openpgp.** { *; }
+-keep class org.bouncycastle.bcpg.** { *; }
 -dontwarn org.bouncycastle.**
 
 # Standard Kotlin & Coroutines reflection metadata
