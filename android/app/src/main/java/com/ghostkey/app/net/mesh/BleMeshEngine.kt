@@ -360,7 +360,7 @@ class BleMeshEngine(
         advertiser = adv
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
-            .setTxPowerLevel(AdvertiseSettings.TX_POWER_MEDIUM)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .setConnectable(true)
             .build()
         val data = AdvertiseData.Builder()

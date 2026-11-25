@@ -154,8 +154,8 @@ class GhostTransport(
         localLanMesh.stop()
         bleMesh.wipe()
         wifiDirect.stop()
-        torClient.disconnectLive()
-        artiTorManager.wipe()
+        torClient.wipe()
+        artiTorManager.wipe(context)
     }
 
     fun close() {

@@ -75,11 +75,11 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private val lockManager = SecurityLockManager(appContext, identityRepo)
     private val vault = IdentityAndContactsVault(appContext.contentResolver, identityRepo)
     private val torClient = TorRelayClient()
-    private val transport = GhostTransport(appContext, torClient, ArtiTorManager) { senderDropId, ciphertext ->
+    private val transport: GhostTransport = GhostTransport(appContext, torClient, ArtiTorManager) { senderDropId, ciphertext ->
         val incoming = messagingService.insertMeshIncoming(senderDropId, ciphertext)
         if (incoming != null) decryptMessage(incoming, senderDropId, fromRelay = false)
     }
-    private val messagingService = MessagingService(appContext.contentResolver, transport)
+    private val messagingService: MessagingService = MessagingService(appContext.contentResolver, transport)
     private val audioRecorderManager = AudioRecorderManager(appContext)
     private val audioPlayerManager = AudioPlayerManager()
 
