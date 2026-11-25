@@ -91,6 +91,10 @@ fun SettingsScreen(
     LaunchedEffect(userAlias) {
         if (alias.isBlank() && userAlias.isNotBlank()) alias = userAlias
     }
+    LaunchedEffect(initialEphemeralMode) { ephemeralMode = initialEphemeralMode }
+    LaunchedEffect(initialUseTorSocks) { useTorSocks = initialUseTorSocks }
+    LaunchedEffect(initialKeepAlive) { keepAlive = initialKeepAlive }
+    LaunchedEffect(initialLockEnabled) { lockEnabled = initialLockEnabled }
     var showDuressDialog by remember { mutableStateOf(false) }
     var duressInput by remember { mutableStateOf("") }
     var showAppPinDialog by remember { mutableStateOf(false) }
@@ -103,7 +107,12 @@ fun SettingsScreen(
         val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
         onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
         if (showToast) {
-            Toast.makeText(context, "Saved! Connecting to relay...", Toast.LENGTH_SHORT).show()
+            val msg = if (ephemeralMode) {
+                "Applied in RAM only (Ephemeral Mode is ON — turn it off to save after closing)"
+            } else {
+                "Saved! Connecting to relay..."
+            }
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
         }
         if (navigateBack) onBack()
     }
@@ -285,6 +294,17 @@ fun SettingsScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                if (ephemeralMode) {
+                    Text(
+                        text = "⚠️ وضع RAM المؤقت (Ephemeral) مفعّل حالياً — الاسم والـ Relay هيتسحوا عند قفل التطبيق. اقفله من قسم Privacy بالأسفل للحفظ الدائم.",
+                        color = AnthropicCrimson,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+
                 Button(
                     onClick = { commitSettings(showToast = true, navigateBack = false) },
                     modifier = Modifier
@@ -315,6 +335,7 @@ fun SettingsScreen(
                             Relay Status: $relayStatus
                             Relay Error: ${relayErrorDetail ?: "none"}
                             Use Tor SOCKS: $useTorSocks
+                            Ephemeral RAM-Only Mode: $ephemeralMode
                             Arti Native Library Loaded: $artiAvailable
                             Arti Engine State: $artiStateStr
                             Device Model: ${Build.MANUFACTURER} ${Build.MODEL}

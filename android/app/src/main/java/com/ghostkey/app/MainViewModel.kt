@@ -580,7 +580,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun sendMediaFromUri(uri: Uri) {
+    fun sendMediaToActiveChat(uri: Uri) {
         val target = activeTarget() ?: return toast("Please select a contact or group first!", Toast.LENGTH_LONG)
         val keys = _uiState.value.myPgpKeys ?: return
         viewModelScope.launch {
@@ -589,7 +589,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun onStartAudioRecording() {
+    fun startRecordingAudio() {
         if (activeTarget() == null) return toast("Please select a contact or group first!", Toast.LENGTH_SHORT)
         if (_uiState.value.isRecordingAudio) return
         if (!audioRecorderManager.startRecording()) return toast("Could not access microphone", Toast.LENGTH_SHORT)
@@ -604,7 +604,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun onStopAndSendAudioRecording() {
+    fun onStopAudioRecording() {
         recordingTimerJob?.cancel()
         recordingTimerJob = null
         _uiState.value = _uiState.value.copy(isRecordingAudio = false, recordElapsedMs = 0L)
