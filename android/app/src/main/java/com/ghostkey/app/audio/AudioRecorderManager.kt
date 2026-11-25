@@ -4,9 +4,8 @@ import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import java.io.File
-import java.io.FileOutputStream
-import java.security.SecureRandom
 
 data class AudioRecordResult(
     val bytes: ByteArray,
@@ -94,7 +93,7 @@ class AudioRecorderManager(private val context: Context) {
             recordStartTime = SystemClock.elapsedRealtime()
             return true
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("AudioRecorderManager", "Failed to start recording: ${e.message}", e)
             cleanup()
             return false
         }
@@ -140,7 +139,7 @@ class AudioRecorderManager(private val context: Context) {
                 durationMs = duration
             )
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("AudioRecorderManager", "Failed to stop recording: ${e.message}", e)
             shredFile(file)
             cleanup()
             null

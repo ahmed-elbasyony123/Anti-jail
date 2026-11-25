@@ -21,6 +21,6 @@ echo Relay URL:   http://127.0.0.1:8765
 echo Web Console: http://localhost:8765/
 echo.
 echo For Android: Open the /android directory in Android Studio
-echo and pair with OpenKeychain on your Android device.
+echo or build a release APK via ./gradlew assembleRelease.
 echo =======================================================
 pause

@@ -6,7 +6,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -17,18 +18,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.net.ArtiTorState
 import com.ghostkey.app.net.RelayStatus
-import com.ghostkey.app.ui.GhostKeyColors
+import com.ghostkey.app.ui.*
 
 /**
- * Security & Network Health Diagnostics Dialog:
- *
- * Full overview of Tor routing, local LAN mesh, forensic safeguards, and cryptographic status.
+ * Security & Network Health Diagnostics Dialog.
  */
 @Composable
 fun SecurityStatusDialog(
     relayStatus: RelayStatus,
     artiState: ArtiTorState,
-    relayUrl: String,
     lanPeersCount: Int,
     isEphemeral: Boolean,
     hasDuressPin: Boolean,
@@ -40,9 +38,9 @@ fun SecurityStatusDialog(
         onDismissRequest = onDismiss,
         icon = {
             Icon(
-                imageVector = Icons.Default.Security,
+                imageVector = AppIcons.VerifiedUser,
                 contentDescription = null,
-                tint = GhostKeyColors.AccentGold,
+                tint = AnthropicTerracotta,
                 modifier = Modifier.size(32.dp)
             )
         },
@@ -50,7 +48,7 @@ fun SecurityStatusDialog(
             Text(
                 text = "Security & Network Health",
                 style = MaterialTheme.typography.titleMedium,
-                color = GhostKeyColors.TextPrimary
+                color = AnthropicCream
             )
         },
         text = {
@@ -59,23 +57,10 @@ fun SecurityStatusDialog(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
-                // Section 1: Network & Tor
                 DiagnosticsCategory(title = "Network & Routing") {
-                    val torLabel = when (relayStatus) {
-                        RelayStatus.CONNECTED -> "Connected to relay"
-                        RelayStatus.BUILDING_CIRCUIT -> "Building Tor circuit..."
-                        RelayStatus.AUTH_FAILED -> "Mailbox authentication failed"
-                        RelayStatus.ORBOT_NOT_RUNNING -> "Tor proxy is not running"
-                        RelayStatus.TIMED_OUT -> "Connection timed out, retrying"
-                        RelayStatus.DISCONNECTED -> "Disconnected"
-                    }
-                    val torColor = when (relayStatus) {
-                        RelayStatus.CONNECTED -> GhostKeyColors.StatusGreen
-                        RelayStatus.BUILDING_CIRCUIT -> GhostKeyColors.AccentGold
-                        else -> GhostKeyColors.StatusRed
-                    }
+                    val (torLabel, torColor) = relayStatus.statusDisplay()
                     DiagnosticsRow(
-                        icon = Icons.Default.VpnLock,
+                        icon = AppIcons.Public,
                         title = "Tor Circuit",
                         value = torLabel,
                         valueColor = torColor
@@ -88,65 +73,63 @@ fun SecurityStatusDialog(
                         is ArtiTorState.Idle -> "Tor SOCKS Proxy Ready"
                     }
                     DiagnosticsRow(
-                        icon = Icons.Default.Speed,
+                        icon = AppIcons.Public,
                         title = "Tor Engine",
                         value = artiDetails,
-                        valueColor = GhostKeyColors.TextSecondary
+                        valueColor = AnthropicTextMuted
                     )
 
                     DiagnosticsRow(
-                        icon = Icons.Default.Wifi,
+                        icon = AppIcons.Wifi,
                         title = "Offline LAN Mesh",
                         value = if (lanPeersCount > 0) "$lanPeersCount peer(s) nearby on LAN" else "Active (Listening :8766)",
-                        valueColor = if (lanPeersCount > 0) GhostKeyColors.StatusGreen else GhostKeyColors.TextSecondary
+                        valueColor = if (lanPeersCount > 0) AnthropicSage else AnthropicTextMuted
                     )
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Section 2: Forensic & Device Security
                 DiagnosticsCategory(title = "Device & Anti-Forensics") {
                     DiagnosticsRow(
-                        icon = Icons.Default.Screenshot,
+                        icon = Icons.Default.Lock,
                         title = "Screen Capture Lock",
                         value = "FLAG_SECURE Active (Zero Screenshots)",
-                        valueColor = GhostKeyColors.StatusGreen
+                        valueColor = AnthropicSage
                     )
                     DiagnosticsRow(
-                        icon = Icons.Default.Memory,
+                        icon = AppIcons.Memory,
                         title = "Storage Mode",
-                        value = if (isEphemeral) "Ephemeral (Zero Disk Storage)" else "RAM-Only Active (Encrypted Identity)",
-                        valueColor = GhostKeyColors.StatusGreen
+                        value = if (isEphemeral) "Ephemeral (Zero Disk Storage)" else "RAM-Only Messages (Encrypted Identity)",
+                        valueColor = AnthropicSage
                     )
                     DiagnosticsRow(
-                        icon = Icons.Default.LockReset,
+                        icon = AppIcons.Shield,
                         title = "Duress Panic Wipe",
                         value = if (hasDuressPin) "Armed & Ready (Silent Wipe)" else "Not Configured",
-                        valueColor = if (hasDuressPin) GhostKeyColors.StatusGreen else GhostKeyColors.TextSecondary
+                        valueColor = if (hasDuressPin) AnthropicSage else AnthropicTextMuted
                     )
                     DiagnosticsRow(
-                        icon = Icons.Default.HourglassTop,
+                        icon = AppIcons.Hourglass,
                         title = "Disappearing Reaper",
                         value = "Active (Periodic RAM zeroization)",
-                        valueColor = GhostKeyColors.StatusGreen
+                        valueColor = AnthropicSage
                     )
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Section 3: Identity & Cryptography
                 DiagnosticsCategory(title = "Cryptography & Identity") {
                     DiagnosticsRow(
-                        icon = Icons.Default.Key,
+                        icon = AppIcons.Key,
                         title = "PGP Fingerprint",
                         value = if (myFingerprint.isNotBlank()) myFingerprint.take(16) + "..." else "Not Generated",
-                        valueColor = GhostKeyColors.AccentGold
+                        valueColor = AnthropicTerracotta
                     )
                     DiagnosticsRow(
-                        icon = Icons.Default.AlternateEmail,
+                        icon = Icons.Default.Email,
                         title = "Drop ID",
                         value = if (myDropId.isNotBlank()) myDropId.take(16) + "..." else "None",
-                        valueColor = GhostKeyColors.TextSecondary
+                        valueColor = AnthropicTextMuted
                     )
                 }
             }
@@ -155,14 +138,14 @@ fun SecurityStatusDialog(
             Button(
                 onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = GhostKeyColors.AccentGold,
-                    contentColor = GhostKeyColors.SurfacePrimary
+                    containerColor = AnthropicTerracotta,
+                    contentColor = AnthropicSurface
                 )
             ) {
                 Text("Close")
             }
         },
-        containerColor = GhostKeyColors.SurfacePrimary
+        containerColor = AnthropicSurface
     )
 }
 
@@ -174,13 +157,13 @@ private fun DiagnosticsCategory(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(GhostKeyColors.SurfaceSecondary, RoundedCornerShape(8.dp))
+            .background(AnthropicSurfaceVariant, RoundedCornerShape(8.dp))
             .padding(12.dp)
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelMedium,
-            color = GhostKeyColors.AccentGold,
+            color = AnthropicTerracotta,
             fontSize = 12.sp
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -204,7 +187,7 @@ private fun DiagnosticsRow(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = GhostKeyColors.TextSecondary,
+            tint = AnthropicTextMuted,
             modifier = Modifier.size(18.dp)
         )
         Spacer(modifier = Modifier.width(10.dp))
@@ -212,7 +195,7 @@ private fun DiagnosticsRow(
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodySmall,
-                color = GhostKeyColors.TextPrimary,
+                color = AnthropicCream,
                 fontSize = 12.sp
             )
             Text(

@@ -23,7 +23,6 @@ class OrbotPortWatcher(
     companion object {
         const val ORBOT_PACKAGE = "org.torproject.android"
         const val ACTION_STATUS = "org.torproject.android.intent.action.STATUS"
-        const val EXTRA_STATUS = "org.torproject.android.intent.extra.STATUS"
         const val EXTRA_SOCKS_PROXY_HOST = "org.torproject.android.intent.extra.SOCKS_PROXY_HOST"
         const val EXTRA_SOCKS_PROXY_PORT = "org.torproject.android.intent.extra.SOCKS_PROXY_PORT"
         const val DEFAULT_SOCKS_PORT = 9050

@@ -7,19 +7,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.Handshake
-import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,20 +22,16 @@ import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.crypto.SignatureStatus
 import com.ghostkey.app.data.ChatMessage
 import com.ghostkey.app.ui.*
-import java.text.SimpleDateFormat
-import java.util.*
+import com.ghostkey.app.util.GhostKeyUtils
 
 /**
- * Modern Telegram-style asymmetric message bubble with Anthropic warm cream/terracotta aesthetics.
- *
- * Outgoing: Curved top-left, top-right, bottom-left (18dp) with small tail on bottom-right (4dp).
- * Incoming: Curved top-left, top-right, bottom-right (18dp) with small tail on bottom-left (4dp).
+ * Asymmetric message bubble with Anthropic warm cream/terracotta aesthetics.
  */
 @Composable
 fun MessageBubble(
     message: ChatMessage,
     playbackState: PlaybackState = PlaybackState(),
-    onToggleArmor: () -> Unit,
+    nowMs: Long = System.currentTimeMillis(),
     onManualDecrypt: () -> Unit,
     onAudioPlayPause: (ChatMessage) -> Unit = {},
     onAudioSeek: (ChatMessage, Float) -> Unit = { _, _ -> },
@@ -52,14 +42,11 @@ fun MessageBubble(
     val bubbleColor = if (isOut) AnthropicBubbleOutgoing else AnthropicBubbleIncoming
     val borderColor = if (isOut) AnthropicTerracotta.copy(alpha = 0.3f) else AnthropicBorder
 
-    // Telegram asymmetric bubble corners
     val bubbleShape = if (isOut) {
         RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
     } else {
         RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
     }
-
-    val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
     Column(
         modifier = Modifier
@@ -76,7 +63,6 @@ fun MessageBubble(
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
-                // Group / Sender Header for Incoming Messages
                 if (!isOut && (message.isGroup || !message.senderAlias.isNullOrBlank())) {
                     val displayName = message.senderAlias ?: message.signerFingerprint?.take(8) ?: "Member"
                     Row(
@@ -92,7 +78,7 @@ fun MessageBubble(
                         if (message.signatureStatus == SignatureStatus.VERIFIED) {
                             Spacer(modifier = Modifier.width(4.dp))
                             Icon(
-                                Icons.Default.Verified,
+                                AppIcons.VerifiedUser,
                                 contentDescription = "Verified PGP Signature",
                                 tint = AnthropicSage,
                                 modifier = Modifier.size(13.dp)
@@ -101,7 +87,6 @@ fun MessageBubble(
                     }
                 }
 
-                // Message Payload Area
                 if (message.isAudio && message.isDecrypted && message.audioBytes != null) {
                     AudioBubble(
                         message = message,
@@ -128,7 +113,7 @@ fun MessageBubble(
                                 .background(AnthropicSurfaceVariant)
                                 .padding(8.dp)
                         ) {
-                            Icon(Icons.Default.AttachFile, contentDescription = null, tint = AnthropicTerracotta)
+                            Icon(AppIcons.AttachFile, contentDescription = null, tint = AnthropicTerracotta)
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text(
@@ -146,7 +131,6 @@ fun MessageBubble(
                         }
                     }
                 } else if (message.isIntroduction && message.isDecrypted) {
-                    // Peer Contact Introduction Card
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -156,7 +140,7 @@ fun MessageBubble(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                Icons.Default.Handshake,
+                                AppIcons.Handshake,
                                 contentDescription = null,
                                 tint = AnthropicTerracotta,
                                 modifier = Modifier.size(20.dp)
@@ -227,7 +211,6 @@ fun MessageBubble(
                         fontWeight = FontWeight.Normal
                     )
                 } else {
-                    // Locked / Encrypted State with Tap to Decrypt
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -256,21 +239,22 @@ fun MessageBubble(
                     }
                 }
 
-                // Telegram Inline Timestamp & Double Checkmarks
                 Spacer(modifier = Modifier.height(3.dp))
                 Row(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (message.expiresAt != null) {
-                        val rem = message.remainingSeconds()
+                        val rem = message.remainingSeconds(nowMs)
                         val remText = if (rem != null) {
-                            if (rem >= 3600) "${rem / 3600}h"
-                            else if (rem >= 60) "${rem / 60}m"
-                            else "${rem}s"
+                            when {
+                                rem >= 3600 -> "${rem / 3600}h"
+                                rem >= 60 -> "${rem / 60}m"
+                                else -> "${rem}s"
+                            }
                         } else ""
                         Icon(
-                            Icons.Default.HourglassBottom,
+                            AppIcons.Hourglass,
                             contentDescription = "Disappearing message",
                             tint = AnthropicTerracotta,
                             modifier = Modifier.size(11.dp)
@@ -287,7 +271,7 @@ fun MessageBubble(
                         Spacer(modifier = Modifier.width(4.dp))
                     }
                     Text(
-                        text = timeFormat.format(Date(message.timestamp)),
+                        text = GhostKeyUtils.formatClockTime(message.timestamp),
                         fontSize = 10.sp,
                         color = AnthropicTextMuted
                     )

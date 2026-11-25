@@ -1,5 +1,6 @@
 package com.ghostkey.app.net
 
+import com.ghostkey.app.util.GhostKeyUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -119,19 +120,6 @@ class TorRelayClient(
         return builder.build()
     }
 
-    /** Accepts a relay URL typed by a person: adds https:// (or http:// for .onion/loopback) when missing and trims slashes. */
-    private fun sanitizeUrl(url: String): String {
-        var clean = url.trim()
-        if (clean.isNotEmpty() && !clean.startsWith("http://") && !clean.startsWith("https://")) {
-            clean = if (clean.contains(".onion") || clean.startsWith("127.0.0.1") || clean.startsWith("localhost") || clean.startsWith("10.0.2.2")) {
-                "http://$clean"
-            } else {
-                "https://$clean"
-            }
-        }
-        return clean.trimEnd('/')
-    }
-
     private fun closeHttpClient(client: OkHttpClient) {
         try {
             client.dispatcher.executorService.shutdown()
@@ -150,8 +138,18 @@ class TorRelayClient(
         socksHost: String = torSocksHost,
         socksPort: Int = torSocksPort
     ) {
-        serverBaseUrl = sanitizeUrl(url)
-        useTorProxy = useTor || serverBaseUrl.contains(".onion")
+        val cleanUrl = GhostKeyUtils.sanitizeRelayUrl(url)
+        val effectiveTor = useTor || cleanUrl.contains(".onion")
+        if (
+            cleanUrl == serverBaseUrl &&
+            effectiveTor == useTorProxy &&
+            socksHost == torSocksHost &&
+            socksPort == torSocksPort
+        ) {
+            return
+        }
+        serverBaseUrl = cleanUrl
+        useTorProxy = effectiveTor
         torSocksHost = socksHost
         torSocksPort = socksPort
         val oldClient = httpClient
@@ -309,40 +307,6 @@ class TorRelayClient(
         statusListener = null
     }
 
-    /** Unsubscribe a mailbox from live connection and clean up subscription state. */
-    fun removeSubscription(dropId: String) {
-        activeSubscriptions.remove(dropId)
-        val ws = currentWebSocket
-        if (ws != null && subscriptionConfirmed) {
-            try {
-                ws.send(
-                    JSONObject()
-                        .put("type", "UNSUBSCRIBE")
-                        .put("dropId", dropId)
-                        .toString()
-                )
-            } catch (_: Exception) {}
-        }
-    }
-
-    /** Clear all active subscriptions and notify relay for each. */
-    fun clearSubscriptions() {
-        for (dropId in activeSubscriptions.keys) {
-            val ws = currentWebSocket
-            if (ws != null && subscriptionConfirmed) {
-                try {
-                    ws.send(
-                        JSONObject()
-                            .put("type", "UNSUBSCRIBE")
-                            .put("dropId", dropId)
-                            .toString()
-                    )
-                } catch (_: Exception) {}
-            }
-        }
-        activeSubscriptions.clear()
-    }
-
     /**
      * Confirm receipt. Uses the open WebSocket when possible, otherwise HTTP. If the ACK is
      * lost the relay simply delivers the message again, which the caller de-duplicates.
@@ -407,7 +371,10 @@ class TorRelayClient(
     private fun startWebSocketConnection() {
         closeSocketOnly()                              // NOT disconnectWebSocket(): keep isSubscribed
         val dropId = activeDropId ?: return
-        val token = activeReadToken ?: return
+        if (activeReadToken == null || serverBaseUrl.isBlank()) {
+            emit(RelayStatus.DISCONNECTED)
+            return
+        }
 
         val request = try {
             Request.Builder().url(buildWsUrl()).build()
@@ -477,18 +444,6 @@ class TorRelayClient(
                 scheduleReconnect()
             }
         })
-    }
-
-    private fun pollPending(generation: Int, dropId: String, token: String) {
-        scope.launch {
-            val result = fetchPendingMessages(dropId, token)
-            if (!isSubscribed) return@launch
-            result.onSuccess { page ->
-                page.messages.forEach { messageListener?.invoke(it) }
-            }.onFailure { e ->
-                if (e is RelayHttpException && e.code == 401) handleAuthFailed()
-            }
-        }
     }
 
     private fun handleAuthFailed() {

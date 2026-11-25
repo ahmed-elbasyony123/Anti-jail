@@ -40,14 +40,11 @@ fn init_logging() {
 }
 
 #[cfg(not(target_os = "android"))]
-fn init_logging() {
-    let _ = env_logger::try_init();
-}
+fn init_logging() {}
 
-async fn handle_socks5_client(
-    mut client: TcpStream,
-    tor_client: Arc<TorClient<PreferredRuntime>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn read_socks5_target(
+    client: &mut TcpStream,
+) -> Result<(String, u16), Box<dyn std::error::Error + Send + Sync>> {
     // 1. SOCKS5 Handshake
     let mut ver_nmethods = [0u8; 2];
     client.read_exact(&mut ver_nmethods).await?;
@@ -73,23 +70,19 @@ async fn handle_socks5_client(
         return Err("Unsupported SOCKS command".into());
     }
 
-    let atyp = req_header[3];
-    let target_host = match atyp {
+    let target_host = match req_header[3] {
         0x01 => {
-            // IPv4
             let mut ipv4 = [0u8; 4];
             client.read_exact(&mut ipv4).await?;
             format!("{}.{}.{}.{}", ipv4[0], ipv4[1], ipv4[2], ipv4[3])
         }
         0x03 => {
-            // Domain Name (e.g., onion address)
             let len = client.read_u8().await? as usize;
             let mut domain = vec![0u8; len];
             client.read_exact(&mut domain).await?;
             String::from_utf8(domain)?
         }
         0x04 => {
-            // IPv6
             let mut ipv6 = [0u8; 16];
             client.read_exact(&mut ipv6).await?;
             return Err("IPv6 not supported".into());
@@ -98,6 +91,19 @@ async fn handle_socks5_client(
     };
 
     let target_port = client.read_u16().await?;
+    Ok((target_host, target_port))
+}
+
+async fn handle_socks5_client(
+    mut client: TcpStream,
+    tor_client: Arc<TorClient<PreferredRuntime>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (target_host, target_port) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        read_socks5_target(&mut client),
+    )
+    .await
+    .map_err(|_| "SOCKS5 handshake timed out")??;
 
     // 3. Connect via Arti Tor Client with Onion Service Support
     let mut s_prefs = StreamPrefs::new();
@@ -133,13 +139,16 @@ async fn run_arti_daemon(
     port_tx: std::sync::mpsc::SyncSender<Result<u16, String>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Install ring crypto provider for rustls 0.23
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    // Disable filesystem permission checks globally for Android sandboxed filesystem
-    std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
-    std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "yes");
-    std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "1");
+    fn fail_startup(
+        msg: String,
+        port_tx: &std::sync::mpsc::SyncSender<Result<u16, String>>,
+    ) {
+        log::error!("{}", msg);
+        set_last_error(msg.clone());
+        let _ = port_tx.send(Err(msg));
+        IS_RUNNING.store(false, Ordering::Relaxed);
+        IS_STARTING.store(false, Ordering::Relaxed);
+    }
 
     // 1. Build TorClientConfig and disable fs-mistrust on Android directories
     let mut config_builder = TorClientConfigBuilder::from_directories(
@@ -152,12 +161,7 @@ async fn run_arti_daemon(
     let config = match config_builder.build() {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!("Arti TorClientConfig build error: {}", e);
-            log::error!("{}", msg);
-            set_last_error(msg.clone());
-            let _ = port_tx.send(Err(msg));
-            IS_RUNNING.store(false, Ordering::Relaxed);
-            IS_STARTING.store(false, Ordering::Relaxed);
+            fail_startup(format!("Arti TorClientConfig build error: {}", e), &port_tx);
             return Err(e.into());
         }
     };
@@ -166,12 +170,7 @@ async fn run_arti_daemon(
     let runtime = match PreferredRuntime::current() {
         Ok(r) => r,
         Err(e) => {
-            let msg = format!("Failed to acquire PreferredRuntime: {}", e);
-            log::error!("{}", msg);
-            set_last_error(msg.clone());
-            let _ = port_tx.send(Err(msg));
-            IS_RUNNING.store(false, Ordering::Relaxed);
-            IS_STARTING.store(false, Ordering::Relaxed);
+            fail_startup(format!("Failed to acquire PreferredRuntime: {}", e), &port_tx);
             return Err(e.into());
         }
     };
@@ -184,12 +183,7 @@ async fn run_arti_daemon(
     {
         Ok(tc) => tc,
         Err(e) => {
-            let msg = format!("Arti TorClient create error: {}", e);
-            log::error!("{}", msg);
-            set_last_error(msg.clone());
-            let _ = port_tx.send(Err(msg));
-            IS_RUNNING.store(false, Ordering::Relaxed);
-            IS_STARTING.store(false, Ordering::Relaxed);
+            fail_startup(format!("Arti TorClient create error: {}", e), &port_tx);
             return Err(e.into());
         }
     };
@@ -198,12 +192,7 @@ async fn run_arti_daemon(
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => {
-            let msg = format!("Failed to bind SOCKS5 listener: {}", e);
-            log::error!("{}", msg);
-            set_last_error(msg.clone());
-            let _ = port_tx.send(Err(msg));
-            IS_RUNNING.store(false, Ordering::Relaxed);
-            IS_STARTING.store(false, Ordering::Relaxed);
+            fail_startup(format!("Failed to bind SOCKS5 listener: {}", e), &port_tx);
             return Err(e.into());
         }
     };
@@ -211,12 +200,7 @@ async fn run_arti_daemon(
     let local_addr = match listener.local_addr() {
         Ok(addr) => addr,
         Err(e) => {
-            let msg = format!("Failed to get local address: {}", e);
-            log::error!("{}", msg);
-            set_last_error(msg.clone());
-            let _ = port_tx.send(Err(msg));
-            IS_RUNNING.store(false, Ordering::Relaxed);
-            IS_STARTING.store(false, Ordering::Relaxed);
+            fail_startup(format!("Failed to get local address: {}", e), &port_tx);
             return Err(e.into());
         }
     };
@@ -294,13 +278,9 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
 ) -> jint {
     init_logging();
 
-    // Install ring crypto provider for rustls 0.23
+    // Install ring crypto provider for rustls 0.23 and disable fs-mistrust once before spawning workers
     let _ = rustls::crypto::ring::default_provider().install_default();
-
-    // Disable filesystem permission checks globally for Android sandboxed filesystem
     std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
-    std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "yes");
-    std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "1");
 
     if IS_RUNNING.load(Ordering::Relaxed) {
         return SOCKS_PORT.load(Ordering::Relaxed) as jint;
@@ -353,6 +333,7 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
     std::thread::spawn(move || {
         let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_all()
                 .build()
             {
@@ -401,11 +382,17 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
             -1
         }
         Err(_) => {
+            if let Ok(mut lock) = SHUTDOWN_TX.lock() {
+                if let Some(tx) = lock.take() {
+                    let _ = tx.send(());
+                }
+            }
             let msg = get_last_error();
             if msg.is_empty() {
                 set_last_error("Timed out waiting for Arti proxy initialization".to_string());
             }
             IS_STARTING.store(false, Ordering::Relaxed);
+            IS_RUNNING.store(false, Ordering::Relaxed);
             -1
         }
     }

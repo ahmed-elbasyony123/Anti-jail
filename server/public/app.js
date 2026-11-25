@@ -563,6 +563,7 @@ export function startApp(env) {
             state.authFailed = false;
             state.attempt = 0;
             state.seen.clear();
+            state.seenNonces.clear();
             renderIdentity();
             log('Identity ready. Share your public key with your peer.', 'success');
             connect();
@@ -832,8 +833,7 @@ export function startApp(env) {
     };
 }
 
-// Browser bootstrap. Skipped in Node (tests) and when a host sets window.__GHOSTKEY_NO_AUTOSTART__
-// (the React client starts the app itself).
+// Browser bootstrap. Skipped in Node tests or when window.__GHOSTKEY_NO_AUTOSTART__ is set.
 if (typeof window !== 'undefined' && !window.__GHOSTKEY_NO_AUTOSTART__ && typeof window.openpgp !== 'undefined') {
     startApp({
         document: window.document,

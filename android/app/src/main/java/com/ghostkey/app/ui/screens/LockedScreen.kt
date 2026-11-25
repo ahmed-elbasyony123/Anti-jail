@@ -5,17 +5,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Backspace
-import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -23,19 +19,11 @@ import androidx.compose.ui.unit.sp
 import com.ghostkey.app.ui.*
 
 /**
- * Modern High-Security Lock Screen with Duress PIN Support.
- *
- * Supports:
- * 1. Rapid In-App numeric PIN entry.
- * 2. Silent Duress PIN trigger: entering the Duress PIN instantaneously initiates
- *    an emergency forensic wipe with zero UI warning, destroying all keys and RAM traces.
- * 3. System Credential / Biometric fallback button.
+ * Lock Screen supporting In-App PIN, silent Duress PIN wipe, and Device Credential fallback.
  */
 @Composable
 fun LockedScreen(
-    hasDuressPin: Boolean = false,
     onUnlock: () -> Unit,
-    onDuressEntered: () -> Unit,
     onDeviceUnlock: () -> Unit = onUnlock,
     onVerifyPin: (String) -> Boolean = { true }
 ) {
@@ -58,8 +46,7 @@ fun LockedScreen(
 
     fun submitPin() {
         if (enteredPin.length >= 4) {
-            val valid = onVerifyPin(enteredPin)
-            if (valid) {
+            if (onVerifyPin(enteredPin)) {
                 onUnlock()
             } else {
                 isError = true
@@ -110,7 +97,6 @@ fun LockedScreen(
                 fontSize = 12.sp
             )
 
-            // PIN Dots Indicator
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.padding(vertical = 12.dp)
@@ -149,7 +135,6 @@ fun LockedScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // Numeric Keypad (3x4 Grid)
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -184,7 +169,7 @@ fun LockedScreen(
                             ) {
                                 if (key == "DEL") {
                                     Icon(
-                                        Icons.Default.Backspace,
+                                        AppIcons.Backspace,
                                         contentDescription = "Backspace",
                                         tint = AnthropicTextMid,
                                         modifier = Modifier.size(18.dp)
@@ -206,7 +191,6 @@ fun LockedScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // Enter Button or Device Biometric Fallback
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -224,7 +208,7 @@ fun LockedScreen(
                     onClick = onDeviceUnlock,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicSlate)
                 ) {
-                    Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Device Lock", fontSize = 12.sp)
                 }

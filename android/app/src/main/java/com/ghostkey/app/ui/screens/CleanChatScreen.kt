@@ -5,7 +5,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,7 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,8 +24,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ghostkey.app.MainActivity
 import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.data.ChatMessage
 import com.ghostkey.app.data.Contact
@@ -34,15 +35,11 @@ import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.*
 import com.ghostkey.app.ui.components.MessageBubble
 import com.ghostkey.app.ui.dialogs.IntroduceContactDialog
-import java.util.Locale
+import com.ghostkey.app.util.GhostKeyUtils
+import kotlinx.coroutines.delay
 
 /**
- * Modern Telegram-style Clean Chat Screen with Anthropic design tokens.
- *
- * Replaces the legacy cluttered single-screen UI:
- * - Zero KeyBar clutter at the top.
- * - Dynamic profile header with avatar and Tor connectivity status.
- * - Floating Pill input bar with dynamic mic-to-send morphing.
+ * Clean Telegram-style Chat Screen with Anthropic design tokens.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,7 +62,6 @@ fun CleanChatScreen(
     onAudioSeek: (ChatMessage, Float) -> Unit,
     onManualDecrypt: (ChatMessage) -> Unit = {},
     onOpenSafetyCode: () -> Unit,
-    onOpenSettings: () -> Unit = {},
     disappearingTtlSeconds: Long? = null,
     onSetDisappearingTimer: (Long?) -> Unit = {},
     availableContacts: List<Contact> = emptyList(),
@@ -76,6 +72,17 @@ fun CleanChatScreen(
     var showTtlMenu by remember { mutableStateOf(false) }
     var showIntroduceDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    val hasExpiringMessages = remember(messages) { messages.any { it.expiresAt != null } }
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(hasExpiringMessages) {
+        if (hasExpiringMessages) {
+            while (true) {
+                nowMs = System.currentTimeMillis()
+                delay(1_000L)
+            }
+        }
+    }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -106,7 +113,7 @@ fun CleanChatScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (isGroup) {
-                                Icon(Icons.Default.Groups, contentDescription = null, tint = AnthropicCream, modifier = Modifier.size(20.dp))
+                                Icon(AppIcons.Groups, contentDescription = null, tint = AnthropicCream, modifier = Modifier.size(20.dp))
                             } else {
                                 Text(
                                     text = chatTitle.take(1).uppercase(),
@@ -126,12 +133,7 @@ fun CleanChatScreen(
                                 maxLines = 1
                             )
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                val dotColor = when (relayStatus) {
-                                    RelayStatus.CONNECTED -> AnthropicSage
-                                    RelayStatus.BUILDING_CIRCUIT -> AnthropicTerracotta
-                                    RelayStatus.AUTH_FAILED, RelayStatus.ORBOT_NOT_RUNNING -> Color(0xFFD32F2F)
-                                    else -> AnthropicTextMuted
-                                }
+                                val (_, dotColor) = relayStatus.statusDisplay()
                                 Box(
                                     modifier = Modifier
                                         .size(6.dp)
@@ -155,59 +157,59 @@ fun CleanChatScreen(
                     }
                 },
                 actions = {
-                    Box {
-                        IconButton(onClick = { showTtlMenu = true }) {
-                            Icon(
-                                Icons.Default.HourglassBottom,
-                                contentDescription = "Disappearing Messages",
-                                tint = if (disappearingTtlSeconds != null) AnthropicTerracotta else AnthropicTextMuted
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showTtlMenu,
-                            onDismissRequest = { showTtlMenu = false },
-                            modifier = Modifier.background(AnthropicSurface)
-                        ) {
-                            Text(
-                                "Disappearing Messages Timer",
-                                color = AnthropicCream,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                            )
-                            val options = listOf(
-                                null to "Off (Never delete)",
-                                30L to "30 Seconds",
-                                300L to "5 Minutes",
-                                3600L to "1 Hour",
-                                86400L to "24 Hours",
-                                604800L to "7 Days"
-                            )
-                            for ((sec, label) in options) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = label,
-                                            color = if (disappearingTtlSeconds == sec) AnthropicTerracotta else AnthropicCream,
-                                            fontWeight = if (disappearingTtlSeconds == sec) FontWeight.Bold else FontWeight.Normal,
-                                            fontSize = 13.sp
-                                        )
-                                    },
-                                    onClick = {
-                                        onSetDisappearingTimer(sec)
-                                        showTtlMenu = false
-                                    }
+                    if (!isGroup) {
+                        Box {
+                            IconButton(onClick = { showTtlMenu = true }) {
+                                Icon(
+                                    AppIcons.Hourglass,
+                                    contentDescription = "Disappearing Messages",
+                                    tint = if (disappearingTtlSeconds != null) AnthropicTerracotta else AnthropicTextMuted
                                 )
                             }
+                            DropdownMenu(
+                                expanded = showTtlMenu,
+                                onDismissRequest = { showTtlMenu = false },
+                                modifier = Modifier.background(AnthropicSurface)
+                            ) {
+                                Text(
+                                    "Disappearing Messages Timer",
+                                    color = AnthropicCream,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                )
+                                val options = listOf(
+                                    null to "Off (Never delete)",
+                                    30L to "30 Seconds",
+                                    300L to "5 Minutes",
+                                    3600L to "1 Hour",
+                                    86400L to "24 Hours",
+                                    604800L to "7 Days"
+                                )
+                                for ((sec, label) in options) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = label,
+                                                color = if (disappearingTtlSeconds == sec) AnthropicTerracotta else AnthropicCream,
+                                                fontWeight = if (disappearingTtlSeconds == sec) FontWeight.Bold else FontWeight.Normal,
+                                                fontSize = 13.sp
+                                            )
+                                        },
+                                        onClick = {
+                                            onSetDisappearingTimer(sec)
+                                            showTtlMenu = false
+                                        }
+                                    )
+                                }
+                            }
                         }
-                    }
-                    if (!isGroup) {
                         IconButton(onClick = { showIntroduceDialog = true }) {
-                            Icon(Icons.Default.Handshake, contentDescription = "Introduce Contact", tint = AnthropicTerracotta)
+                            Icon(AppIcons.Handshake, contentDescription = "Introduce Contact", tint = AnthropicTerracotta)
                         }
                     }
                     IconButton(onClick = onOpenSafetyCode) {
-                        Icon(Icons.Default.VerifiedUser, contentDescription = "Safety Code", tint = AnthropicSage)
+                        Icon(AppIcons.VerifiedUser, contentDescription = "Safety Code", tint = AnthropicSage)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -223,7 +225,6 @@ fun CleanChatScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Messages List (Full Screen)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -255,7 +256,7 @@ fun CleanChatScreen(
                                 text = "Messages exist only in volatile RAM memory. Routed anonymously over Tor.",
                                 color = AnthropicTextMuted,
                                 fontSize = 12.sp,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
@@ -271,7 +272,7 @@ fun CleanChatScreen(
                             MessageBubble(
                                 message = msg,
                                 playbackState = playbackState,
-                                onToggleArmor = {},
+                                nowMs = nowMs,
                                 onManualDecrypt = { onManualDecrypt(msg) },
                                 onAudioPlayPause = onAudioPlayPause,
                                 onAudioSeek = onAudioSeek,
@@ -282,9 +283,6 @@ fun CleanChatScreen(
                 }
             }
 
-            // -----------------------------------------------------------------
-            // Floating Pill Input Bar (Telegram Ergonomics)
-            // -----------------------------------------------------------------
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -292,7 +290,6 @@ fun CleanChatScreen(
                     .padding(horizontal = 10.dp, vertical = 8.dp)
             ) {
                 if (isRecordingAudio) {
-                    // Recording Voice Note State
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -311,7 +308,7 @@ fun CleanChatScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Recording: " + formatDuration(recordElapsedMs),
+                                text = "Recording: " + GhostKeyUtils.formatDurationMmSs(recordElapsedMs),
                                 color = AnthropicCream,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
@@ -341,33 +338,31 @@ fun CleanChatScreen(
                         }
                     }
                 } else {
-                    // Normal Input Pill State
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Attachment Clip
                         IconButton(
                             onClick = {
-                                com.ghostkey.app.MainActivity.isExternalPickerActive = true
+                                MainActivity.isExternalPickerActive = true
                                 filePicker.launch("*/*")
                             },
                             modifier = Modifier.size(42.dp)
                         ) {
                             Icon(
-                                Icons.Default.AttachFile,
+                                AppIcons.AttachFile,
                                 contentDescription = "Attach media",
                                 tint = AnthropicTextMid
                             )
                         }
 
-                        // Capsule Pill Input
                         OutlinedTextField(
                             value = inputText,
                             onValueChange = { inputText = it },
                             placeholder = { Text("Encrypted message...", color = AnthropicTextMuted, fontSize = 14.sp) },
                             shape = RoundedCornerShape(24.dp),
                             maxLines = 4,
+                            @Suppress("DEPRECATION")
                             keyboardOptions = KeyboardOptions(autoCorrect = false),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedContainerColor = AnthropicSurfaceVariant,
@@ -384,7 +379,6 @@ fun CleanChatScreen(
 
                         Spacer(modifier = Modifier.width(6.dp))
 
-                        // Morphing Mic -> Send Button
                         if (inputText.isBlank()) {
                             IconButton(
                                 onClick = onMicClick,
@@ -394,7 +388,7 @@ fun CleanChatScreen(
                                     .background(AnthropicTerracotta)
                             ) {
                                 Icon(
-                                    Icons.Default.Mic,
+                                    AppIcons.Mic,
                                     contentDescription = "Hold / Tap to record Opus voice note",
                                     tint = AnthropicCream,
                                     modifier = Modifier.size(22.dp)
@@ -437,11 +431,4 @@ fun CleanChatScreen(
             }
         )
     }
-}
-
-private fun formatDuration(ms: Long): String {
-    val totalSec = ms / 1000
-    val min = totalSec / 60
-    val sec = totalSec % 60
-    return String.format(Locale.US, "%02d:%02d", min, sec)
 }

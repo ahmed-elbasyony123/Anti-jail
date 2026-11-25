@@ -16,15 +16,10 @@ local.properties
 .DS_Store
 Thumbs.db
 
-# Web client build output
-web-client/dist/
-
 # Rust
 target/
 **/target/
 Cargo.lock
 
-# Patches & temporary work directories
+# Patches & build artifacts
 *.patch
-relay-v2-files/
-decisions/

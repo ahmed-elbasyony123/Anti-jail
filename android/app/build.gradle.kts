@@ -12,8 +12,8 @@ android {
         applicationId = "com.ghostkey.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "2.7.1"
+        versionCode = 22
+        versionName = "2.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -28,6 +28,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // Fall back to the debug signing key when no release keystore is configured
+            // so CI/local release builds remain directly installable with full R8 shrinking.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -49,6 +52,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -60,6 +64,8 @@ android {
             excludes += "META-INF/versions/**"
             excludes += "META-INF/*.version"
             excludes += "META-INF/*.kotlin_module"
+            excludes += "org/bouncycastle/pqc/**"
+            excludes += "org/bouncycastle/x509/**"
         }
     }
 }
@@ -75,9 +81,9 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
 
     // Standalone Embedded OpenPGP Engine (Bouncy Castle)

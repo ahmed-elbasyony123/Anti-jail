@@ -1,6 +1,7 @@
 package com.ghostkey.app.ui.dialogs
 
 import android.Manifest
+import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -23,14 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.QrCode
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,7 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -47,10 +41,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.ghostkey.app.MainActivity
 import com.ghostkey.app.crypto.ContactCard
 import com.ghostkey.app.crypto.InPersonPairing
 import com.ghostkey.app.data.Contact
 import com.ghostkey.app.ui.*
+import com.ghostkey.app.util.GhostKeyUtils
 import java.util.concurrent.Executors
 
 @Composable
@@ -87,7 +84,7 @@ fun MyQrCodeDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.QrCode, contentDescription = null, tint = AnthropicTerracotta)
+                Icon(AppIcons.QrCode, contentDescription = null, tint = AnthropicTerracotta)
                 Text(
                     "My Contact QR Card",
                     color = AnthropicCream,
@@ -125,7 +122,6 @@ fun MyQrCodeDialog(
                     }
                 }
 
-                // Details Card
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -156,13 +152,13 @@ fun MyQrCodeDialog(
                 OutlinedButton(
                     onClick = {
                         val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clip.setPrimaryClip(android.content.ClipData.newPlainText("GhostKey Contact Card", contactCardJson))
+                        clip.setPrimaryClip(ClipData.newPlainText("GhostKey Contact Card", contactCardJson))
                         Toast.makeText(context, "Contact Card JSON copied to clipboard", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicTerracotta)
                 ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(AppIcons.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Copy Contact Card Data", fontSize = 12.sp)
                 }
@@ -183,7 +179,7 @@ fun PairContactDialog(
     onContactVerified: (Contact) -> Unit
 ) {
     val context = LocalContext.current
-    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Live Camera, 1 = Manual/Image
+    var selectedTab by remember { mutableIntStateOf(0) }
     var inputText by remember { mutableStateOf("") }
     var parsedCard by remember { mutableStateOf<ContactCard?>(null) }
     var customAlias by remember { mutableStateOf("") }
@@ -211,7 +207,7 @@ fun PairContactDialog(
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val bitmap = BitmapFactory.decodeStream(stream)
-                    val text = InPersonPairing.decodeQrFromBitmap(bitmap)
+                    val text = bitmap?.let { InPersonPairing.decodeQrFromBitmap(it) }
                     if (text != null) {
                         inputText = text
                         val card = InPersonPairing.parseContactCard(text)
@@ -247,7 +243,7 @@ fun PairContactDialog(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.Security, contentDescription = null, tint = AnthropicTerracotta)
+                Icon(AppIcons.Shield, contentDescription = null, tint = AnthropicTerracotta)
                 Text(
                     if (parsedCard == null) "In-Person Contact Pairing" else "Verify Safety Code (SAS)",
                     color = AnthropicCream,
@@ -264,7 +260,6 @@ fun PairContactDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (parsedCard == null) {
-                    // Mode Tabs: Live Camera vs Manual/Paste
                     TabRow(
                         selectedTabIndex = selectedTab,
                         containerColor = AnthropicSurfaceVariant,
@@ -275,19 +270,29 @@ fun PairContactDialog(
                             selected = selectedTab == 0,
                             onClick = { selectedTab = 0 },
                             text = { Text("Live Camera", fontSize = 12.sp, color = if (selectedTab == 0) AnthropicTerracotta else AnthropicTextMuted) },
-                            icon = { Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            icon = { Icon(AppIcons.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         Tab(
                             selected = selectedTab == 1,
                             onClick = { selectedTab = 1 },
                             text = { Text("Paste / Image", fontSize = 12.sp, color = if (selectedTab == 1) AnthropicTerracotta else AnthropicTextMuted) },
-                            icon = { Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                            icon = { Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                     }
 
                     if (selectedTab == 0) {
-                        // Live Camera Scanner View
                         if (hasCameraPermission) {
+                            val lifecycleOwner = LocalLifecycleOwner.current
+                            val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+                            var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+
+                            DisposableEffect(Unit) {
+                                onDispose {
+                                    try { boundProvider?.unbindAll() } catch (_: Exception) {}
+                                    analysisExecutor.shutdownNow()
+                                }
+                            }
+
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -297,7 +302,6 @@ fun PairContactDialog(
                                     .border(2.dp, AnthropicTerracotta.copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val lifecycleOwner = LocalLifecycleOwner.current
                                 AndroidView(
                                     factory = { ctx ->
                                         val previewView = PreviewView(ctx).apply {
@@ -309,6 +313,7 @@ fun PairContactDialog(
                                         val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                                         cameraProviderFuture.addListener({
                                             val cameraProvider = cameraProviderFuture.get()
+                                            boundProvider = cameraProvider
                                             val preview = Preview.Builder().build().also {
                                                 it.setSurfaceProvider(previewView.surfaceProvider)
                                             }
@@ -316,8 +321,7 @@ fun PairContactDialog(
                                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                                 .build()
 
-                                            val executor = Executors.newSingleThreadExecutor()
-                                            imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                                            imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
                                                 val scanned = InPersonPairing.decodeQrFromImageProxy(imageProxy)
                                                 imageProxy.close()
                                                 if (scanned != null && parsedCard == null) {
@@ -347,7 +351,6 @@ fun PairContactDialog(
                                     modifier = Modifier.fillMaxSize()
                                 )
 
-                                // Scanning Target Reticle Overlay
                                 Box(
                                     modifier = Modifier
                                         .size(180.dp)
@@ -362,7 +365,6 @@ fun PairContactDialog(
                                 modifier = Modifier.fillMaxWidth()
                             )
                         } else {
-                            // Permission Request Card
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -371,7 +373,7 @@ fun PairContactDialog(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(36.dp))
+                                Icon(AppIcons.CameraAlt, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(36.dp))
                                 Text(
                                     "Camera Access Required",
                                     color = AnthropicCream,
@@ -393,7 +395,6 @@ fun PairContactDialog(
                             }
                         }
                     } else {
-                        // Manual / Paste / Gallery Image
                         Text(
                             "Paste your friend's Contact Card JSON or OpenPGP Public Key Block:",
                             color = AnthropicTextMid,
@@ -423,7 +424,7 @@ fun PairContactDialog(
                                 focusedContainerColor = AnthropicDarkNeutral,
                                 unfocusedContainerColor = AnthropicDarkNeutral
                             ),
-                            textStyle = androidx.compose.ui.text.TextStyle(
+                            textStyle = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp
                             )
@@ -435,8 +436,7 @@ fun PairContactDialog(
                         ) {
                             OutlinedButton(
                                 onClick = {
-                                    val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val item = clip.primaryClip?.getItemAt(0)?.text?.toString()
+                                    val item = GhostKeyUtils.readClipboardText(context)
                                     if (!item.isNullOrBlank()) {
                                         inputText = item
                                         val card = InPersonPairing.parseContactCard(item)
@@ -454,20 +454,20 @@ fun PairContactDialog(
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicCream)
                             ) {
-                                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("Paste", fontSize = 12.sp)
                             }
 
                             OutlinedButton(
                                 onClick = {
-                                    com.ghostkey.app.MainActivity.isExternalPickerActive = true
+                                    MainActivity.isExternalPickerActive = true
                                     imagePickerLauncher.launch("image/*")
                                 },
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicTerracotta)
                             ) {
-                                Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(AppIcons.Image, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("From Image", fontSize = 12.sp)
                             }
@@ -482,7 +482,6 @@ fun PairContactDialog(
                         )
                     }
                 } else {
-                    // Contact Parsed — Show Verification Card & Safety Code (SAS)
                     val card = parsedCard!!
                     Column(
                         modifier = Modifier
@@ -526,7 +525,6 @@ fun PairContactDialog(
                         )
                     }
 
-                    // In-Person Safety Code (SAS)
                     if (sasCode != null) {
                         Column(
                             modifier = Modifier
@@ -544,10 +542,9 @@ fun PairContactDialog(
                                 fontWeight = FontWeight.Bold
                             )
 
-                            // Render 30 digits in groups of 5 for effortless human comparison
-                            val chunks = sasCode.chunked(5).joinToString("  ")
+                            // sasCode is already formatted in 6 groups of 5 digits separated by spaces
                             Text(
-                                text = chunks,
+                                text = sasCode.replace(" ", "  "),
                                 color = AnthropicCream,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,

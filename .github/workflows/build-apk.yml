@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: android/app/src/main/jniLibs
-          key: arti-jni-arm64-v1-${{ hashFiles('rust/arti-mobile/**') }}
+          key: arti-jni-arm64-v2-${{ hashFiles('rust/arti-mobile/**') }}
 
       - name: Set up Rust Toolchain
         if: steps.cache-arti.outputs.cache-hit != 'true'
@@ -63,15 +63,15 @@ jobs:
           mkdir -p ../../android/app/src/main/jniLibs
           cargo ndk -t arm64-v8a --platform 26 -o ../../android/app/src/main/jniLibs build --release
 
-      - name: Build Debug APK with Gradle
+      - name: Build Shrunk Release APK with Gradle
         working-directory: ./android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: GhostKey-Android-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -80,14 +80,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v2-preview
-          name: "GhostKey v2 preview (debug build)"
+          name: "GhostKey v2 preview"
           prerelease: true
           make_latest: false
           target_commitish: ${{ github.sha }}
           body: |
             Preview build from branch `${{ github.ref_name }}` (commit `${{ github.sha }}`).
-            Debug-signed APK with Embedded Arti Tor engine. Uses wire protocol v2.
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+            R8-shrunk APK with Embedded Arti Tor engine. Uses wire protocol v2.
+          files: android/app/build/outputs/apk/release/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -95,7 +95,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         id: release_meta
         run: |
-          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' android/app/build.gradle.kts || echo "2.6.1")
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' android/app/build.gradle.kts || echo "2.7.1")
           TAG="v${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1 || gh release view "$TAG" >/dev/null 2>&1; then
             TAG="v${VERSION}-build.${{ github.run_number }}"
@@ -116,6 +116,6 @@ jobs:
           prerelease: false
           make_latest: true
           generate_release_notes: true
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          files: android/app/build/outputs/apk/release/app-release.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

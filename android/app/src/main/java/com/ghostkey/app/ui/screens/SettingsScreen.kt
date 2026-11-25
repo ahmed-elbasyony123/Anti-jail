@@ -1,5 +1,9 @@
 package com.ghostkey.app.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -13,13 +17,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -28,18 +38,15 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ghostkey.app.BuildConfig
 import com.ghostkey.app.crypto.PgpKeyPairArmored
+import com.ghostkey.app.net.ArtiTorManager
 import com.ghostkey.app.ui.*
+import com.ghostkey.app.util.GhostKeyUtils
+import java.util.Date
 
 /**
- * Dedicated Modern Telegram-style Grouped Settings Screen with Anthropic design tokens.
- *
- * Logically organized into:
- * 1. 👤 Profile & Identity (Pseudonym / Display Name, Drop ID, Fingerprint)
- * 2. 🧅 Tor & Network Routing (Relay server, Built-in Arti Rust engine)
- * 3. 🔔 Notifications & Background Sync (Tor Push Notifications keep-alive)
- * 4. 🔒 Privacy & Device Security (Biometric/PIN screen lock, Ephemeral RAM-only mode)
- * 5. 🔑 Cryptography & Keys (Key generation, Safety numbers verification)
+ * Grouped Settings Screen with Anthropic design tokens.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,19 +90,17 @@ fun SettingsScreen(
     var appPinError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
 
-    // Auto-save when user uses Android gesture navigation / hardware back
-    BackHandler {
+    fun commitSettings(showToast: Boolean, navigateBack: Boolean) {
         val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
         onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
-        onBack()
+        if (showToast) {
+            Toast.makeText(context, "Saved! Connecting to relay...", Toast.LENGTH_SHORT).show()
+        }
+        if (navigateBack) onBack()
     }
 
-    // Persist changes if screen is disposed or activity is stopped
-    DisposableEffect(Unit) {
-        onDispose {
-            val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
-            onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
-        }
+    BackHandler {
+        commitSettings(showToast = false, navigateBack = true)
     }
 
     Scaffold(
@@ -110,11 +115,7 @@ fun SettingsScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
-                        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
-                        onBack()
-                    }) {
+                    IconButton(onClick = { commitSettings(showToast = false, navigateBack = true) }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
@@ -123,12 +124,7 @@ fun SettingsScreen(
                     }
                 },
                 actions = {
-                    TextButton(onClick = {
-                        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
-                        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
-                        Toast.makeText(context, "Settings saved! Connecting...", Toast.LENGTH_SHORT).show()
-                        onBack()
-                    }) {
+                    TextButton(onClick = { commitSettings(showToast = true, navigateBack = true) }) {
                         Text("Save", color = AnthropicTerracotta, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     }
                 },
@@ -148,13 +144,10 @@ fun SettingsScreen(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // -------------------------------------------------------------------------
-            // 1. Profile Banner (Telegram Style)
-            // -------------------------------------------------------------------------
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = AnthropicSurface),
-                border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AnthropicBorder))
+                border = CardDefaults.outlinedCardBorder().copy(brush = SolidColor(AnthropicBorder))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -211,9 +204,6 @@ fun SettingsScreen(
                 }
             }
 
-            // -------------------------------------------------------------------------
-            // 2. Tor & Network Routing
-            // -------------------------------------------------------------------------
             SettingsGroup(title = "TOR NETWORK & ARTI ENGINE") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -253,18 +243,14 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(
                         onClick = {
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            val clipData = clipboard.primaryClip
-                            if (clipData != null && clipData.itemCount > 0) {
-                                val pasted = clipData.getItemAt(0).text?.toString()?.trim() ?: ""
-                                if (pasted.isNotBlank()) {
-                                    relayUrl = pasted
-                                    if (relayUrl.contains(".onion", ignoreCase = true)) {
-                                        useTorSocks = true
-                                    }
-                                    onAutoSave(relayUrl, alias)
-                                    Toast.makeText(context, "Pasted from clipboard! (تم اللصق)", Toast.LENGTH_SHORT).show()
+                            val pasted = GhostKeyUtils.readClipboardText(context)?.trim().orEmpty()
+                            if (pasted.isNotBlank()) {
+                                relayUrl = pasted
+                                if (relayUrl.contains(".onion", ignoreCase = true)) {
+                                    useTorSocks = true
                                 }
+                                onAutoSave(relayUrl, alias)
+                                Toast.makeText(context, "Pasted from clipboard! (تم اللصق)", Toast.LENGTH_SHORT).show()
                             }
                         },
                         modifier = Modifier
@@ -273,14 +259,14 @@ fun SettingsScreen(
                             .background(AnthropicSurface)
                             .border(1.dp, AnthropicBorder, RoundedCornerShape(12.dp))
                     ) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = AnthropicTerracotta)
+                        Icon(AppIcons.ContentPaste, contentDescription = "Paste", tint = AnthropicTerracotta)
                     }
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
                 SettingsToggleRow(
-                    icon = Icons.Default.Public,
+                    icon = AppIcons.Public,
                     iconBg = AnthropicTerracotta,
                     title = "Route Traffic via Tor",
                     subtitle = "Built-in Arti Rust engine with auto-fallback to Orbot",
@@ -291,11 +277,7 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
-                    onClick = {
-                        val effectiveTor = useTorSocks || relayUrl.contains(".onion", ignoreCase = true)
-                        onSaveSettings(relayUrl, effectiveTor, keepAlive, ephemeralMode, lockEnabled, alias)
-                        Toast.makeText(context, "Saved! Connecting to relay...", Toast.LENGTH_SHORT).show()
-                    },
+                    onClick = { commitSettings(showToast = true, navigateBack = false) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp),
@@ -305,7 +287,7 @@ fun SettingsScreen(
                     ),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("Save & Connect (حفظ وإعادة الاتصال)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
@@ -314,39 +296,36 @@ fun SettingsScreen(
 
                 OutlinedButton(
                     onClick = {
-                        val artiAvailable = com.ghostkey.app.net.ArtiTorManager.isAvailable
-                        val artiStateStr = com.ghostkey.app.net.ArtiTorManager.state.value.toString()
-                        val abis = android.os.Build.SUPPORTED_ABIS.joinToString(", ")
+                        val artiAvailable = ArtiTorManager.isAvailable
+                        val artiStateStr = ArtiTorManager.state.value.toString()
+                        val abis = Build.SUPPORTED_ABIS.joinToString(", ")
                         val diag = """
                             --- GHOSTKEY DIAGNOSTICS ---
-                            App Version: 2.6.1
+                            App Version: ${BuildConfig.VERSION_NAME}
                             Relay URL: '$relayUrl'
                             Use Tor SOCKS: $useTorSocks
                             Arti Native Library Loaded: $artiAvailable
                             Arti Engine State: $artiStateStr
-                            Device Model: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}
-                            Android SDK: ${android.os.Build.VERSION.SDK_INT}
+                            Device Model: ${Build.MANUFACTURER} ${Build.MODEL}
+                            Android SDK: ${Build.VERSION.SDK_INT}
                             Supported ABIs: $abis
-                            Time: ${java.util.Date()}
+                            Time: ${Date()}
                             ----------------------------
                         """.trimIndent()
-                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("GhostKey Diagnostics", diag))
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("GhostKey Diagnostics", diag))
                         Toast.makeText(context, "Diagnostics copied to clipboard! (تم نسخ التقرير)", Toast.LENGTH_LONG).show()
                     },
                     modifier = Modifier.fillMaxWidth().height(42.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicSlate),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(AppIcons.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Copy Diagnostics (نسخ تقرير تشخيص الاتصال)", fontSize = 12.sp)
                 }
             }
 
-            // -------------------------------------------------------------------------
-            // 3. Notifications & Background Keep-Alive
-            // -------------------------------------------------------------------------
             SettingsGroup(title = "NOTIFICATIONS & TOR PUSH") {
                 SettingsToggleRow(
                     icon = Icons.Default.Notifications,
@@ -367,7 +346,7 @@ fun SettingsScreen(
                             .background(AnthropicSurfaceVariant),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.VisibilityOff, contentDescription = null, tint = AnthropicTextMuted, modifier = Modifier.size(20.dp))
+                        Icon(AppIcons.VisibilityOff, contentDescription = null, tint = AnthropicTextMuted, modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
@@ -377,12 +356,9 @@ fun SettingsScreen(
                 }
             }
 
-            // -------------------------------------------------------------------------
-            // 4. Privacy & Device Security
-            // -------------------------------------------------------------------------
             SettingsGroup(title = "PRIVACY & DEVICE SECURITY") {
                 SettingsToggleRow(
-                    icon = Icons.Default.Fingerprint,
+                    icon = AppIcons.Fingerprint,
                     iconBg = AnthropicSage,
                     title = "Require Device Lock",
                     subtitle = "Demands device PIN, pattern or biometric fingerprint upon opening",
@@ -393,7 +369,7 @@ fun SettingsScreen(
                 HorizontalDivider(color = AnthropicBorderSubtle, modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsToggleRow(
-                    icon = Icons.Default.Memory,
+                    icon = AppIcons.Memory,
                     iconBg = AnthropicDarkNeutral,
                     title = "Ephemeral RAM-Only Mode",
                     subtitle = "Identity is never saved to Android KeyStore; purged on every exit",
@@ -466,12 +442,9 @@ fun SettingsScreen(
                 }
             }
 
-            // -------------------------------------------------------------------------
-            // 5. Cryptography & Keys
-            // -------------------------------------------------------------------------
             SettingsGroup(title = "CRYPTOGRAPHY & PGP KEYS") {
                 SettingsActionRow(
-                    icon = Icons.Default.VpnKey,
+                    icon = AppIcons.Key,
                     iconBg = AnthropicTerracotta,
                     title = "Export / Copy Public Key",
                     subtitle = "Copies armored public key with Drop-ID to clipboard (auto-clears)",
@@ -481,7 +454,7 @@ fun SettingsScreen(
                 HorizontalDivider(color = AnthropicBorderSubtle, modifier = Modifier.padding(vertical = 8.dp))
 
                 SettingsActionRow(
-                    icon = Icons.Default.VerifiedUser,
+                    icon = AppIcons.VerifiedUser,
                     iconBg = AnthropicSage,
                     title = "Safety Numbers & Verification",
                     subtitle = "Compare security codes with peer to prevent MITM attacks",
@@ -494,7 +467,7 @@ fun SettingsScreen(
                     icon = Icons.Default.Refresh,
                     iconBg = AnthropicCrimson,
                     title = "Generate New Identity",
-                    subtitle = "Creates fresh 4096-bit Ed25519/X25519 keypair and new Drop ID",
+                    subtitle = "Creates fresh Ed25519/X25519 keypair and new Drop ID",
                     onClick = onGenerateNewKey
                 )
             }
@@ -688,7 +661,7 @@ private fun SettingsGroup(
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = AnthropicSurface),
-            border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AnthropicBorder))
+            border = CardDefaults.outlinedCardBorder().copy(brush = SolidColor(AnthropicBorder))
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 content()
@@ -766,6 +739,6 @@ private fun SettingsActionRow(
             Text(title, color = AnthropicCream, fontSize = 14.sp, fontWeight = FontWeight.Medium)
             Text(subtitle, color = AnthropicTextMuted, fontSize = 11.sp)
         }
-        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = AnthropicTextMuted)
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = AnthropicTextMuted)
     }
 }

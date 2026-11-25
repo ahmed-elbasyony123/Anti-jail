@@ -6,21 +6,18 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.data.ChatMessage
 import com.ghostkey.app.ui.*
-import java.util.Locale
+import com.ghostkey.app.util.GhostKeyUtils
 
 @Composable
 fun AudioBubble(
@@ -56,7 +53,7 @@ fun AudioBubble(
                     .background(AnthropicTerracotta)
             ) {
                 Icon(
-                    imageVector = if (isThisPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    imageVector = if (isThisPlaying) AppIcons.Pause else Icons.Default.PlayArrow,
                     contentDescription = if (isThisPlaying) "Pause voice note" else "Play voice note",
                     tint = AnthropicCream,
                     modifier = Modifier.size(22.dp)
@@ -83,12 +80,12 @@ fun AudioBubble(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = formatTime(if (isThisActive) currentMs else 0L),
+                        text = GhostKeyUtils.formatDurationMmSs(if (isThisActive) currentMs else 0L),
                         color = AnthropicTextMuted,
                         fontSize = 10.sp
                     )
                     Text(
-                        text = "Voice note · " + formatTime(totalMs),
+                        text = "Voice note · " + GhostKeyUtils.formatDurationMmSs(totalMs),
                         color = AnthropicTextMuted,
                         fontSize = 10.sp
                     )
@@ -96,11 +93,4 @@ fun AudioBubble(
             }
         }
     }
-}
-
-private fun formatTime(ms: Long): String {
-    val totalSec = ms / 1000
-    val min = totalSec / 60
-    val sec = totalSec % 60
-    return String.format(Locale.US, "%02d:%02d", min, sec)
 }

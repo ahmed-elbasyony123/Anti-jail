@@ -1,5 +1,6 @@
 package com.ghostkey.app.crypto
 
+import com.ghostkey.app.util.GhostKeyUtils
 import org.bouncycastle.bcpg.ArmoredOutputStream
 import org.bouncycastle.bcpg.CompressionAlgorithmTags
 import org.bouncycastle.bcpg.HashAlgorithmTags
@@ -81,12 +82,14 @@ object StandalonePgpEngine {
     }
 
     private val publicKeyCache: MutableMap<String, PGPPublicKey> = Collections.synchronizedMap(BoundedLruMap(100))
+    private val publicRingCache: MutableMap<String, PGPPublicKeyRing> = Collections.synchronizedMap(BoundedLruMap(100))
     private val signingKeyCache: MutableMap<String, Pair<PGPSecretKey, PGPPrivateKey>> = Collections.synchronizedMap(BoundedLruMap(50))
     private val secretRingCollectionCache: MutableMap<String, PGPSecretKeyRingCollection> = Collections.synchronizedMap(BoundedLruMap(50))
     private val peerKeyInfoCache: MutableMap<String, PeerKeyInfo> = Collections.synchronizedMap(BoundedLruMap(100))
 
     fun clearCache() {
         publicKeyCache.clear()
+        publicRingCache.clear()
         signingKeyCache.clear()
         secretRingCollectionCache.clear()
         peerKeyInfoCache.clear()
@@ -136,10 +139,8 @@ object StandalonePgpEngine {
     fun generateKeyPair(alias: String? = null): PgpKeyPairArmored {
         val readToken = randomHex32()
         val dropId = deriveDropId(readToken)
-        val cleanAlias = alias?.trim()
-            ?.replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F<>]"), "")
-            ?.take(64)
-        val userId = if (!cleanAlias.isNullOrBlank()) "$cleanAlias <ghostkey drop:$dropId>" else "ghostkey drop:$dropId"
+        val cleanAlias = GhostKeyUtils.sanitizeAlias(alias)
+        val userId = if (cleanAlias.isNotBlank()) "$cleanAlias <ghostkey drop:$dropId>" else "ghostkey drop:$dropId"
 
         val edGen = KeyPairGenerator.getInstance("EdDSA", bcProvider)
         edGen.initialize(ECNamedCurveGenParameterSpec("Ed25519"), secureRandom)
@@ -228,13 +229,18 @@ object StandalonePgpEngine {
     // Public key parsing
     // ---------------------------------------------------------------------------------------
 
-    private fun readPublicRings(armored: String): PGPPublicKeyRingCollection {
-        val stream = PGPUtil.getDecoderStream(ByteArrayInputStream(armored.toByteArray(Charsets.UTF_8)))
+    private fun readSinglePublicRing(armored: String): PGPPublicKeyRing {
+        val trimmed = armored.trim()
+        publicRingCache[trimmed]?.let { return it }
+        val stream = PGPUtil.getDecoderStream(ByteArrayInputStream(trimmed.toByteArray(Charsets.UTF_8)))
         val collection = PGPPublicKeyRingCollection(stream, fingerprintCalc())
         if (collection.size() > 1) {
             throw IllegalArgumentException("Multiple key rings in public key block are not permitted")
         }
-        return collection
+        val ring = collection.firstOrNull()
+            ?: throw IllegalArgumentException("No public key ring found in key block")
+        publicRingCache[trimmed] = ring
+        return ring
     }
 
     private fun isExpired(key: PGPPublicKey, now: Date): Boolean {
@@ -244,6 +250,18 @@ object StandalonePgpEngine {
     }
 
     private fun isUsable(key: PGPPublicKey, now: Date): Boolean = !key.isRevoked && !isExpired(key, now)
+
+    private fun findUsableEncryptionKey(ring: PGPPublicKeyRing, now: Date): PGPPublicKey {
+        val master = ring.publicKey ?: throw IllegalArgumentException("Missing primary key in key block")
+        if (isUsable(master, now)) {
+            for (key in ring) {
+                if (key.isEncryptionKey && isUsable(key, now)) {
+                    return key
+                }
+            }
+        }
+        throw IllegalArgumentException("No valid (non-revoked, non-expired) encryption key found in text")
+    }
 
     /**
      * Find the encryption subkey of an armored public key block. Revoked or expired subkeys
@@ -255,30 +273,18 @@ object StandalonePgpEngine {
         if (cached != null && isUsable(cached, now)) {
             return cached
         }
-        for (ring in readPublicRings(trimmed)) {
-            val master = ring.publicKey ?: continue
-            if (!isUsable(master, now)) continue
-            for (key in ring) {
-                if (key.isEncryptionKey && isUsable(key, now)) {
-                    publicKeyCache[trimmed] = key
-                    return key
-                }
-            }
-        }
-        throw IllegalArgumentException("No valid (non-revoked, non-expired) encryption key found in text")
+        val key = findUsableEncryptionKey(readSinglePublicRing(trimmed), now)
+        publicKeyCache[trimmed] = key
+        return key
     }
 
     /**
      * Extract the master fingerprint as a 40-character hex string.
      */
     fun getFingerprint(armored: String): String {
-        for (ring in readPublicRings(armored)) {
-            val masterKey = ring.publicKey
-            if (masterKey != null) {
-                return hex(masterKey.fingerprint, upper = true)
-            }
-        }
-        throw IllegalArgumentException("Could not extract fingerprint from key block")
+        val masterKey = readSinglePublicRing(armored).publicKey
+            ?: throw IllegalArgumentException("Could not extract fingerprint from key block")
+        return hex(masterKey.fingerprint, upper = true)
     }
 
     /**
@@ -288,27 +294,42 @@ object StandalonePgpEngine {
      * altered without breaking the self-signature. The "Comment: Drop-ID:" armor header is the
      * convenience copy; if both exist they must agree. Returns null if the block has no Drop-ID.
      */
-    fun extractDropId(armored: String): String? {
+    fun extractDropId(armored: String): String? =
+        extractDropIdAndAlias(armored, readSinglePublicRing(armored)).first
+
+    private fun extractDropIdAndAlias(armored: String, ring: PGPPublicKeyRing): Pair<String?, String?> {
         val fromComment = DROP_ID_COMMENT.find(armored)?.groupValues?.get(1)?.lowercase()
+        val aliasRegex = Regex("""^(.*?)\s*<ghostkey\s+drop:""")
 
         var fromUserId: String? = null
-        for (ring in readPublicRings(armored)) {
-            val master = ring.publicKey ?: continue
+        var extractedAlias: String? = null
+        val master = ring.publicKey
+        if (master != null) {
             val uids = master.userIDs
             while (uids.hasNext()) {
                 val uid = uids.next() as String
-                val match = DROP_ID_USER_ID.find(uid) ?: continue
-                if (!selfCertificationValid(master, uid)) {
-                    throw IllegalArgumentException("Public key User ID has an invalid self-signature")
+                val dropMatch = DROP_ID_USER_ID.find(uid)
+                val aliasMatch = aliasRegex.find(uid)
+                if (dropMatch != null || aliasMatch != null) {
+                    val certValid = selfCertificationValid(master, uid)
+                    if (dropMatch != null) {
+                        if (!certValid) {
+                            throw IllegalArgumentException("Public key User ID has an invalid self-signature")
+                        }
+                        fromUserId = dropMatch.groupValues[1].lowercase()
+                    }
+                    if (aliasMatch != null && certValid && extractedAlias == null) {
+                        val clean = GhostKeyUtils.sanitizeAlias(aliasMatch.groupValues[1])
+                        if (clean.isNotBlank()) extractedAlias = clean
+                    }
                 }
-                fromUserId = match.groupValues[1].lowercase()
             }
         }
 
         if (fromUserId != null && fromComment != null && fromUserId != fromComment) {
             throw IllegalArgumentException("Drop-ID in the key header does not match the key itself")
         }
-        return fromUserId ?: fromComment
+        return (fromUserId ?: fromComment) to extractedAlias
     }
 
     private fun selfCertificationValid(master: PGPPublicKey, userId: String): Boolean {
@@ -326,23 +347,8 @@ object StandalonePgpEngine {
         return false
     }
 
-    fun extractAlias(armored: String): String? {
-        val aliasRegex = Regex("""^(.*?)\s*<ghostkey\s+drop:""")
-        for (ring in readPublicRings(armored)) {
-            val master = ring.publicKey ?: continue
-            val uids = master.userIDs
-            while (uids.hasNext()) {
-                val uid = uids.next() as String
-                val match = aliasRegex.find(uid)
-                if (match != null && selfCertificationValid(master, uid)) {
-                    val raw = match.groupValues[1].trim()
-                    val clean = raw.replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F]"), "").take(64)
-                    if (clean.isNotBlank()) return clean
-                }
-            }
-        }
-        return null
-    }
+    fun extractAlias(armored: String): String? =
+        extractDropIdAndAlias(armored, readSinglePublicRing(armored)).second
 
     /**
      * Validate a pasted peer key block and return what the app needs to store.
@@ -351,8 +357,12 @@ object StandalonePgpEngine {
     fun parsePeerKey(armored: String): PeerKeyInfo {
         val trimmed = armored.trim()
         return peerKeyInfoCache.getOrPut(trimmed) {
-            readPublicKey(trimmed)                       // throws if no usable encryption key
-            PeerKeyInfo(trimmed, getFingerprint(trimmed), extractDropId(trimmed), extractAlias(trimmed))
+            val ring = readSinglePublicRing(trimmed)
+            val encKey = findUsableEncryptionKey(ring, Date())
+            publicKeyCache[trimmed] = encKey
+            val fp = hex(ring.publicKey.fingerprint, upper = true)
+            val (dropId, alias) = extractDropIdAndAlias(trimmed, ring)
+            PeerKeyInfo(trimmed, fp, dropId, alias)
         }
     }
 
@@ -588,13 +598,8 @@ object StandalonePgpEngine {
                 for (candArmored in candidatePeerKeysArmored) {
                     if (candArmored.isBlank()) continue
                     try {
-                        var peerRing: PGPPublicKeyRing? = null
-                        for (ring in readPublicRings(candArmored)) {
-                            if (ring.getPublicKey(ops.keyID) != null) {
-                                peerRing = ring
-                                break
-                            }
-                        }
+                        val ring = readSinglePublicRing(candArmored)
+                        val peerRing = if (ring.getPublicKey(ops.keyID) != null) ring else null
                         if (peerRing != null) {
                             val signingKey = peerRing.getPublicKey(ops.keyID)
                             val masterKey = peerRing.publicKey

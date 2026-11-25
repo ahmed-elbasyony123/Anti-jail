@@ -1,5 +1,4 @@
-// GhostKey web core (wire protocol v2). Shared by the standalone page (server/public/app.js)
-// and the React client (web-client). Pure logic: no DOM access, so it can be unit-tested in Node.
+// GhostKey web core (wire protocol v2). Pure logic: no DOM access, so it can be unit-tested in Node.
 //
 //   import { createCore } from './ghostkey-core.mjs';
 //   const core = createCore(openpgp);          // openpgp.js v6 (global in the browser, npm in Node)

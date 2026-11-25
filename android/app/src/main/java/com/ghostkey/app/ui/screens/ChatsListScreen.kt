@@ -8,25 +8,27 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.data.ChatSummary
 import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.*
-import java.text.SimpleDateFormat
-import java.util.*
+import com.ghostkey.app.util.GhostKeyUtils
 
 /**
- * Modern Telegram-style Chats & Contacts List Screen.
+ * Telegram-style Chats & Contacts List Screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,6 +45,7 @@ fun ChatsListScreen(
     onOpenSecurityDiagnostics: () -> Unit = {}
 ) {
     var showFabMenu by remember { mutableStateOf(false) }
+    val (statusText, dotColor) = relayStatus.statusDisplay()
 
     Scaffold(
         topBar = {
@@ -57,26 +60,12 @@ fun ChatsListScreen(
                                 color = AnthropicCream
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            val dotColor = when (relayStatus) {
-                                RelayStatus.CONNECTED -> AnthropicSage
-                                RelayStatus.BUILDING_CIRCUIT -> AnthropicTerracotta
-                                RelayStatus.AUTH_FAILED, RelayStatus.ORBOT_NOT_RUNNING -> Color(0xFFD32F2F)
-                                else -> AnthropicTextMuted
-                            }
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(CircleShape)
                                     .background(dotColor)
                             )
-                        }
-                        val statusText = when (relayStatus) {
-                            RelayStatus.CONNECTED -> "Connected over Tor 🧅"
-                            RelayStatus.BUILDING_CIRCUIT -> "Establishing Tor circuit..."
-                            RelayStatus.ORBOT_NOT_RUNNING -> "Orbot / Tor not running"
-                            RelayStatus.TIMED_OUT -> "Connection timed out"
-                            RelayStatus.AUTH_FAILED -> "Mailbox auth failed"
-                            RelayStatus.DISCONNECTED -> "Disconnected"
                         }
                         Text(
                             text = statusText,
@@ -92,7 +81,7 @@ fun ChatsListScreen(
                 },
                 actions = {
                     IconButton(onClick = onShowMyQr) {
-                        Icon(Icons.Default.QrCode, contentDescription = "My QR Code", tint = AnthropicTerracotta)
+                        Icon(AppIcons.QrCode, contentDescription = "My QR Code", tint = AnthropicTerracotta)
                     }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings", tint = AnthropicCream)
@@ -125,7 +114,7 @@ fun ChatsListScreen(
                 ) {
                     DropdownMenuItem(
                         text = { Text("In-Person QR Pairing (SAS)", color = AnthropicCream) },
-                        leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AnthropicSage) },
+                        leadingIcon = { Icon(AppIcons.QrCodeScanner, contentDescription = null, tint = AnthropicSage) },
                         onClick = {
                             showFabMenu = false
                             onPairContactQr()
@@ -133,7 +122,7 @@ fun ChatsListScreen(
                     )
                     DropdownMenuItem(
                         text = { Text("New Direct E2EE Chat", color = AnthropicCream) },
-                        leadingIcon = { Icon(Icons.Default.PersonAdd, contentDescription = null, tint = AnthropicTerracotta) },
+                        leadingIcon = { Icon(AppIcons.PersonAdd, contentDescription = null, tint = AnthropicTerracotta) },
                         onClick = {
                             showFabMenu = false
                             onNewDirectChat()
@@ -141,7 +130,7 @@ fun ChatsListScreen(
                     )
                     DropdownMenuItem(
                         text = { Text("New Encrypted Group", color = AnthropicCream) },
-                        leadingIcon = { Icon(Icons.Default.GroupAdd, contentDescription = null, tint = AnthropicSlate) },
+                        leadingIcon = { Icon(AppIcons.GroupAdd, contentDescription = null, tint = AnthropicSlate) },
                         onClick = {
                             showFabMenu = false
                             onNewGroupChat()
@@ -153,7 +142,6 @@ fun ChatsListScreen(
         containerColor = AnthropicDarkBg
     ) { innerPadding ->
         if (chats.isEmpty()) {
-            // Telegram-style Empty State
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -170,7 +158,7 @@ fun ChatsListScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            Icons.Default.Shield,
+                            AppIcons.Shield,
                             contentDescription = null,
                             tint = AnthropicTerracotta,
                             modifier = Modifier.size(36.dp)
@@ -188,7 +176,7 @@ fun ChatsListScreen(
                         text = "Start a 1-to-1 encrypted conversation or create an untraceable group chat over Tor.",
                         fontSize = 13.sp,
                         color = AnthropicTextMuted,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        textAlign = TextAlign.Center,
                         lineHeight = 18.sp
                     )
                     Spacer(modifier = Modifier.height(20.dp))
@@ -229,8 +217,6 @@ private fun ChatItemRow(
     chat: ChatSummary,
     onClick: () -> Unit
 ) {
-    val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -238,7 +224,6 @@ private fun ChatItemRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Avatar with Initial
         Box(
             modifier = Modifier
                 .size(50.dp)
@@ -247,7 +232,7 @@ private fun ChatItemRow(
             contentAlignment = Alignment.Center
         ) {
             if (chat.isGroup) {
-                Icon(Icons.Default.Groups, contentDescription = null, tint = AnthropicCream, modifier = Modifier.size(26.dp))
+                Icon(AppIcons.Groups, contentDescription = null, tint = AnthropicCream, modifier = Modifier.size(26.dp))
             } else {
                 Text(
                     text = chat.avatarLetter.take(1).uppercase(),
@@ -260,7 +245,6 @@ private fun ChatItemRow(
 
         Spacer(modifier = Modifier.width(14.dp))
 
-        // Title and Last Message
         Column(modifier = Modifier.weight(1f)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -281,7 +265,7 @@ private fun ChatItemRow(
                     if (!chat.isGroup) {
                         Spacer(modifier = Modifier.width(4.dp))
                         Icon(
-                            imageVector = if (chat.isVerified) Icons.Default.Shield else Icons.Default.Security,
+                            imageVector = if (chat.isVerified) AppIcons.VerifiedUser else AppIcons.Shield,
                             contentDescription = if (chat.isVerified) "Verified SAS Peer" else "Unverified Peer",
                             tint = if (chat.isVerified) AnthropicSage else AnthropicTextMuted.copy(alpha = 0.5f),
                             modifier = Modifier.size(13.dp)
@@ -290,7 +274,7 @@ private fun ChatItemRow(
                 }
                 if (chat.lastMessageTime > 0L) {
                     Text(
-                        text = timeFormat.format(Date(chat.lastMessageTime)),
+                        text = GhostKeyUtils.formatClockTime(chat.lastMessageTime),
                         fontSize = 11.sp,
                         color = AnthropicTextMuted
                     )

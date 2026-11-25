@@ -27,7 +27,9 @@ data class StoredIdentity(
     val relayUrl: String = "",
     val contacts: List<Contact> = emptyList(),
     val groups: List<GroupChat> = emptyList(),
-    val duressPinHash: String? = null
+    val duressPinHash: String? = null,
+    val appPinHash: String? = null,
+    val pinSaltHex: String? = null
 )
 
 /**
@@ -88,6 +90,12 @@ class SecureStore(private val context: Context) {
         }
         if (!identity.duressPinHash.isNullOrBlank()) {
             json.put("duressPinHash", identity.duressPinHash)
+        }
+        if (!identity.appPinHash.isNullOrBlank()) {
+            json.put("appPinHash", identity.appPinHash)
+        }
+        if (!identity.pinSaltHex.isNullOrBlank()) {
+            json.put("pinSaltHex", identity.pinSaltHex)
         }
 
         // Serialize contacts
@@ -255,9 +263,21 @@ class SecureStore(private val context: Context) {
         }
 
         val duressPinHash = json.optString("duressPinHash", null)?.ifBlank { null }
+        val appPinHash = json.optString("appPinHash", null)?.ifBlank { null }
+        val pinSaltHex = json.optString("pinSaltHex", null)?.ifBlank { null }
         val relayUrl = json.optString("relayUrl", "")
 
-        return StoredIdentity(mine, peer, userAlias, relayUrl, contactsList, groupsList, duressPinHash)
+        return StoredIdentity(
+            mine = mine,
+            peer = peer,
+            userAlias = userAlias,
+            relayUrl = relayUrl,
+            contacts = contactsList,
+            groups = groupsList,
+            duressPinHash = duressPinHash,
+            appPinHash = appPinHash,
+            pinSaltHex = pinSaltHex
+        )
     }
 
     /** Delete the keystore key and the encrypted files. Safe to call when nothing exists. */

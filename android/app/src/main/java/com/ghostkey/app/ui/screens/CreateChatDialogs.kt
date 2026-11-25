@@ -1,14 +1,10 @@
 package com.ghostkey.app.ui.screens
 
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,6 +20,7 @@ import com.ghostkey.app.data.Contact
 import com.ghostkey.app.data.GroupChat
 import com.ghostkey.app.data.GroupMember
 import com.ghostkey.app.ui.*
+import com.ghostkey.app.util.GhostKeyUtils
 import java.util.UUID
 
 @Composable
@@ -35,14 +32,6 @@ fun AddDirectChatDialog(
     var armoredKey by remember { mutableStateOf("") }
     var alias by remember { mutableStateOf("") }
     var errorText by remember { mutableStateOf<String?>(null) }
-
-    fun pasteFromClipboard() {
-        try {
-            val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val text = clip.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
-            if (text.isNotBlank()) armoredKey = text
-        } catch (_: Exception) {}
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -105,12 +94,15 @@ fun AddDirectChatDialog(
                 )
 
                 Button(
-                    onClick = { pasteFromClipboard() },
+                    onClick = {
+                        val text = GhostKeyUtils.readClipboardText(context)
+                        if (!text.isNullOrBlank()) armoredKey = text
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = AnthropicSurfaceVariant),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(16.dp))
+                    Icon(AppIcons.ContentPaste, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("Paste From Clipboard", color = AnthropicCream, fontSize = 12.sp)
                 }
@@ -136,15 +128,17 @@ fun AddDirectChatDialog(
                         }
                         val info = StandalonePgpEngine.parsePeerKey(trimmed)
                         val dropId = info.dropId ?: throw IllegalArgumentException("Key has no Drop-ID")
-                        val finalAlias = alias.ifBlank { info.alias ?: "Peer ${info.fingerprint.take(6)}" }
-                        val contact = Contact(
-                            id = dropId,
-                            alias = finalAlias,
-                            dropId = dropId,
-                            publicKeyArmored = trimmed,
-                            fingerprint = info.fingerprint
+                        val cleanAlias = GhostKeyUtils.sanitizeAlias(alias)
+                        val finalAlias = cleanAlias.ifBlank { info.alias ?: "Peer ${info.fingerprint.take(6)}" }
+                        onAddContact(
+                            Contact(
+                                id = dropId,
+                                alias = finalAlias,
+                                dropId = dropId,
+                                publicKeyArmored = trimmed,
+                                fingerprint = info.fingerprint
+                            )
                         )
-                        onAddContact(contact)
                     } catch (e: Exception) {
                         errorText = e.message ?: "Invalid OpenPGP public key"
                     }
@@ -199,7 +193,7 @@ fun CreateGroupDialog(
 
                 OutlinedTextField(
                     value = groupName,
-                    onValueChange = { groupName = it },
+                    onValueChange = { groupName = it; errorText = null },
                     label = { Text("Group Name") },
                     placeholder = { Text("e.g. Project Anonymous, Friends") },
                     singleLine = true,
@@ -273,7 +267,9 @@ fun CreateGroupDialog(
                         return@Button
                     }
                     val groupId = UUID.randomUUID().toString()
-                    val groupDropKeypair = StandalonePgpEngine.generateKeyPair()
+                    // Fast cryptographic mailbox derivation without generating throwaway asymmetric keys on UI thread
+                    val groupReadToken = StandalonePgpEngine.randomHex32()
+                    val groupDropId = StandalonePgpEngine.deriveDropId(groupReadToken)
                     val groupKey = GroupCrypto.generateGroupKey()
 
                     val members = contacts.filter { selectedDropIds.contains(it.dropId) }.map {
@@ -285,16 +281,17 @@ fun CreateGroupDialog(
                         )
                     }
 
-                    val group = GroupChat(
-                        id = groupId,
-                        name = groupName.trim(),
-                        groupDropId = groupDropKeypair.dropId,
-                        groupReadToken = groupDropKeypair.readToken,
-                        sharedKeyBase64 = groupKey,
-                        members = members,
-                        isAdmin = true
+                    onCreateGroup(
+                        GroupChat(
+                            id = groupId,
+                            name = groupName.trim(),
+                            groupDropId = groupDropId,
+                            groupReadToken = groupReadToken,
+                            sharedKeyBase64 = groupKey,
+                            members = members,
+                            isAdmin = true
+                        )
                     )
-                    onCreateGroup(group)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = AnthropicTerracotta)
             ) {

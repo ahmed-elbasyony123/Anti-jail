@@ -1,19 +1,29 @@
 package com.ghostkey.app.ui.screens
 
-import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import com.ghostkey.app.*
+import androidx.compose.ui.platform.LocalContext
+import com.ghostkey.app.AppNavScreen
+import com.ghostkey.app.MainViewModel
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.ui.dialogs.*
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainActivity.MainModernApp() {
+internal fun MainModernApp(
+    viewModel: MainViewModel,
+    onMicClick: () -> Unit,
+    onEmergencyPanic: () -> Unit
+) {
+    val context = LocalContext.current
+    val state by viewModel.uiState.collectAsState()
+    val summaries by viewModel.chatSummaries.collectAsState()
+    val activeMessages by viewModel.activeChatMessages.collectAsState()
+    val playbackState by viewModel.playbackState.collectAsState()
+
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var showAddDirectChatDialog by remember { mutableStateOf(false) }
@@ -21,167 +31,133 @@ fun MainActivity.MainModernApp() {
     var showSafetyCodeDialog by remember { mutableStateOf(false) }
     var showNewIdentityConfirm by remember { mutableStateOf(false) }
 
-    val playbackState by audioPlayerManager.playbackState.collectAsState()
-
-    LaunchedEffect(isRecordingAudio) {
-        if (isRecordingAudio) {
-            val start = SystemClock.elapsedRealtime()
-            while (isRecordingAudio) {
-                recordElapsedMs = SystemClock.elapsedRealtime() - start
-                delay(100)
-            }
-        }
-    }
-
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             TelegramDrawer(
-                userAlias = userAlias,
-                myPgpKeys = myPgpKeys,
-                relayStatus = relayStatus.value,
-                artiState = artiState,
+                userAlias = state.userAlias,
+                myPgpKeys = state.myPgpKeys,
+                relayStatus = state.relayStatus,
+                artiState = state.artiState,
                 onNavigateChats = {
-                    currentNavScreen = AppNavScreen.CHATS_LIST
+                    viewModel.navigateTo(AppNavScreen.CHATS_LIST)
                     scope.launch { drawerState.close() }
                 },
                 onNavigateSettings = {
-                    currentNavScreen = AppNavScreen.SETTINGS
+                    viewModel.navigateTo(AppNavScreen.SETTINGS)
                     scope.launch { drawerState.close() }
                 },
                 onCopyDropId = {
-                    myPgpKeys?.dropId?.let { copyToClipboard("Drop ID", it) }
+                    state.myPgpKeys?.dropId?.let { viewModel.copyToClipboard("Drop ID", it) }
                 },
                 onCopyFingerprint = {
-                    myPgpKeys?.fingerprint?.let { copyToClipboard("PGP Fingerprint", it) }
+                    state.myPgpKeys?.fingerprint?.let { viewModel.copyToClipboard("PGP Fingerprint", it) }
                 },
                 onCopyPublicKey = {
-                    myPgpKeys?.publicKeyArmored?.let { copyToClipboard("Armored Public Key", it) }
+                    state.myPgpKeys?.publicKeyArmored?.let { viewModel.copyToClipboard("Armored Public Key", it) }
                 },
                 onShowMyQr = {
-                    showMyQrDialog = true
+                    viewModel.setShowMyQrDialog(true)
                     scope.launch { drawerState.close() }
                 },
                 onPairContact = {
-                    showPairContactDialog = true
+                    viewModel.setShowPairContactDialog(true)
                     scope.launch { drawerState.close() }
                 },
                 onOpenSecurityDiagnostics = {
-                    showSecurityDiagnostics = true
+                    viewModel.setShowSecurityDiagnostics(true)
                     scope.launch { drawerState.close() }
                 },
-                onEmergencyPanic = {
-                    triggerEmergencyPanicWipe()
-                }
+                onEmergencyPanic = onEmergencyPanic
             )
         }
     ) {
         BackHandler(enabled = drawerState.isOpen) {
             scope.launch { drawerState.close() }
         }
-        BackHandler(enabled = currentNavScreen != AppNavScreen.CHATS_LIST && !drawerState.isOpen) {
-            currentNavScreen = AppNavScreen.CHATS_LIST
+        BackHandler(enabled = state.navScreen != AppNavScreen.CHATS_LIST && !drawerState.isOpen) {
+            viewModel.navigateTo(AppNavScreen.CHATS_LIST)
         }
 
-        when (currentNavScreen) {
+        when (state.navScreen) {
             AppNavScreen.CHATS_LIST -> {
                 ChatsListScreen(
-                    chats = computeChatSummaries(),
-                    relayStatus = relayStatus.value,
+                    chats = summaries,
+                    relayStatus = state.relayStatus,
                     onOpenDrawer = { scope.launch { drawerState.open() } },
-                    onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS },
-                    onSelectChat = { summary ->
-                        activeChatContact = contacts.find { it.dropId == summary.chatId }
-                        activeChatGroup = groups.find { it.id == summary.chatId }
-                        currentNavScreen = AppNavScreen.CHAT_VIEW
-                    },
+                    onOpenSettings = { viewModel.navigateTo(AppNavScreen.SETTINGS) },
+                    onSelectChat = { summary -> viewModel.selectChat(summary.chatId) },
                     onNewDirectChat = { showAddDirectChatDialog = true },
                     onNewGroupChat = { showCreateGroupDialog = true },
-                    onShowMyQr = { showMyQrDialog = true },
-                    onPairContactQr = { showPairContactDialog = true },
-                    onOpenSecurityDiagnostics = { showSecurityDiagnostics = true }
+                    onShowMyQr = { viewModel.setShowMyQrDialog(true) },
+                    onPairContactQr = { viewModel.setShowPairContactDialog(true) },
+                    onOpenSecurityDiagnostics = { viewModel.setShowSecurityDiagnostics(true) }
                 )
             }
             AppNavScreen.CHAT_VIEW -> {
-                val title = activeChatGroup?.name ?: activeChatContact?.alias ?: "Encrypted Chat"
-                val subtitle = if (activeChatGroup != null) {
-                    "${activeChatGroup?.members?.size ?: 1} members · AES-256 E2EE"
+                val activeGroup = state.activeChatGroup
+                val activeContact = state.activeChatContact
+                val title = activeGroup?.name ?: activeContact?.alias ?: "Encrypted Chat"
+                val subtitle = if (activeGroup != null) {
+                    "${activeGroup.members.size} members · AES-256 E2EE"
                 } else {
-                    "Peer ${(activeChatContact?.fingerprint ?: "").take(8)} · E2EE PGP"
+                    "Peer ${(activeContact?.fingerprint ?: "").take(8)} · E2EE PGP"
                 }
-                val activeChatId = activeChatGroup?.id ?: activeChatContact?.dropId ?: ""
-                val chatMessages = messagesState.filter { it.chatId == activeChatId || (activeChatId.isBlank() && it.chatId.isBlank()) }
+                val otherContacts = remember(state.contacts, activeContact) {
+                    state.contacts.filter { it.dropId != activeContact?.dropId }
+                }
 
                 CleanChatScreen(
                     chatTitle = title,
                     chatSubtitle = subtitle,
-                    isGroup = activeChatGroup != null,
-                    messages = chatMessages,
+                    isGroup = activeGroup != null,
+                    messages = activeMessages,
                     playbackState = playbackState,
-                    relayStatus = relayStatus.value,
-                    isRecordingAudio = isRecordingAudio,
-                    recordElapsedMs = recordElapsedMs,
-                    onBack = { currentNavScreen = AppNavScreen.CHATS_LIST },
-                    onSendMessage = { text ->
-                        sendMessageToActiveChat(text)
-                    },
-                    onSendMedia = { uri ->
-                        sendMediaToActiveChat(uri)
-                    },
-                    onMicClick = { onMicClicked() },
-                    onStopRecording = { onStopAudioRecording() },
-                    onCancelRecording = { onCancelAudioRecording() },
-                    onAudioPlayPause = { msg ->
-                        if (msg.audioBytes != null) {
-                            audioPlayerManager.play(msg.id, msg.audioBytes)
-                        }
-                    },
-                    onAudioSeek = { msg, frac ->
-                        audioPlayerManager.seekTo(msg.id, frac)
-                    },
+                    relayStatus = state.relayStatus,
+                    isRecordingAudio = state.isRecordingAudio,
+                    recordElapsedMs = state.recordElapsedMs,
+                    onBack = { viewModel.navigateTo(AppNavScreen.CHATS_LIST) },
+                    onSendMessage = viewModel::sendMessageToActiveChat,
+                    onSendMedia = viewModel::sendMediaToActiveChat,
+                    onMicClick = onMicClick,
+                    onStopRecording = viewModel::onStopAudioRecording,
+                    onCancelRecording = viewModel::onCancelAudioRecording,
+                    onAudioPlayPause = viewModel::toggleAudioPlayback,
+                    onAudioSeek = viewModel::seekAudio,
                     onManualDecrypt = { msg ->
-                        decryptMessage(msg, msg.chatId.ifBlank { recipientDropId })
+                        viewModel.decryptMessage(msg, msg.chatId.ifBlank { state.myPgpKeys?.dropId.orEmpty() })
                     },
                     onOpenSafetyCode = { showSafetyCodeDialog = true },
-                    onOpenSettings = { currentNavScreen = AppNavScreen.SETTINGS },
-                    disappearingTtlSeconds = getDisappearingTtlForChat(activeChatId),
-                    onSetDisappearingTimer = { ttl ->
-                        activeChatContact?.let { setDisappearingTimerForContact(it.dropId, ttl) }
-                    },
-                    availableContacts = contacts.filter { it.dropId != activeChatContact?.dropId },
+                    disappearingTtlSeconds = activeContact?.disappearingTtlSeconds,
+                    onSetDisappearingTimer = viewModel::setDisappearingTimerForActiveContact,
+                    availableContacts = otherContacts,
                     onIntroduceContact = { contactToIntroduce ->
-                        activeChatContact?.let { target ->
-                            sendContactIntroduction(target, contactToIntroduce)
-                        }
+                        activeContact?.let { target -> viewModel.sendContactIntroduction(target, contactToIntroduce) }
                     },
-                    onAcceptIntroduction = { alias, dropId, armoredKey, safetyCode ->
-                        addIntroducedContact(alias, dropId, armoredKey, safetyCode)
-                    }
+                    onAcceptIntroduction = viewModel::addIntroducedContact
                 )
             }
             AppNavScreen.SETTINGS -> {
                 SettingsScreen(
-                    initialRelayUrl = relayServerUrl,
-                    initialUseTorSocks = useTorSocks,
-                    initialKeepAlive = keepAlive,
-                    initialEphemeralMode = ephemeralMode,
-                    initialLockEnabled = lockEnabled,
-                    userAlias = userAlias,
-                    myPgpKeys = myPgpKeys,
-                    onBack = { currentNavScreen = AppNavScreen.CHATS_LIST },
-                    onSaveSettings = { url, tor, keep, eph, lock, alias ->
-                        saveAllSettings(url, tor, keep, eph, lock, alias)
-                    },
-                    onAutoSave = { url, alias ->
-                        onAutoSaveSettings(url, alias)
-                    },
+                    initialRelayUrl = state.relayServerUrl,
+                    initialUseTorSocks = state.useTorSocks,
+                    initialKeepAlive = state.keepAlive,
+                    initialEphemeralMode = state.ephemeralMode,
+                    initialLockEnabled = state.lockEnabled,
+                    userAlias = state.userAlias,
+                    myPgpKeys = state.myPgpKeys,
+                    onBack = { viewModel.navigateTo(AppNavScreen.CHATS_LIST) },
+                    onSaveSettings = viewModel::saveAllSettings,
+                    onAutoSave = viewModel::onAutoSaveSettings,
                     onGenerateNewKey = { showNewIdentityConfirm = true },
-                    onCopyKey = { myPgpKeys?.let { copyKeyToClipboard(it.publicKeyArmored) } },
+                    onCopyKey = {
+                        state.myPgpKeys?.let { viewModel.copyToClipboard("Public Key", it.publicKeyArmored) }
+                    },
                     onVerifySafetyCode = { showSafetyCodeDialog = true },
-                    duressPinConfigured = !duressPinHash.isNullOrBlank(),
-                    onSetDuressPin = { pin -> setDuressPin(pin) },
-                    appPinConfigured = !appPinHash.isNullOrBlank(),
-                    onSetAppPin = { pin -> setAppPin(pin) }
+                    duressPinConfigured = state.duressPinConfigured,
+                    onSetDuressPin = viewModel::setDuressPin,
+                    appPinConfigured = state.appPinConfigured,
+                    onSetAppPin = viewModel::setAppPin
                 )
             }
         }
@@ -192,71 +168,51 @@ fun MainActivity.MainModernApp() {
             onDismiss = { showAddDirectChatDialog = false },
             onAddContact = { contact ->
                 showAddDirectChatDialog = false
-                if (!contacts.any { it.dropId == contact.dropId }) {
-                    contacts.add(contact)
-                    persistIdentity()
-                }
-                activeChatContact = contact
-                activeChatGroup = null
-                currentNavScreen = AppNavScreen.CHAT_VIEW
+                viewModel.addOrOpenContact(contact)
             }
         )
     }
 
     if (showCreateGroupDialog) {
         CreateGroupDialog(
-            contacts = contacts.toList(),
+            contacts = state.contacts,
             onDismiss = { showCreateGroupDialog = false },
             onCreateGroup = { group ->
                 showCreateGroupDialog = false
-                groups.add(group)
-                torClient.addSubscription(group.groupDropId, group.groupReadToken)
-                persistIdentity()
-                inviteMembersToGroup(group)
-                activeChatGroup = group
-                activeChatContact = null
-                currentNavScreen = AppNavScreen.CHAT_VIEW
+                viewModel.createGroup(group)
             }
         )
     }
 
     if (showSafetyCodeDialog) {
-        val myFp = myPgpKeys?.fingerprint ?: ""
-        val peerFp = activeChatContact?.fingerprint ?: recipientFingerprint
-        val activeContact = activeChatContact
+        val myKeys = state.myPgpKeys
+        val activeContact = state.activeChatContact
+        val peerFp = activeContact?.fingerprint.orEmpty()
         SafetyCodeDialog(
-            safetyNumber = if (myPgpKeys != null && peerFp.isNotBlank()) {
-                StandalonePgpEngine.generateSafetyCode(myPgpKeys!!.fingerprint, peerFp)
+            safetyNumber = if (myKeys != null && peerFp.isNotBlank()) {
+                StandalonePgpEngine.generateSafetyCode(myKeys.fingerprint, peerFp)
             } else {
                 "NO PEER SELECTED"
             },
             recipientFingerprint = peerFp,
             isPeerVerified = activeContact?.isVerified ?: false,
             onVerificationChanged = { verified ->
-                if (activeContact != null) {
-                    val idx = contacts.indexOfFirst { it.dropId == activeContact.dropId }
-                    if (idx >= 0) {
-                        contacts[idx] = contacts[idx].copy(isVerified = verified)
-                        activeChatContact = contacts[idx]
-                        persistIdentity()
-                    }
-                }
+                activeContact?.let { viewModel.setContactVerified(it.dropId, verified) }
             },
             onDismiss = { showSafetyCodeDialog = false }
         )
     }
 
-    if (showSecurityDiagnostics) {
+    if (state.showSecurityDiagnostics) {
         SecurityStatusDialog(
-            relayStatus = relayStatus.value,
-            artiState = artiState,
-            relayUrl = relayServerUrl,
-            lanPeersCount = localLanMesh?.activePeersCount ?: 0,
-            isEphemeral = ephemeralMode,
-            hasDuressPin = !duressPinHash.isNullOrBlank(),
-            myFingerprint = myPgpKeys?.fingerprint ?: "",
-            myDropId = myPgpKeys?.dropId ?: "",
-            onDismiss = { showSecurityDiagnostics = false }
+            relayStatus = state.relayStatus,
+            artiState = state.artiState,
+            lanPeersCount = state.lanPeersCount,
+            isEphemeral = state.ephemeralMode,
+            hasDuressPin = state.duressPinConfigured,
+            myFingerprint = state.myPgpKeys?.fingerprint.orEmpty(),
+            myDropId = state.myPgpKeys?.dropId.orEmpty(),
+            onDismiss = { viewModel.setShowSecurityDiagnostics(false) }
         )
     }
 
@@ -265,44 +221,30 @@ fun MainActivity.MainModernApp() {
             onDismiss = { showNewIdentityConfirm = false },
             onConfirm = {
                 showNewIdentityConfirm = false
-                generateFreshKeys()
+                viewModel.generateFreshKeys()
             }
         )
     }
 
-    if (showMyQrDialog) {
-        val keys = myPgpKeys
-        if (keys != null) {
-            MyQrCodeDialog(
-                myAlias = userAlias,
-                myDropId = keys.dropId,
-                myFingerprint = keys.fingerprint,
-                myPublicKeyArmored = keys.publicKeyArmored,
-                onDismiss = { showMyQrDialog = false }
-            )
-        } else {
-            Toast.makeText(this, "Generating PGP identity, please wait...", Toast.LENGTH_SHORT).show()
-            showMyQrDialog = false
-        }
+    val myKeysForQr = state.myPgpKeys
+    if (state.showMyQrDialog && myKeysForQr != null) {
+        MyQrCodeDialog(
+            myAlias = state.userAlias,
+            myDropId = myKeysForQr.dropId,
+            myFingerprint = myKeysForQr.fingerprint,
+            myPublicKeyArmored = myKeysForQr.publicKeyArmored,
+            onDismiss = { viewModel.setShowMyQrDialog(false) }
+        )
     }
 
-    if (showPairContactDialog) {
+    if (state.showPairContactDialog) {
         PairContactDialog(
-            myFingerprint = myPgpKeys?.fingerprint ?: "",
-            onDismiss = { showPairContactDialog = false },
+            myFingerprint = state.myPgpKeys?.fingerprint.orEmpty(),
+            onDismiss = { viewModel.setShowPairContactDialog(false) },
             onContactVerified = { contact ->
-                showPairContactDialog = false
-                val existingIdx = contacts.indexOfFirst { it.dropId == contact.dropId }
-                if (existingIdx >= 0) {
-                    contacts[existingIdx] = contact
-                } else {
-                    contacts.add(contact)
-                }
-                persistIdentity()
-                activeChatContact = contact
-                activeChatGroup = null
-                currentNavScreen = AppNavScreen.CHAT_VIEW
-                Toast.makeText(this, "Contact paired & verified: ${contact.alias} 🛡️", Toast.LENGTH_SHORT).show()
+                viewModel.setShowPairContactDialog(false)
+                viewModel.addOrOpenContact(contact)
+                Toast.makeText(context, "Contact paired & verified: ${contact.alias} 🛡️", Toast.LENGTH_SHORT).show()
             }
         )
     }

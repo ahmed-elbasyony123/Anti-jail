@@ -1,9 +1,11 @@
 # Proguard / R8 rules for GhostKey
-# Retain BouncyCastle provider and OpenPGP classes that are loaded via JCA reflection
+# Retain only the BouncyCastle JCA provider entries resolved via string reflection;
+# direct calls into bcpg/openpgp are traced by R8 so unused PQC/X509/legacy ciphers can be stripped.
 -keep class org.bouncycastle.jce.provider.BouncyCastleProvider { *; }
--keep class org.bouncycastle.jcajce.provider.** { *; }
--keep class org.bouncycastle.openpgp.** { *; }
--keep class org.bouncycastle.bcpg.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.edec.** { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.AES** { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA** { *; }
+-keep class org.bouncycastle.jcajce.provider.drbg.** { *; }
 -dontwarn org.bouncycastle.**
 
 # Standard Kotlin & Coroutines reflection metadata
@@ -16,6 +18,6 @@
 }
 -keep class com.ghostkey.app.net.ArtiTorManager { *; }
 
-# ZXing Core
--keep class com.google.zxing.** { *; }
+# ZXing Core (QR code generation & scanning only)
+-keep class com.google.zxing.qrcode.** { *; }
 -dontwarn com.google.zxing.**

@@ -122,7 +122,7 @@ class AudioPlayerManager {
                 durationMs = duration
             )
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("AudioPlayerManager", "Playback failed: ${e.message}", e)
             stop()
         }
     }
@@ -139,10 +139,13 @@ class AudioPlayerManager {
         handler.removeCallbacks(progressUpdater)
         try {
             mediaPlayer?.stop()
-        } catch (ignored: Exception) {}
+        } catch (_: Exception) {}
         try {
             mediaPlayer?.release()
-        } catch (ignored: Exception) {}
+        } catch (_: Exception) {}
+        try {
+            currentDataSource?.close()
+        } catch (_: Exception) {}
         mediaPlayer = null
         currentDataSource = null
         _playbackState.value = PlaybackState()

@@ -84,8 +84,7 @@ object PushNotificationManager {
     fun postMessageNotification(
         context: Context,
         isAudio: Boolean,
-        hasMedia: Boolean,
-        previewText: String? = null
+        hasMedia: Boolean
     ) {
         init(context)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return

@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -18,12 +20,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.crypto.PgpKeyPairArmored
+import com.ghostkey.app.net.ArtiTorManager
 import com.ghostkey.app.net.ArtiTorState
 import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.*
 
 /**
- * Modern Telegram-style Navigation Drawer (Sidebar) with Anthropic warm branding.
+ * Navigation Drawer (Sidebar) with Anthropic warm branding.
  */
 @Composable
 fun TelegramDrawer(
@@ -46,9 +49,6 @@ fun TelegramDrawer(
         drawerContentColor = AnthropicCream,
         modifier = Modifier.width(300.dp)
     ) {
-        // ---------------------------------------------------------------------
-        // Drawer Header: User Profile & Identity
-        // ---------------------------------------------------------------------
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -76,11 +76,11 @@ fun TelegramDrawer(
                         )
                     }
 
-                    // Tor connection indicator badge
+                    val isConnected = relayStatus == RelayStatus.CONNECTED
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (relayStatus == RelayStatus.CONNECTED) AnthropicSage.copy(alpha = 0.2f) else AnthropicDarkNeutral)
+                            .background(if (isConnected) AnthropicSage.copy(alpha = 0.2f) else AnthropicDarkNeutral)
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -88,14 +88,14 @@ fun TelegramDrawer(
                                 modifier = Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
-                                    .background(if (relayStatus == RelayStatus.CONNECTED) AnthropicSage else AnthropicTextMuted)
+                                    .background(if (isConnected) AnthropicSage else AnthropicTextMuted)
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = if (relayStatus == RelayStatus.CONNECTED) "TOR ACTIVE" else "CONNECTING",
+                                text = if (isConnected) "TOR ACTIVE" else "CONNECTING",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (relayStatus == RelayStatus.CONNECTED) AnthropicSage else AnthropicTextMuted
+                                color = if (isConnected) AnthropicSage else AnthropicTextMuted
                             )
                         }
                     }
@@ -112,7 +112,6 @@ fun TelegramDrawer(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Drop ID row with copy button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -127,14 +126,13 @@ fun TelegramDrawer(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
-                        Icons.Default.ContentCopy,
+                        AppIcons.ContentCopy,
                         contentDescription = "Copy Drop ID",
                         tint = AnthropicTerracotta,
                         modifier = Modifier.size(13.dp)
                     )
                 }
 
-                // Fingerprint row with copy button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -149,14 +147,13 @@ fun TelegramDrawer(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
-                        Icons.Default.VpnKey,
+                        AppIcons.Key,
                         contentDescription = "Copy Fingerprint",
                         tint = AnthropicSage,
                         modifier = Modifier.size(13.dp)
                     )
                 }
 
-                // Copy Full Public Key row
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -182,9 +179,6 @@ fun TelegramDrawer(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // ---------------------------------------------------------------------
-        // Drawer Menu Items
-        // ---------------------------------------------------------------------
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -192,21 +186,21 @@ fun TelegramDrawer(
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             DrawerItem(
-                icon = Icons.Default.Chat,
+                icon = AppIcons.Chat,
                 title = "All Chats & Contacts",
                 badge = null,
                 onClick = onNavigateChats
             )
 
             DrawerItem(
-                icon = Icons.Default.QrCode,
+                icon = AppIcons.QrCode,
                 title = "My Contact QR (مفتاحي)",
                 badge = "Pair",
                 onClick = onShowMyQr
             )
 
             DrawerItem(
-                icon = Icons.Default.QrCodeScanner,
+                icon = AppIcons.QrCodeScanner,
                 title = "In-Person QR Pairing",
                 badge = "SAS",
                 onClick = onPairContact
@@ -218,7 +212,7 @@ fun TelegramDrawer(
                 badge = when (artiState) {
                     is ArtiTorState.Connected -> "Arti Live 🧅"
                     is ArtiTorState.Starting -> if (artiState.progress > 0) "Arti: ${artiState.progress}%" else "Booting..."
-                    else -> "Tor Ready"
+                    else -> if (ArtiTorManager.isAvailable) "Tor Idle" else "Orbot Fallback"
                 },
                 onClick = onNavigateSettings
             )
@@ -229,7 +223,7 @@ fun TelegramDrawer(
             )
 
             DrawerItem(
-                icon = Icons.Default.Shield,
+                icon = AppIcons.Shield,
                 title = "Security & Network Health",
                 badge = "Diagnostics",
                 onClick = onOpenSecurityDiagnostics
@@ -238,9 +232,6 @@ fun TelegramDrawer(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // ---------------------------------------------------------------------
-        // Drawer Footer: Emergency Panic Wipe
-        // ---------------------------------------------------------------------
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -255,7 +246,7 @@ fun TelegramDrawer(
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("PANIC WIPE (تدمير ذاتي)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }

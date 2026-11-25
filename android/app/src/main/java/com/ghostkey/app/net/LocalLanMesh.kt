@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.IOException
@@ -56,6 +58,7 @@ class LocalLanMesh(
     private val discoveredPeers = ConcurrentHashMap<String, LanPeer>()
     // Rate-limit mutual identity exchange to once every 30s per host
     private val lastExchangeAttempt = ConcurrentHashMap<String, Long>()
+    private val connectionPermits = Semaphore(8)
 
     val activePeersCount: Int
         get() {
@@ -198,6 +201,10 @@ class LocalLanMesh(
     }
 
     private fun handleClientConnection(serviceScope: CoroutineScope, socket: Socket) {
+        if (!connectionPermits.tryAcquire()) {
+            try { socket.close() } catch (_: Exception) {}
+            return
+        }
         serviceScope.launch {
             try {
                 socket.use { s ->
@@ -246,6 +253,8 @@ class LocalLanMesh(
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error handling direct LAN connection: ${e.message}")
+            } finally {
+                connectionPermits.release()
             }
         }
     }
@@ -266,7 +275,7 @@ class LocalLanMesh(
                         udpSocket!!.receive(packet)
 
                         val data = String(packet.data, 0, packet.length, Charsets.UTF_8).trim()
-                        // 1. Safe beacon discovery (ephemeral node ID over UDP, no cleartext persistent dropId)
+                        // Safe beacon discovery (ephemeral node ID over UDP, no cleartext persistent dropId)
                         if (data.startsWith("GHOSTKEY:BEACON:")) {
                             val parts = data.split(":")
                             if (parts.size >= 4) {
@@ -274,24 +283,6 @@ class LocalLanMesh(
                                 val peerPort = parts[3].toIntOrNull() ?: DEFAULT_MESH_PORT
                                 if (peerNodeId.isNotBlank() && peerNodeId != ephemeralNodeId) {
                                     initiateIdentityExchange(serviceScope, packet.address, peerPort)
-                                }
-                            }
-                        }
-                        // 2. Backward compatibility with older clients broadcasting announce
-                        else if (data.startsWith("GHOSTKEY:ANNOUNCE:")) {
-                            val parts = data.split(":")
-                            if (parts.size >= 4) {
-                                val peerDropId = parts[2]
-                                val peerPort = parts[3].toIntOrNull() ?: DEFAULT_MESH_PORT
-
-                                if (peerDropId.isNotBlank() && peerDropId != myDropId) {
-                                    discoveredPeers[peerDropId] = LanPeer(
-                                        dropId = peerDropId,
-                                        ipAddress = packet.address,
-                                        port = peerPort,
-                                        lastSeen = System.currentTimeMillis()
-                                    )
-                                    Log.d(TAG, "Discovered LAN peer via legacy announce: $peerDropId at ${packet.address}:$peerPort")
                                 }
                             }
                         }
@@ -312,6 +303,9 @@ class LocalLanMesh(
     private fun initiateIdentityExchange(serviceScope: CoroutineScope, address: InetAddress, port: Int) {
         val host = address.hostAddress ?: return
         val now = System.currentTimeMillis()
+        if (lastExchangeAttempt.size > 256) {
+            lastExchangeAttempt.entries.removeIf { now - it.value > 5 * 60_000L }
+        }
         val last = lastExchangeAttempt[host] ?: 0L
         if (now - last < 30_000L) return
         lastExchangeAttempt[host] = now

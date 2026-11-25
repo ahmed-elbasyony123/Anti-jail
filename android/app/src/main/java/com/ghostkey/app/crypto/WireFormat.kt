@@ -1,5 +1,6 @@
 package com.ghostkey.app.crypto
 
+import com.ghostkey.app.util.GhostKeyUtils
 import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.Base64
@@ -250,7 +251,7 @@ object WireFormat {
                     val introDrop = optSafeString(obj, "introDropId")?.lowercase()
                     val introKey = optSafeString(obj, "introArmoredKey")
                     val rawAlias = optSafeString(obj, "introAlias") ?: "Peer"
-                    val cleanIntroAlias = rawAlias.replace(Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F<>]"), "").take(64)
+                    val cleanIntroAlias = GhostKeyUtils.sanitizeAlias(rawAlias)
                     // Validate peer introduction Drop-ID and PGP public key envelope
                     if (introDrop == null || !StandalonePgpEngine.isValidHex32(introDrop) ||
                         introKey == null || !introKey.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----")) {

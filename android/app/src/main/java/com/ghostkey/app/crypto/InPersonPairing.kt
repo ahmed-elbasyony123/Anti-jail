@@ -2,6 +2,7 @@ package com.ghostkey.app.crypto
 
 import android.graphics.Bitmap
 import androidx.camera.core.ImageProxy
+import com.ghostkey.app.util.GhostKeyUtils
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.EncodeHintType
@@ -29,8 +30,6 @@ data class ContactCard(
  * 4. Secure contact card encoding/decoding with zero network reliance.
  */
 object InPersonPairing {
-
-    const val URI_SCHEME = "ghostkey://contact"
 
     /**
      * Generate an in-memory QR Code [Bitmap] for visual scanning.
@@ -151,7 +150,7 @@ object InPersonPairing {
                 }
 
                 val rawAlias = json.optString("alias", parsed.alias ?: "Peer")
-                val cleanAlias = rawAlias.replace(Regex("""[\u200E\u200F\u202A-\u202E\r\n\t<>]"""), "").trim().ifBlank { "Peer" }
+                val cleanAlias = GhostKeyUtils.sanitizeAlias(rawAlias).ifBlank { "Peer" }
                 return ContactCard(alias = cleanAlias, dropId = verifiedDropId, fingerprint = verifiedFp, publicKeyArmored = key)
             } catch (_: Exception) {
                 return null

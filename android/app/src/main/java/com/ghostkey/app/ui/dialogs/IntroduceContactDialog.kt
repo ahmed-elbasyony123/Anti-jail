@@ -6,9 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Handshake
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,13 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.data.Contact
-import com.ghostkey.app.ui.GhostKeyColors
+import com.ghostkey.app.ui.*
 
 /**
  * Contact Introduction Dialog:
- *
- * Allows a mutual friend to introduce two contacts to each other over encrypted channels,
- * sharing their public keys and drop IDs without needing an external directory.
+ * Allows a mutual friend to introduce two contacts over encrypted channels.
  */
 @Composable
 fun IntroduceContactDialog(
@@ -37,9 +33,9 @@ fun IntroduceContactDialog(
         onDismissRequest = onDismiss,
         icon = {
             Icon(
-                imageVector = Icons.Default.Handshake,
+                imageVector = AppIcons.Handshake,
                 contentDescription = null,
-                tint = GhostKeyColors.AccentGold,
+                tint = AnthropicTerracotta,
                 modifier = Modifier.size(32.dp)
             )
         },
@@ -47,7 +43,7 @@ fun IntroduceContactDialog(
             Text(
                 text = "Introduce a Contact",
                 style = MaterialTheme.typography.titleMedium,
-                color = GhostKeyColors.TextPrimary
+                color = AnthropicCream
             )
         },
         text = {
@@ -55,7 +51,7 @@ fun IntroduceContactDialog(
                 Text(
                     text = "Select a contact to introduce to $currentContactAlias. Both parties will receive each other's verified public keys.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = GhostKeyColors.TextSecondary,
+                    color = AnthropicTextMuted,
                     lineHeight = 18.sp
                 )
 
@@ -65,7 +61,7 @@ fun IntroduceContactDialog(
                     Text(
                         text = "No other contacts available to introduce.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = GhostKeyColors.TextSecondary
+                        color = AnthropicTextMuted
                     )
                 } else {
                     LazyColumn(
@@ -77,7 +73,7 @@ fun IntroduceContactDialog(
                             val isSelected = selectedContact?.id == contact.id
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) GhostKeyColors.SurfaceSecondary else GhostKeyColors.SurfacePrimary,
+                                color = if (isSelected) AnthropicSurfaceVariant else AnthropicSurface,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp)
@@ -92,7 +88,7 @@ fun IntroduceContactDialog(
                                     Icon(
                                         imageVector = Icons.Default.Person,
                                         contentDescription = null,
-                                        tint = if (isSelected) GhostKeyColors.AccentGold else GhostKeyColors.TextSecondary,
+                                        tint = if (isSelected) AnthropicTerracotta else AnthropicTextMuted,
                                         modifier = Modifier.size(24.dp)
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
@@ -100,20 +96,20 @@ fun IntroduceContactDialog(
                                         Text(
                                             text = contact.alias,
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = GhostKeyColors.TextPrimary
+                                            color = AnthropicCream
                                         )
                                         Text(
                                             text = "FP: ${contact.fingerprint.take(12)}...",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = GhostKeyColors.TextSecondary,
+                                            color = AnthropicTextMuted,
                                             fontSize = 11.sp
                                         )
                                     }
                                     if (contact.isVerified) {
                                         Icon(
-                                            imageVector = Icons.Default.Shield,
+                                            imageVector = AppIcons.Shield,
                                             contentDescription = "Verified",
-                                            tint = GhostKeyColors.StatusGreen,
+                                            tint = AnthropicSage,
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
@@ -126,13 +122,11 @@ fun IntroduceContactDialog(
         },
         confirmButton = {
             Button(
-                onClick = {
-                    selectedContact?.let { onIntroduce(it) }
-                },
+                onClick = { selectedContact?.let { onIntroduce(it) } },
                 enabled = selectedContact != null,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = GhostKeyColors.AccentGold,
-                    contentColor = GhostKeyColors.SurfacePrimary
+                    containerColor = AnthropicTerracotta,
+                    contentColor = AnthropicSurface
                 )
             ) {
                 Text("Introduce")
@@ -140,9 +134,9 @@ fun IntroduceContactDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", color = GhostKeyColors.TextSecondary)
+                Text("Cancel", color = AnthropicTextMuted)
             }
         },
-        containerColor = GhostKeyColors.SurfacePrimary
+        containerColor = AnthropicSurface
     )
 }

@@ -12,7 +12,6 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -22,16 +21,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -39,9 +40,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.ghostkey.app.MainActivity
 import com.ghostkey.app.ui.*
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 @SuppressLint("BatteryLife")
 @Composable
@@ -49,13 +52,12 @@ fun WelcomeOnboardingScreen(
     onCompleteOnboarding: (alias: String, appPin: String?, duressPin: String?, ephemeralMode: Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var currentStep by remember { mutableIntStateOf(0) }
     var alias by remember { mutableStateOf("") }
     var ephemeralMode by remember { mutableStateOf(false) }
 
-    // Security PINs
     var enablePinLock by remember { mutableStateOf(false) }
     var appPin by remember { mutableStateOf("") }
     var confirmAppPin by remember { mutableStateOf("") }
@@ -63,21 +65,11 @@ fun WelcomeOnboardingScreen(
     var duressPin by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf<String?>(null) }
 
-    // Key generation animation state
-    var isGeneratingKeys by remember { mutableStateOf(false) }
-    var keyGenProgress by remember { mutableFloatStateOf(0f) }
-    var keyGenLabel by remember { mutableStateOf("Initializing entropy...") }
-
-    // Permission states
     val powerManager = remember { context.getSystemService(Context.POWER_SERVICE) as? PowerManager }
-    var isBatteryIgnored by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
-            } else true
-        )
-    }
+    fun checkBatteryIgnored(): Boolean =
+        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
 
+    var isBatteryIgnored by remember { mutableStateOf(checkBatteryIgnored()) }
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -94,6 +86,22 @@ fun WelcomeOnboardingScreen(
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             } else true
         )
+    }
+
+    // Refresh battery exemption & permissions when returning from Android system settings
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isBatteryIgnored = checkBatteryIgnored()
+                hasCameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                hasMicPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    hasNotifPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -116,7 +124,6 @@ fun WelcomeOnboardingScreen(
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Step Progress Indicator Dots
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -148,10 +155,10 @@ fun WelcomeOnboardingScreen(
                 transitionSpec = {
                     if (targetState > initialState) {
                         slideInHorizontally { width -> width } + fadeIn() togetherWith
-                                slideOutHorizontally { width -> -width } + fadeOut()
+                            slideOutHorizontally { width -> -width } + fadeOut()
                     } else {
                         slideInHorizontally { width -> -width } + fadeIn() togetherWith
-                                slideOutHorizontally { width -> width } + fadeOut()
+                            slideOutHorizontally { width -> width } + fadeOut()
                     }
                 },
                 modifier = Modifier
@@ -160,36 +167,14 @@ fun WelcomeOnboardingScreen(
                 label = "OnboardingSteps"
             ) { step ->
                 when (step) {
-                    0 -> StepWelcome(
-                        onNext = { currentStep = 1 }
-                    )
+                    0 -> StepWelcome(onNext = { currentStep = 1 })
                     1 -> StepPersona(
                         alias = alias,
                         onAliasChange = { alias = it },
                         ephemeralMode = ephemeralMode,
                         onEphemeralChange = { ephemeralMode = it },
-                        isGeneratingKeys = isGeneratingKeys,
-                        keyGenProgress = keyGenProgress,
-                        keyGenLabel = keyGenLabel,
-                        onGenerateKeys = {
-                            isGeneratingKeys = true
-                            scope.launch {
-                                keyGenLabel = "Gathering hardware entropy..."
-                                keyGenProgress = 0.25f
-                                delay(350)
-                                keyGenLabel = "Generating OpenPGP Ed25519 Master Key..."
-                                keyGenProgress = 0.60f
-                                delay(400)
-                                keyGenLabel = "Deriving X25519 Encryption Subkey..."
-                                keyGenProgress = 0.85f
-                                delay(300)
-                                keyGenLabel = "Deriving Blind Mailbox Drop ID..."
-                                keyGenProgress = 1.0f
-                                delay(200)
-                                isGeneratingKeys = false
-                                currentStep = 2
-                            }
-                        }
+                        onNext = { currentStep = 2 },
+                        onBack = { currentStep = 0 }
                     )
                     2 -> StepSecurityLock(
                         enablePinLock = enablePinLock,
@@ -232,14 +217,13 @@ fun WelcomeOnboardingScreen(
                     3 -> StepPermissions(
                         isBatteryIgnored = isBatteryIgnored,
                         onRequestBattery = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                try {
-                                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                        data = Uri.parse("package:${context.packageName}")
-                                    }
-                                    context.startActivity(intent)
-                                } catch (_: Exception) {}
-                            }
+                            try {
+                                MainActivity.isExternalPickerActive = true
+                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
                         },
                         hasCameraPermission = hasCameraPermission,
                         onRequestCamera = { cameraLauncher.launch(Manifest.permission.CAMERA) },
@@ -275,9 +259,6 @@ fun WelcomeOnboardingScreen(
     }
 }
 
-// -----------------------------------------------------------------------------
-// STEP 0: Welcome & Philosophy
-// -----------------------------------------------------------------------------
 @Composable
 private fun StepWelcome(onNext: () -> Unit) {
     Column(
@@ -296,7 +277,7 @@ private fun StepWelcome(onNext: () -> Unit) {
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                Icons.Default.Security,
+                AppIcons.Shield,
                 contentDescription = null,
                 tint = AnthropicTerracotta,
                 modifier = Modifier.size(46.dp)
@@ -331,17 +312,17 @@ private fun StepWelcome(onNext: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             FeatureRow(
-                icon = Icons.Default.Public,
+                icon = AppIcons.Public,
                 title = "In-Process Tor Onion Routing",
                 desc = "Direct SOCKS5 through embedded Arti Rust Tor engine. No clearnet IP or DNS leaks."
             )
             FeatureRow(
-                icon = Icons.Default.Memory,
+                icon = AppIcons.Memory,
                 title = "RAM-Only In-Memory Architecture",
                 desc = "Plaintext messages, audio notes, and temporary state vanish completely when closed. Zero disk footprint."
             )
             FeatureRow(
-                icon = Icons.Default.VpnKey,
+                icon = AppIcons.Key,
                 title = "Pure End-to-End Cryptography",
                 desc = "OpenPGP Ed25519 & X25519 keys generated locally. Relays are blind mailboxes that can never read messages."
             )
@@ -362,24 +343,19 @@ private fun StepWelcome(onNext: () -> Unit) {
         ) {
             Text("Begin Secure Setup", fontSize = 15.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.width(8.dp))
-            Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// STEP 1: Persona & Key Generation
-// -----------------------------------------------------------------------------
 @Composable
 private fun StepPersona(
     alias: String,
     onAliasChange: (String) -> Unit,
     ephemeralMode: Boolean,
     onEphemeralChange: (Boolean) -> Unit,
-    isGeneratingKeys: Boolean,
-    keyGenProgress: Float,
-    keyGenLabel: String,
-    onGenerateKeys: () -> Unit
+    onNext: () -> Unit,
+    onBack: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -390,7 +366,7 @@ private fun StepPersona(
     ) {
         Spacer(modifier = Modifier.height(8.dp))
 
-        Icon(Icons.Default.Fingerprint, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(48.dp))
+        Icon(AppIcons.Fingerprint, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(48.dp))
 
         Text(
             text = "Create Cryptographic Identity",
@@ -414,7 +390,6 @@ private fun StepPersona(
             placeholder = { Text("e.g. Shadow, Cipher, Alex", color = AnthropicTextMuted) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            enabled = !isGeneratingKeys,
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = AnthropicTerracotta,
                 unfocusedBorderColor = AnthropicBorder,
@@ -425,7 +400,6 @@ private fun StepPersona(
             )
         )
 
-        // Ephemeral Mode Option
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -448,56 +422,43 @@ private fun StepPersona(
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = AnthropicTerracotta,
                         checkedTrackColor = AnthropicTerracotta.copy(alpha = 0.4f)
-                    ),
-                    enabled = !isGeneratingKeys
+                    )
                 )
             }
         }
 
         Spacer(modifier = Modifier.weight(1f))
 
-        if (isGeneratingKeys) {
-            Column(
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = onBack,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .weight(1f)
+                    .height(50.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicCream)
             ) {
-                LinearProgressIndicator(
-                    progress = { keyGenProgress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = AnthropicSage,
-                    trackColor = AnthropicDarkNeutral
-                )
-                Text(keyGenLabel, color = AnthropicSage, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                Text("Back")
             }
-        } else {
             Button(
-                onClick = onGenerateKeys,
+                onClick = onNext,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
+                    .weight(2f)
+                    .height(50.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = AnthropicTerracotta,
                     contentColor = AnthropicDarkBg
                 ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text("Generate Cryptographic Keys", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("Next: Security Lock", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// STEP 2: Screen Lock & Duress PIN
-// -----------------------------------------------------------------------------
 @Composable
 private fun StepSecurityLock(
     enablePinLock: Boolean,
@@ -534,7 +495,6 @@ private fun StepSecurityLock(
             color = AnthropicTextMid
         )
 
-        // 1. App Lock Card
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -594,7 +554,6 @@ private fun StepSecurityLock(
             }
         }
 
-        // 2. Duress PIN Card
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -671,9 +630,6 @@ private fun StepSecurityLock(
     }
 }
 
-// -----------------------------------------------------------------------------
-// STEP 3: Transparent Permissions
-// -----------------------------------------------------------------------------
 @Composable
 private fun StepPermissions(
     isBatteryIgnored: Boolean,
@@ -696,7 +652,7 @@ private fun StepPermissions(
         Spacer(modifier = Modifier.height(4.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = AnthropicSage, modifier = Modifier.size(32.dp))
+            Icon(AppIcons.VerifiedUser, contentDescription = null, tint = AnthropicSage, modifier = Modifier.size(32.dp))
             Spacer(modifier = Modifier.width(10.dp))
             Text("Operational Permissions", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AnthropicCream)
         }
@@ -707,9 +663,8 @@ private fun StepPermissions(
             color = AnthropicTextMid
         )
 
-        // 1. Battery Exemption
         PermissionCard(
-            icon = Icons.Default.BatteryChargingFull,
+            icon = AppIcons.BatteryChargingFull,
             title = "Unrestricted Background Tor",
             desc = "Android kills Tor daemon sockets in the background. Exempting GhostKey guarantees immediate message delivery.",
             isGranted = isBatteryIgnored,
@@ -717,9 +672,8 @@ private fun StepPermissions(
             buttonText = "Exempt"
         )
 
-        // 2. Camera Permission
         PermissionCard(
-            icon = Icons.Default.CameraAlt,
+            icon = AppIcons.CameraAlt,
             title = "Camera for In-Person QR Pairing",
             desc = "Scans friend QR codes in 1 second to verify safety codes and eliminate Man-in-the-Middle attacks.",
             isGranted = hasCameraPermission,
@@ -727,9 +681,8 @@ private fun StepPermissions(
             buttonText = "Allow"
         )
 
-        // 3. Mic Permission
         PermissionCard(
-            icon = Icons.Default.Mic,
+            icon = AppIcons.Mic,
             title = "Encrypted Voice Notes (RAM)",
             desc = "Records Push-to-Talk audio directly in RAM. Zero temporary audio files written to disk storage.",
             isGranted = hasMicPermission,
@@ -737,7 +690,6 @@ private fun StepPermissions(
             buttonText = "Allow"
         )
 
-        // 4. Notifications
         PermissionCard(
             icon = Icons.Default.Notifications,
             title = "Tor Message Alerts",
@@ -776,9 +728,6 @@ private fun StepPermissions(
     }
 }
 
-// -----------------------------------------------------------------------------
-// STEP 4: Ready & Enter GhostKey
-// -----------------------------------------------------------------------------
 @Composable
 private fun StepReady(
     alias: String,
@@ -816,9 +765,10 @@ private fun StepReady(
         )
 
         Text(
-            text = "Your cryptographic identity is securely prepared.",
+            text = "Ed25519 & X25519 keys will be generated locally upon entry.",
             fontSize = 13.sp,
-            color = AnthropicTextMid
+            color = AnthropicTextMid,
+            textAlign = TextAlign.Center
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -840,24 +790,35 @@ private fun StepReady(
 
         Spacer(modifier = Modifier.height(32.dp))
 
-        Button(
-            onClick = onComplete,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = AnthropicSage, contentColor = AnthropicDarkBg),
-            shape = RoundedCornerShape(12.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Enter GhostKey", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.width(8.dp))
-            Icon(Icons.Default.LockOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(54.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicCream)
+            ) {
+                Text("Back")
+            }
+            Button(
+                onClick = onComplete,
+                modifier = Modifier
+                    .weight(2f)
+                    .height(54.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AnthropicSage, contentColor = AnthropicDarkBg),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Enter GhostKey", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(AppIcons.LockOpen, contentDescription = null, modifier = Modifier.size(20.dp))
+            }
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// Helper UI Components
-// -----------------------------------------------------------------------------
 @Composable
 private fun FeatureRow(icon: ImageVector, title: String, desc: String) {
     Row(verticalAlignment = Alignment.Top) {

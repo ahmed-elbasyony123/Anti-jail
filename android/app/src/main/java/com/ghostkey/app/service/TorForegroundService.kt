@@ -1,8 +1,6 @@
 package com.ghostkey.app.service
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -15,6 +13,9 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.ghostkey.app.MainActivity
 import com.ghostkey.app.notify.PushNotificationManager
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Optional keep-alive: shows a persistent notification and runs as a foreground service so
@@ -26,12 +27,15 @@ class TorForegroundService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 4711
+        private val _isRunning = MutableStateFlow(false)
+        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, TorForegroundService::class.java))
         }
 
         fun stop(context: Context) {
+            _isRunning.value = false
             context.stopService(Intent(context, TorForegroundService::class.java))
         }
     }
@@ -46,12 +50,19 @@ class TorForegroundService : Service() {
             buildNotification(),
             if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
         )
+        _isRunning.value = true
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        _isRunning.value = false
+        super.onDestroy()
     }
 
     override fun onTimeout(startId: Int) {
         super.onTimeout(startId)
         android.util.Log.w("TorForegroundService", "Android 14+ dataSync foreground service timeout reached; stopping service gracefully")
+        _isRunning.value = false
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (_: Throwable) {}

@@ -18,7 +18,7 @@ data class ChatMessage(
     val id: String,
     val isOutgoing: Boolean,
     val plaintext: String? = null,
-    val ciphertext: String,
+    val ciphertext: String = "",
     val timestamp: Long,
     val isDecrypted: Boolean = false,
     val showRawArmor: Boolean = false,

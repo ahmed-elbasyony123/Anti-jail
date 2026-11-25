@@ -1,4 +1,4 @@
-# GHOSTKEY // E2EE Messaging Suite (v2.7.1)
+# GHOSTKEY // E2EE Messaging Suite (v2.8.0)
 
 > **End-to-End Encrypted • Embedded Tor (Arti Rust Engine) • Ed25519/X25519 • AES-256-GCM Groups • Blind Dead-Drop Relay • QR Pairing & LAN Mesh • Opus PTT Voice**
 
@@ -9,11 +9,11 @@
 **GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with an **Embedded Tor Onion Routing Engine (Arti in Rust)** to minimize metadata exposure to ISPs and intermediate relays without requiring any external apps like Orbot.
 
 > [!NOTE]
-> **GhostKey v2.7.1 Updates:**
+> **GhostKey v2.8.0 Updates:**
 > - **Comprehensive Security Audit Remediation:** Enforced strict SEIPD/MDC integrity checks (anti-Efail), `SUBKEY_BINDING` and `KeyFlags.SIGN_DATA` verification, AES-only cipher enforcement, bounded LRU key caches, and Zip-Bomb recursion limits.
 > - **Encrypted Group Chats & Disappearing Messages:** AES-256-GCM group encryption with AAD, cryptographic group invite validation, and automatic RAM-zeroing TTL message expiration.
 > - **Hardened Transport & Relay:** Eliminated `.onion` DNS leaks, added CSRF/CSWSH protection, `SocksPort 0` + Tor v3 PoW defenses, PBKDF2-HMAC-SHA256 PIN/Duress PIN hashing, and ephemeral-ID Local LAN Mesh.
-> - **Modular Architecture:** Refactored `MainActivity.kt` by extracting `MainModernApp.kt` (Jetpack Compose navigation/screens) and `MainActivityMessaging.kt` (crypto/messaging pipeline).
+> - **Clean Modular Architecture:** Separated `MainActivity` into `MainViewModel`, `IdentityRepository`, `MessagingRepository`, and lean Jetpack Compose UI screens.
 
 ---
 
@@ -102,29 +102,26 @@ flowchart TD
 │
 ├── android/                # Native Android Application (Kotlin + Jetpack Compose)
 │   ├── app/src/main/java/com/ghostkey/app/
-│   │   ├── MainActivity.kt          # Entry point, Lifecycle, PIN/Duress Lock & State
-│   │   ├── MainActivityMessaging.kt # Sign-then-Encrypt, Decrypt, Groups & Media Pipeline
+│   │   ├── MainActivity.kt          # Entry point, FLAG_SECURE, permissions & lock host
+│   │   ├── MainViewModel.kt         # StateFlow UI state, Tor/LAN coordination & lifecycle
 │   │   ├── audio/          # AudioRecorderManager (Opus), AudioPlayerManager (RAM-only)
 │   │   ├── crypto/         # StandalonePgpEngine (LRU Cache), GroupCrypto, WireFormat, InPersonPairing
-│   │   ├── data/           # ChatMessage (@Immutable), ContactAndGroup, SecureStore (Keystore AES-256-GCM)
+│   │   ├── data/           # ChatMessage, ContactAndGroup, SecureStore, IdentityRepository, MessagingRepository
 │   │   ├── net/            # ArtiTorManager (Rust), TorRelayClient, LocalLanMesh, OrbotDiscovery
 │   │   ├── notify/         # PushNotificationManager (Zero-leakage Tor alerts)
 │   │   ├── service/        # TorForegroundService (Stealth sync service)
-│   │   └── ui/             # Modular Jetpack Compose UI
-│   │       ├── components/ # AudioBubble, KeyBar, MessageBubble, StatusBadges
-│   │       ├── dialogs/    # KeyDialogs, PairingDialogs, SecurityStatusDialog, SettingsDialog
+│   │   ├── util/           # GhostKeyUtils (Sanitization, formatting, hashing)
+│   │   └── ui/             # Modular Jetpack Compose UI + lightweight AppIcons
+│   │       ├── components/ # AudioBubble, MessageBubble
+│   │       ├── dialogs/    # IntroduceContactDialog, KeyDialogs, PairingDialogs, SecurityStatusDialog
 │   │       └── screens/    # MainModernApp, ChatsListScreen, CleanChatScreen, LockedScreen, SettingsScreen, TelegramDrawer, WelcomeOnboardingScreen
 │   ├── build.gradle.kts
 │   └── AndroidManifest.xml
 │
-├── web-client/             # React Companion Client (Protocol v2)
-│   ├── src/                # Vite + React + OpenPGP.js
-│   └── package.json
-│
 ├── docs/                   # Cryptographic Architecture & Threat Model
 │   └── ARCHITECTURE.md
 │
-├── start-all.bat           # Windows launcher (Local Relay + Web Client)
+├── start-all.bat           # Windows launcher (Local Relay + Web Console)
 └── start-all.ps1           # PowerShell launcher
 ```
 
@@ -132,12 +129,12 @@ flowchart TD
 
 ## 🚀 Quick Start Guide
 
-### 1. Running the Blind Relay Server (Local or Tor)
+### 1. Running the Blind Relay Server & Web Console (Local or Tor)
 ```bash
 cd server
 npm install
 npm test    # Runs 30 automated unit & integration tests
-npm start   # Binds to 127.0.0.1:8765 by default
+npm start   # Binds to 127.0.0.1:8765 by default (serves API + Web Console)
 ```
 To run as a Tor Hidden Service:
 ```bash
@@ -145,19 +142,11 @@ tor -f torrc
 # Hostname will be generated in ./hidden_service/hostname
 ```
 
-### 2. Running the Web Client
-```bash
-cd web-client
-npm install
-npm run dev
-# Opens at http://localhost:5173
-```
-
-### 3. Building the Android Application
+### 2. Building the Android Application
 ```bash
 cd android
-./gradlew assembleDebug
-# Output APK: android/app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease
+# Output APK: android/app/build/outputs/apk/release/app-release.apk
 ```
 
 ---

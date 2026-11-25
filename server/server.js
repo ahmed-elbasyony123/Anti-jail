@@ -63,7 +63,7 @@ const ID_RE = /^[0-9a-fA-F]{64}$/;
 
 /**
  * drops: dropId (64 lowercase hex) -> {
- *   tokenHash: Buffer(32) | null,   // SHA-256(readToken) once claimed
+ *   claimed: boolean,               // true once authenticated with valid readToken
  *   queue: [{ id, ciphertext, createdAt, ttl, bytes }],
  *   lastActive: ms,
  *   winStart: ms, winCount: number  // 60s rate-limit window for sends
@@ -83,10 +83,6 @@ function normId(value) {
     return (typeof value === 'string' && ID_RE.test(value)) ? value.toLowerCase() : null;
 }
 
-function sha256(buf) {
-    return crypto.createHash('sha256').update(buf).digest();
-}
-
 /** Cryptographically derives a dropId from a secret readToken: dropId = SHA-256("drop:" + readToken). */
 function deriveDropId(tokenHex) {
     const token = normId(tokenHex);
@@ -102,8 +98,8 @@ function isExpired(m, now) {
     return (now - m.createdAt) >= m.ttl;
 }
 
-function newDrop() {
-    return { tokenHash: null, queue: [], lastActive: Date.now(), winStart: 0, winCount: 0 };
+function newDrop(now = Date.now()) {
+    return { claimed: false, queue: [], lastActive: now, winStart: now, winCount: 0 };
 }
 
 function removeMessages(drop, idSet) {
@@ -178,11 +174,11 @@ function authenticate(dropId, tokenHex) {
     let drop = drops.get(dropId);
     if (!drop) {
         if (drops.size >= MAX_ACTIVE_DROPS) return { ok: false, reason: 'capacity' };
-        drop = newDrop();
+        drop = newDrop(now);
         drops.set(dropId, drop);
     }
 
-    drop.tokenHash = sha256(Buffer.from(token, 'hex'));
+    drop.claimed = true;
     drop.lastActive = now;
     return { ok: true, drop };
 }
@@ -193,7 +189,7 @@ const gcTimer = setInterval(() => {
     for (const [dropId, drop] of drops.entries()) {
         purgeExpired(drop, now);
         if (drop.queue.length > 0 || activeSubscriptions.has(dropId)) continue;
-        if (!drop.tokenHash || (now - drop.lastActive) > CLAIM_IDLE_MS) {
+        if (!drop.claimed || (now - drop.lastActive) > CLAIM_IDLE_MS) {
             drops.delete(dropId);
         }
     }
@@ -248,7 +244,7 @@ function rejectTooLarge(req, res) {
 function readJsonBody(req, res) {
     return new Promise((resolve) => {
         const ct = req.headers['content-type'];
-        if (ct && !ct.toLowerCase().includes('application/json')) {
+        if (!ct || !ct.toLowerCase().includes('application/json')) {
             sendJson(res, 415, { error: 'Unsupported media type; application/json expected' });
             return resolve(null);
         }
@@ -389,12 +385,8 @@ async function handleApi(req, res, pathname) {
         }
 
         if (!drop) {
-            drop = newDrop();
+            drop = newDrop(now);
             drops.set(dropId, drop);
-        }
-        if ((now - drop.winStart) >= 60000) {
-            drop.winStart = now;
-            drop.winCount = 0;
         }
 
         const record = {
@@ -535,6 +527,9 @@ async function serveStatic(req, res, pathname) {
     }
 
     const stream = fs.createReadStream(filePath);
+    res.on('close', () => {
+        if (!stream.destroyed) stream.destroy();
+    });
     stream.on('error', () => {
         if (!res.headersSent) sendJson(res, 500, { error: 'Internal error' });
         else res.destroy();
