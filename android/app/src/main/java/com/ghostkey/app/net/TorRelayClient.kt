@@ -176,6 +176,9 @@ class TorRelayClient(
     /** POST /api/v2/send. Returns the relay's message id. */
     suspend fun sendMessage(dropId: String, ciphertext: String, ttlSeconds: Int = 3600): Result<String> =
         withContext(Dispatchers.IO) {
+            if (serverBaseUrl.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("Relay URL is not set in Settings"))
+            }
             try {
                 val body = JSONObject()
                     .put("dropId", dropId)

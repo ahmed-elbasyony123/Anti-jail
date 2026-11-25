@@ -199,9 +199,9 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             onCancelAudioRecording()
         }
         val state = _uiState.value
-        if (!state.ephemeralMode) {
-            identityRepo.saveRelayAndAliasPrefs(state.relayServerUrl, state.userAlias, ephemeralMode = false)
-            persistIdentityAsync()
+        if (!state.ephemeralMode && !state.isOnboarding) {
+            identityRepo.saveRelayAndAliasPrefs(state.relayServerUrl, state.userAlias, ephemeralMode = false, markOnboarded = true)
+            persistIdentitySync()
         }
     }
 
@@ -209,6 +209,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         val state = _uiState.value
         if (!MainActivity.isExternalPickerActive && state.lockEnabled && !state.ephemeralMode && !state.isOnboarding) {
             _uiState.value = state.copy(isLocked = true)
+        }
+        if (!state.ephemeralMode && !state.isOnboarding) {
+            identityRepo.saveRelayAndAliasPrefs(state.relayServerUrl, state.userAlias, ephemeralMode = false, markOnboarded = true)
+            persistIdentitySync()
         }
     }
 
@@ -394,8 +398,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     private fun applyLoadedIdentity(stored: StoredIdentity) {
         val prefs = identityRepo.readPreferences(orbotSocksPort)
-        val resolvedAlias = stored.userAlias.ifBlank { prefs.userAlias }
-        val resolvedRelay = stored.relayUrl.ifBlank { prefs.relayUrl }
+        val resolvedAlias = prefs.userAlias.ifBlank { stored.userAlias }
+        val resolvedRelay = prefs.relayUrl.ifBlank { stored.relayUrl }
         val loadedContacts = stored.contacts.toMutableList()
 
         stored.peer?.let { peer ->
@@ -464,6 +468,13 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    private fun persistIdentitySync() {
+        val st = _uiState.value
+        if (st.ephemeralMode) return
+        val snapshot = buildIdentitySnapshot() ?: return
+        identityRepo.saveIdentitySync(snapshot, ephemeralMode = false)
+    }
+
     fun generateFreshKeys(alias: String? = null) {
         val resolvedAlias = if (!alias.isNullOrBlank()) GhostKeyUtils.sanitizeAlias(alias) else _uiState.value.userAlias
         _uiState.value = _uiState.value.copy(userAlias = resolvedAlias, isGeneratingKey = true)
@@ -478,7 +489,9 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     activeChatContact = null,
                     activeChatGroup = null
                 )
-                persistIdentityAsync()
+                if (!_uiState.value.ephemeralMode) {
+                    buildIdentitySnapshot()?.let { identityRepo.saveIdentity(it, ephemeralMode = false) }
+                }
                 val st = _uiState.value
                 if (requiresTor(st.useTorSocks, st.relayServerUrl) &&
                     ArtiTorManager.isAvailable &&
@@ -537,7 +550,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                         if (currentGroups.none { it.id == newGroup.id || it.groupDropId == newGroup.groupDropId }) {
                             _uiState.value = _uiState.value.copy(groups = currentGroups + newGroup)
                             torClient.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
-                            persistIdentityAsync()
+                            persistIdentitySync()
                             toast("Invited to group: ${newGroup.name} 👥", Toast.LENGTH_LONG)
                         }
                     }
@@ -861,7 +874,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         if (ephemeralChanged && newEphemeral) {
             viewModelScope.launch { identityRepo.wipeStorageOnly() }
         } else if (!newEphemeral) {
-            persistIdentityAsync()
+            persistIdentitySync()
         }
 
         if (needsReconnect) {

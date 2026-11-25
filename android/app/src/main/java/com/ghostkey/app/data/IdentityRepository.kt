@@ -37,7 +37,8 @@ internal class IdentityRepository(context: Context) {
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences = appContext.getSharedPreferences("ghostkey_prefs", Context.MODE_PRIVATE)
     private val secureStore = SecureStore(appContext)
-    private val persistDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private val persistExecutor = Executors.newSingleThreadExecutor()
+    private val persistDispatcher = persistExecutor.asCoroutineDispatcher()
     private val secureRandom = SecureRandom()
 
     companion object {
@@ -77,9 +78,12 @@ internal class IdentityRepository(context: Context) {
     fun saveIdentitySync(identity: StoredIdentity, ephemeralMode: Boolean) {
         if (ephemeralMode) return
         try {
-            secureStore.save(identity)
+            persistExecutor.submit {
+                secureStore.save(identity)
+            }.get(1_500L, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
-            Log.e(TAG, "Identity save failed", e)
+            Log.e(TAG, "Identity save failed, attempting direct fallback", e)
+            runCatching { secureStore.save(identity) }
         }
     }
 
@@ -93,7 +97,7 @@ internal class IdentityRepository(context: Context) {
         if (markOnboarded) {
             editor.putBoolean("has_completed_onboarding", true)
         }
-        editor.apply()
+        editor.commit()
     }
 
     fun saveNetworkConfigPrefs(
@@ -118,8 +122,9 @@ internal class IdentityRepository(context: Context) {
         } else {
             editor.putString("relay_url", relayUrl)
                 .putString("user_alias", alias)
+                .putBoolean("has_completed_onboarding", true)
         }
-        editor.apply()
+        editor.commit()
     }
 
     fun saveOrbotPort(port: Int) {
@@ -127,7 +132,7 @@ internal class IdentityRepository(context: Context) {
     }
 
     fun saveLockEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean("lock_enabled", enabled).apply()
+        prefs.edit().putBoolean("lock_enabled", enabled).commit()
     }
 
     fun saveOnboardingCompletion(
@@ -155,7 +160,7 @@ internal class IdentityRepository(context: Context) {
             if (appPinHash != null) editor.putString("app_pin_hash", appPinHash) else editor.remove("app_pin_hash")
             if (duressPinHash != null) editor.putString("duress_pin_hash", duressPinHash) else editor.remove("duress_pin_hash")
         }
-        editor.apply()
+        editor.commit()
     }
 
     fun savePinsToPrefs(appPinHash: String?, duressPinHash: String?, pinSaltHex: String?, lockEnabled: Boolean, ephemeralMode: Boolean) {
@@ -164,7 +169,7 @@ internal class IdentityRepository(context: Context) {
         if (pinSaltHex != null) editor.putString("pin_salt_hex", pinSaltHex)
         if (appPinHash != null) editor.putString("app_pin_hash", appPinHash) else editor.remove("app_pin_hash")
         if (duressPinHash != null) editor.putString("duress_pin_hash", duressPinHash) else editor.remove("duress_pin_hash")
-        editor.apply()
+        editor.commit()
     }
 
     fun ensurePinSalt(existingSaltHex: String?): String {

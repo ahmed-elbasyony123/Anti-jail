@@ -85,6 +85,12 @@ fun SettingsScreen(
     var ephemeralMode by remember { mutableStateOf(initialEphemeralMode) }
     var lockEnabled by remember { mutableStateOf(initialLockEnabled) }
     var alias by remember { mutableStateOf(userAlias) }
+    LaunchedEffect(initialRelayUrl) {
+        if (relayUrl.isBlank() && initialRelayUrl.isNotBlank()) relayUrl = initialRelayUrl
+    }
+    LaunchedEffect(userAlias) {
+        if (alias.isBlank() && userAlias.isNotBlank()) alias = userAlias
+    }
     var showDuressDialog by remember { mutableStateOf(false) }
     var duressInput by remember { mutableStateOf("") }
     var showAppPinDialog by remember { mutableStateOf(false) }
