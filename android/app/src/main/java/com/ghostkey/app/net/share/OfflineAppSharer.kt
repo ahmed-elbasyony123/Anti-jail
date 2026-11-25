@@ -2,6 +2,7 @@ package com.ghostkey.app.net.share
 
 import android.content.Context
 import android.util.Log
+import com.ghostkey.app.util.GhostKeyUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,7 +19,6 @@ import java.io.FileInputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Semaphore
@@ -219,32 +219,24 @@ class OfflineAppSharer(private val context: Context) {
         out.flush()
     }
 
-    private fun resolveLocalIpv4(): String? {
-        return runCatching {
-            val candidates = mutableListOf<Pair<Int, String>>()
-            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching null
-            while (interfaces.hasMoreElements()) {
-                val nif = interfaces.nextElement()
-                if (nif.isLoopback || !nif.isUp || nif.isVirtual) continue
-                val name = nif.name.lowercase()
-                if (name.startsWith("tun") || name.startsWith("tap") || name.startsWith("ppp") ||
-                    name.contains("vpn") || name.startsWith("rmnet") || name.startsWith("ccmni")
-                ) continue
-                val priority = when {
-                    name.startsWith("p2p") -> 1
-                    name.matches(Regex("^(ap|swlan|wlan)[0-9].*")) -> 2
-                    else -> 3
-                }
-                for (addr in nif.inetAddresses) {
-                    if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
-                        addr.hostAddress?.let { ip ->
-                            val boost = if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) 0 else priority
-                            candidates.add(boost to ip)
-                        }
+    private fun resolveLocalIpv4(): String? = runCatching {
+        val candidates = mutableListOf<Pair<Int, String>>()
+        for (nif in GhostKeyUtils.localNetworkInterfaces(includeP2p = true)) {
+            val name = nif.name.lowercase()
+            val priority = when {
+                name.startsWith("p2p") -> 1
+                name.matches(Regex("^(ap|swlan|wlan)[0-9].*")) -> 2
+                else -> 3
+            }
+            for (addr in nif.inetAddresses) {
+                if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
+                    addr.hostAddress?.let { ip ->
+                        val boost = if (ip.startsWith("192.168.49.") || ip.startsWith("192.168.43.")) 0 else priority
+                        candidates.add(boost to ip)
                     }
                 }
             }
-            candidates.minByOrNull { it.first }?.second
-        }.getOrNull()
-    }
+        }
+        candidates.minByOrNull { it.first }?.second
+    }.getOrNull()
 }

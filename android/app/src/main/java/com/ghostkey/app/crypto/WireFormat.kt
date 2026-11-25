@@ -70,7 +70,7 @@ object WireFormat {
     fun randomHex16(): String {
         val b = ByteArray(16)
         random.nextBytes(b)
-        return b.joinToString("") { "%02x".format(it) }
+        return GhostKeyUtils.bytesToHex(b)
     }
 
     private fun buildEnvelope(

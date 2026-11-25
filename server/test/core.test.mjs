@@ -128,4 +128,6 @@ test('wire format v2: padding buckets, media round trip, strict parsing', async 
     assert.equal(core.parseWire('{"type":"text","text":"x"}'), null, 'v1 style rejected');
     assert.equal(core.parseWire('{"v":3,"type":"text","text":"x"}'), null);
     assert.equal(core.parseWire('{"v":2,"type":"other"}'), null);
+    assert.equal(core.parseWire('{"v":2,"type":"profile_update"}').unsupported, true);
+    assert.equal(core.parseWire('{"v":2,"type":"group_control"}').unsupported, true);
 });

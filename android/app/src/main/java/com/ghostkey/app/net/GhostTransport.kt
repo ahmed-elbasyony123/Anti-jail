@@ -164,6 +164,7 @@ class GhostTransport(
         localLanMesh.stop()
         bleMesh.stop()
         wifiDirect.stop()
+        torClient.close()
         scope.cancel()
     }
 }

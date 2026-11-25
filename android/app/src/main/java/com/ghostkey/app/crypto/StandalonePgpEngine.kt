@@ -105,13 +105,9 @@ object StandalonePgpEngine {
     private fun fingerprintCalc() = JcaKeyFingerprintCalculator().setProvider(bcProvider)
 
     private fun hex(bytes: ByteArray, upper: Boolean = false): String =
-        bytes.joinToString("") { if (upper) "%02X".format(it) else "%02x".format(it) }
+        GhostKeyUtils.bytesToHex(bytes, uppercase = upper)
 
-    fun randomHex32(): String {
-        val b = ByteArray(32)
-        secureRandom.nextBytes(b)
-        return hex(b)
-    }
+    fun randomHex32(): String = hex(ByteArray(32).also { secureRandom.nextBytes(it) })
 
     fun isValidHex32(value: String?): Boolean = value != null && HEX_64.matches(value)
 
@@ -153,33 +149,6 @@ object StandalonePgpEngine {
         val sha1Calc = JcaPGPDigestCalculatorProviderBuilder().setProvider(bcProvider).build()
             .get(HashAlgorithmTags.SHA1)
 
-        val masterSubpacketGen = PGPSignatureSubpacketGenerator()
-        masterSubpacketGen.setKeyFlags(false, KeyFlags.SIGN_DATA or KeyFlags.CERTIFY_OTHER)
-        masterSubpacketGen.setFeature(false, org.bouncycastle.bcpg.sig.Features.FEATURE_MODIFICATION_DETECTION)
-        masterSubpacketGen.setPreferredSymmetricAlgorithms(
-            false,
-            intArrayOf(
-                SymmetricKeyAlgorithmTags.AES_256,
-                SymmetricKeyAlgorithmTags.AES_192,
-                SymmetricKeyAlgorithmTags.AES_128
-            )
-        )
-        masterSubpacketGen.setPreferredHashAlgorithms(
-            false,
-            intArrayOf(
-                HashAlgorithmTags.SHA256,
-                HashAlgorithmTags.SHA384,
-                HashAlgorithmTags.SHA512
-            )
-        )
-        masterSubpacketGen.setPreferredCompressionAlgorithms(
-            false,
-            intArrayOf(
-                CompressionAlgorithmTags.UNCOMPRESSED,
-                CompressionAlgorithmTags.ZLIB
-            )
-        )
-
         // Empty passphrase: at-rest protection of the private key is handled by the app
         // (Android Keystore encryption), not by an OpenPGP passphrase.
         val encryptor = JcePBESecretKeyEncryptorBuilder(PGPEncryptedData.AES_256, sha1Calc)
@@ -191,7 +160,7 @@ object StandalonePgpEngine {
             masterPgpPair,
             userId,
             sha1Calc,
-            masterSubpacketGen.generate(),
+            buildMasterSubpackets(),
             null,
             JcaPGPContentSignerBuilder(masterPgpPair.publicKey.algorithm, HashAlgorithmTags.SHA256)
                 .setProvider(bcProvider),
@@ -223,6 +192,25 @@ object StandalonePgpEngine {
         val fp = hex(pubRing.publicKey.fingerprint, upper = true)
 
         return PgpKeyPairArmored(pubArmored, secArmored, fp, dropId, readToken)
+    }
+
+    private fun buildMasterSubpackets(): PGPSignatureSubpacketVector {
+        val gen = PGPSignatureSubpacketGenerator()
+        gen.setKeyFlags(false, KeyFlags.SIGN_DATA or KeyFlags.CERTIFY_OTHER)
+        gen.setFeature(false, org.bouncycastle.bcpg.sig.Features.FEATURE_MODIFICATION_DETECTION)
+        gen.setPreferredSymmetricAlgorithms(
+            false,
+            intArrayOf(SymmetricKeyAlgorithmTags.AES_256, SymmetricKeyAlgorithmTags.AES_192, SymmetricKeyAlgorithmTags.AES_128)
+        )
+        gen.setPreferredHashAlgorithms(
+            false,
+            intArrayOf(HashAlgorithmTags.SHA256, HashAlgorithmTags.SHA384, HashAlgorithmTags.SHA512)
+        )
+        gen.setPreferredCompressionAlgorithms(
+            false,
+            intArrayOf(CompressionAlgorithmTags.UNCOMPRESSED, CompressionAlgorithmTags.ZLIB)
+        )
+        return gen.generate()
     }
 
     // ---------------------------------------------------------------------------------------
@@ -467,6 +455,12 @@ object StandalonePgpEngine {
         return decryptMulti(armoredMessage, privateKeyArmored, candidates)
     }
 
+    private data class DecryptedStreamContents(
+        val literal: ByteArray,
+        val onePassList: List<PGPOnePassSignature>,
+        val sigList: List<PGPSignature>
+    )
+
     /**
      * Decrypt and verify against a list of candidate public keys (e.g. from all saved contacts).
      */
@@ -475,11 +469,38 @@ object StandalonePgpEngine {
         privateKeyArmored: String,
         candidatePeerKeysArmored: List<String>
     ): DecryptedMessage {
+        val (pbe, privKey) = extractMatchingEncryptedData(armoredMessage, privateKeyArmored)
+        val decryptorFactory = JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
+        val algo = pbe.getSymmetricAlgorithm(decryptorFactory)
+        if (algo !in setOf(SymmetricKeyAlgorithmTags.AES_256, SymmetricKeyAlgorithmTags.AES_192, SymmetricKeyAlgorithmTags.AES_128)) {
+            throw IllegalArgumentException("Insecure or unsupported symmetric algorithm ($algo); AES required")
+        }
+
+        val contents = readDecryptedPackets(pbe.getDataStream(decryptorFactory))
+        if (!pbe.isIntegrityProtected) {
+            throw IllegalArgumentException("Message is not integrity-protected (SEIPD packet required)")
+        }
+        if (!pbe.verify()) {
+            throw IllegalArgumentException("Message integrity check failed (modified or corrupted)")
+        }
+
+        val (status, signer) = verifyMessageSignature(
+            onePassList = contents.onePassList,
+            sigList = contents.sigList,
+            literal = contents.literal,
+            candidates = candidatePeerKeysArmored
+        )
+        return DecryptedMessage(contents.literal, status, signer)
+    }
+
+    private fun extractMatchingEncryptedData(
+        armoredMessage: String,
+        privateKeyArmored: String
+    ): Pair<PGPPublicKeyEncryptedData, PGPPrivateKey> {
         val privRingCollection = secretRingCollectionCache.getOrPut(privateKeyArmored) {
             val privStream = PGPUtil.getDecoderStream(ByteArrayInputStream(privateKeyArmored.toByteArray(Charsets.UTF_8)))
             PGPSecretKeyRingCollection(privStream, fingerprintCalc())
         }
-
         val msgStream = PGPUtil.getDecoderStream(ByteArrayInputStream(armoredMessage.toByteArray(Charsets.UTF_8)))
         val pgpFact = PGPObjectFactory(msgStream, fingerprintCalc())
 
@@ -492,49 +513,25 @@ object StandalonePgpEngine {
             }
             obj = pgpFact.nextObject()
         }
-        if (encList == null) {
-            throw IllegalArgumentException("No encrypted data found in message")
-        }
+        if (encList == null) throw IllegalArgumentException("No encrypted data found in message")
 
         val decryptor = JcePBESecretKeyDecryptorBuilder().setProvider(bcProvider).build("".toCharArray())
-
-        var privKey: PGPPrivateKey? = null
-        var pbe: PGPPublicKeyEncryptedData? = null
         for (item in encList) {
-            if (item is PGPPublicKeyEncryptedData) {
-                val secKey = privRingCollection.getSecretKey(item.keyID)
-                if (secKey != null) {
-                    try {
-                        privKey = secKey.extractPrivateKey(decryptor)
-                        pbe = item
-                        break
-                    } catch (_: Exception) {
-                        // keep looking
-                    }
-                }
-            }
+            if (item !is PGPPublicKeyEncryptedData) continue
+            val secKey = privRingCollection.getSecretKey(item.keyID) ?: continue
+            val privKey = runCatching { secKey.extractPrivateKey(decryptor) }.getOrNull() ?: continue
+            return item to privKey
         }
-        if (pbe == null || privKey == null) {
-            throw IllegalArgumentException("Could not find matching private key to decrypt payload")
-        }
+        throw IllegalArgumentException("Could not find matching private key to decrypt payload")
+    }
 
-        val decryptorFactory = JcePublicKeyDataDecryptorFactoryBuilder().setProvider(bcProvider).build(privKey)
-        val algo = pbe.getSymmetricAlgorithm(decryptorFactory)
-        if (algo != SymmetricKeyAlgorithmTags.AES_256 &&
-            algo != SymmetricKeyAlgorithmTags.AES_192 &&
-            algo != SymmetricKeyAlgorithmTags.AES_128) {
-            throw IllegalArgumentException("Insecure or unsupported symmetric algorithm ($algo); AES required")
-        }
-
-        val clearStream: InputStream = pbe.getDataStream(decryptorFactory)
-
+    private fun readDecryptedPackets(clearStream: InputStream): DecryptedStreamContents {
         var plainFact = PGPObjectFactory(clearStream, fingerprintCalc())
         val onePassList = mutableListOf<PGPOnePassSignature>()
         val sigList = mutableListOf<PGPSignature>()
         var literal: ByteArray? = null
         var compressionDepth = 0
 
-        // Walk the decrypted packet stream: [compressed] -> [one-pass sig] -> literal -> [signature]
         var plainObj = plainFact.nextObject()
         while (plainObj != null) {
             when (plainObj) {
@@ -545,99 +542,74 @@ object StandalonePgpEngine {
                     }
                     plainFact = PGPObjectFactory(plainObj.dataStream, fingerprintCalc())
                 }
-                is PGPOnePassSignatureList -> {
-                    for (i in 0 until plainObj.size()) {
-                        onePassList.add(plainObj.get(i))
-                    }
-                }
+                is PGPOnePassSignatureList -> repeat(plainObj.size()) { i -> onePassList.add(plainObj.get(i)) }
                 is PGPLiteralData -> {
-                    val inStream = plainObj.inputStream
-                    val buf = ByteArrayOutputStream()
-                    val temp = ByteArray(8192)
-                    var totalRead = 0
-                    var bytesRead: Int
-                    while (inStream.read(temp).also { bytesRead = it } != -1) {
-                        totalRead += bytesRead
-                        if (totalRead > 25 * 1024 * 1024) {
-                            throw IllegalArgumentException("Decrypted plaintext exceeds maximum allowed size (25 MB)")
-                        }
-                        buf.write(temp, 0, bytesRead)
-                    }
-                    literal = buf.toByteArray()
+                    literal = GhostKeyUtils.readStreamLimited(plainObj.inputStream, 25 * 1024 * 1024)
+                        ?: throw IllegalArgumentException("Decrypted plaintext exceeds maximum allowed size (25 MB)")
                 }
-                is PGPSignatureList -> {
-                    for (i in 0 until plainObj.size()) {
-                        sigList.add(plainObj.get(i))
-                    }
-                }
+                is PGPSignatureList -> repeat(plainObj.size()) { i -> sigList.add(plainObj.get(i)) }
             }
             plainObj = plainFact.nextObject()
         }
+        val body = literal ?: throw IllegalArgumentException("Expected literal data in decrypted stream")
+        return DecryptedStreamContents(body, onePassList, sigList)
+    }
 
-        if (literal == null) {
-            throw IllegalArgumentException("Expected literal data in decrypted stream")
-        }
-
-        if (!pbe.isIntegrityProtected) {
-            throw IllegalArgumentException("Message is not integrity-protected (SEIPD packet required)")
-        }
-        if (!pbe.verify()) {
-            throw IllegalArgumentException("Message integrity check failed (modified or corrupted)")
-        }
-
-        var status = SignatureStatus.UNSIGNED
-        var signer: String? = null
-
-        if (onePassList.isNotEmpty() || sigList.isNotEmpty()) {
-            status = SignatureStatus.INVALID_SIGNATURE
-            outer@ for (ops in onePassList) {
-                val sig = sigList.firstOrNull { it.keyID == ops.keyID } ?: continue
-                if (sig.signatureType != PGPSignature.BINARY_DOCUMENT || sig.hashAlgorithm !in acceptedSignatureHashes) {
-                    continue
-                }
-                for (candArmored in candidatePeerKeysArmored) {
-                    if (candArmored.isBlank()) continue
-                    try {
-                        val ring = readSinglePublicRing(candArmored)
-                        val peerRing = if (ring.getPublicKey(ops.keyID) != null) ring else null
-                        if (peerRing != null) {
-                            val signingKey = peerRing.getPublicKey(ops.keyID)
-                            val masterKey = peerRing.publicKey
-                            val now = Date()
-                            val masterValid = !masterKey.isRevoked && !isExpired(masterKey, now)
-                            val signingValid = !signingKey.isRevoked && !isExpired(signingKey, now) && hasSignDataFlag(signingKey)
-                            var subkeyValid = true
-                            if (signingKey.keyID != masterKey.keyID) {
-                                var hasBinding = false
-                                for (s in signingKey.signatures) {
-                                    val sigItem = s as PGPSignature
-                                    if (sigItem.signatureType == PGPSignature.SUBKEY_BINDING || sigItem.signatureType == PGPSignature.PRIMARYKEY_BINDING) {
-                                        sigItem.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), masterKey)
-                                        if (sigItem.verifyCertification(masterKey, signingKey)) {
-                                            hasBinding = true
-                                            break
-                                        }
-                                    }
-                                }
-                                subkeyValid = hasBinding
-                            }
-
-                            if (masterValid && signingValid && subkeyValid) {
-                                ops.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), signingKey)
-                                ops.update(literal)
-                                if (ops.verify(sig)) {
-                                    status = SignatureStatus.VERIFIED
-                                    signer = hex(peerRing.publicKey.fingerprint, upper = true)
-                                    break@outer
-                                }
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }
+    private fun verifyMessageSignature(
+        onePassList: List<PGPOnePassSignature>,
+        sigList: List<PGPSignature>,
+        literal: ByteArray,
+        candidates: List<String>
+    ): Pair<SignatureStatus, String?> {
+        if (onePassList.isEmpty() && sigList.isEmpty()) return SignatureStatus.UNSIGNED to null
+        val now = Date()
+        for (ops in onePassList) {
+            val sig = sigList.firstOrNull { it.keyID == ops.keyID } ?: continue
+            if (sig.signatureType != PGPSignature.BINARY_DOCUMENT || sig.hashAlgorithm !in acceptedSignatureHashes) {
+                continue
+            }
+            for (candArmored in candidates) {
+                if (candArmored.isBlank()) continue
+                val verifiedFp = verifyAgainstCandidate(ops, sig, literal, candArmored, now)
+                if (verifiedFp != null) return SignatureStatus.VERIFIED to verifiedFp
             }
         }
+        return SignatureStatus.INVALID_SIGNATURE to null
+    }
 
-        return DecryptedMessage(literal, status, signer)
+    private fun verifyAgainstCandidate(
+        ops: PGPOnePassSignature,
+        sig: PGPSignature,
+        literal: ByteArray,
+        candidateArmored: String,
+        now: Date
+    ): String? = runCatching {
+        val ring = readSinglePublicRing(candidateArmored)
+        val signingKey = ring.getPublicKey(ops.keyID) ?: return@runCatching null
+        val masterKey = ring.publicKey ?: return@runCatching null
+        if (!isUsable(masterKey, now) || !isUsable(signingKey, now) || !hasSignDataFlag(signingKey)) {
+            return@runCatching null
+        }
+        if (signingKey.keyID != masterKey.keyID && !hasValidSubkeyBinding(masterKey, signingKey)) {
+            return@runCatching null
+        }
+        ops.init(JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider), signingKey)
+        ops.update(literal)
+        if (ops.verify(sig)) hex(masterKey.fingerprint, upper = true) else null
+    }.getOrNull()
+
+    private fun hasValidSubkeyBinding(masterKey: PGPPublicKey, signingKey: PGPPublicKey): Boolean {
+        val sigs = signingKey.signatures ?: return false
+        while (sigs.hasNext()) {
+            val sigItem = sigs.next() as? PGPSignature ?: continue
+            if (sigItem.signatureType != PGPSignature.SUBKEY_BINDING &&
+                sigItem.signatureType != PGPSignature.PRIMARYKEY_BINDING
+            ) continue
+            val verifier = JcaPGPContentVerifierBuilderProvider().setProvider(bcProvider)
+            sigItem.init(verifier, masterKey)
+            if (sigItem.verifyCertification(masterKey, signingKey)) return true
+        }
+        return false
     }
 
     private fun hasSignDataFlag(key: PGPPublicKey): Boolean {

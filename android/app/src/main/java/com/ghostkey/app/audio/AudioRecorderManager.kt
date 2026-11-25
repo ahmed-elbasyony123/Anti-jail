@@ -51,6 +51,42 @@ class AudioRecorderManager(private val context: Context) {
     private var activeMimeType: String = "audio/ogg"
     private var activeExt: String = "ogg"
 
+    companion object {
+        private const val TEMP_PREFIX = "ptt_"
+
+        /** Shreds any orphaned voice note temp files left behind by an abrupt process kill. */
+        fun purgeOrphanedCacheFiles(context: Context) {
+            val cache = context.cacheDir ?: return
+            val files = cache.listFiles { _, name -> name.startsWith(TEMP_PREFIX) } ?: return
+            for (file in files) shredFile(file)
+        }
+
+        private fun shredFile(file: File) {
+            try {
+                if (file.exists()) {
+                    val length = file.length()
+                    if (length > 0) {
+                        java.io.RandomAccessFile(file, "rws").use { raf ->
+                            raf.seek(0)
+                            val zeroes = ByteArray(minOf(length.toInt(), 4096))
+                            var remaining = length
+                            while (remaining > 0) {
+                                val toWrite = minOf(remaining.toInt(), zeroes.size)
+                                raf.write(zeroes, 0, toWrite)
+                                remaining -= toWrite
+                            }
+                        }
+                    }
+                    file.delete()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    init {
+        purgeOrphanedCacheFiles(context)
+    }
+
     val isRecording: Boolean get() = mediaRecorder != null
 
     fun startRecording(): Boolean {
@@ -163,25 +199,9 @@ class AudioRecorderManager(private val context: Context) {
         cleanup()
     }
 
-    private fun shredFile(file: File) {
-        try {
-            if (file.exists()) {
-                val length = file.length()
-                if (length > 0) {
-                    java.io.RandomAccessFile(file, "rws").use { raf ->
-                        raf.seek(0)
-                        val zeroes = ByteArray(minOf(length.toInt(), 4096))
-                        var remaining = length
-                        while (remaining > 0) {
-                            val toWrite = minOf(remaining.toInt(), zeroes.size)
-                            raf.write(zeroes, 0, toWrite)
-                            remaining -= toWrite
-                        }
-                    }
-                }
-                file.delete()
-            }
-        } catch (ignored: Exception) {}
+    fun wipe() {
+        cancelRecording()
+        purgeOrphanedCacheFiles(context)
     }
 
     private fun cleanup() {

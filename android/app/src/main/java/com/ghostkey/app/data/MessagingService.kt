@@ -21,8 +21,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
 import java.util.Base64
 import java.util.Collections
 import java.util.UUID
@@ -42,18 +40,19 @@ internal data class OutboxItem(
 
 /**
  * Unified messaging pipeline coordinating:
- * - Outbox queuing & retry across Tor, Wi-Fi Direct/LAN, and Bitchat BLE Multi-Hop Mesh
+ * - Bounded RAM Outbox queuing & retry across Tor, Wi-Fi Direct/LAN, and BLE Mesh
  * - Anti-replay nonce & msgId deduplication
- * - EXIF/Metadata sanitization via [MediaSanitizer]
- * - Disappearing message expiry
- * - Encrypted profile picture updates & group control events
+ * - EXIF/Metadata sanitization via [MediaSanitizer] with 12 MB raw cap (<= 25 MB server limit after PGP armor)
+ * - Disappearing message expiry, E2EE profile updates, and group control events
  */
 internal class MessagingService(
     private val contentResolver: ContentResolver,
     private val transport: GhostTransport
 ) {
     companion object {
-        private const val MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+        // 12 MB raw media remains comfortably below the 25 MB server limit after Base64 + OpenPGP armor
+        const val MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
+        const val MAX_OUTBOX_BYTES = 16 * 1024 * 1024L
         private const val MAX_SEEN_IDS = 2000
         private const val MAX_SENT_CIPHERTEXT_HASHES = 1000
         private const val MAX_OUTBOX_SIZE = 128
@@ -63,65 +62,53 @@ internal class MessagingService(
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
     private val outbox = Collections.synchronizedList(mutableListOf<OutboxItem>())
+    private var outboxTotalBytes = 0L
     private val seenNonces = Collections.synchronizedSet(LinkedHashSet<String>())
     private val seenMsgIds = Collections.synchronizedSet(LinkedHashSet<String>())
     private val sentCiphertextHashes = Collections.synchronizedSet(LinkedHashSet<String>())
 
     fun clearAllMessages() {
-        val current = _messages.value
-        for (m in current) m.zeroOut()
+        _messages.value.forEach { it.zeroOut() }
         _messages.value = emptyList()
-        synchronized(outbox) { outbox.clear() }
+        synchronized(outbox) {
+            outbox.clear()
+            outboxTotalBytes = 0L
+        }
         synchronized(seenNonces) { seenNonces.clear() }
         synchronized(seenMsgIds) { seenMsgIds.clear() }
         synchronized(sentCiphertextHashes) { sentCiphertextHashes.clear() }
     }
 
     fun clearChatMessages(chatId: String) {
-        val removed = _messages.value.filter { it.chatId == chatId }
-        for (m in removed) m.zeroOut()
+        _messages.value.filter { it.chatId == chatId }.forEach { it.zeroOut() }
         _messages.update { list -> list.filterNot { it.chatId == chatId } }
     }
 
     fun reapExpiredMessages(now: Long = System.currentTimeMillis()): Boolean {
-        val current = _messages.value
-        val expired = current.filter { it.isExpired(now) }
+        val expired = _messages.value.filter { it.isExpired(now) }
         if (expired.isEmpty()) return false
-        for (m in expired) m.zeroOut()
+        expired.forEach { it.zeroOut() }
         val expiredIds = expired.mapTo(HashSet(expired.size)) { it.id }
         _messages.update { list -> list.filterNot { it.id in expiredIds } }
         return true
     }
 
-    private fun recordUniqueId(set: MutableSet<String>, id: String?): Boolean {
+    private fun addBoundedUnique(set: MutableSet<String>, maxEntries: Int, id: String?): Boolean {
         if (id.isNullOrBlank()) return true
         synchronized(set) {
-            if (set.contains(id)) return false
-            set.add(id)
-            if (set.size > MAX_SEEN_IDS) {
-                val oldest = set.iterator().next()
-                set.remove(oldest)
-            }
+            if (!set.add(id)) return false
+            if (set.size > maxEntries) set.remove(set.iterator().next())
             return true
         }
     }
 
     private fun rememberSentCiphertext(ciphertext: String) {
-        val digest = GhostKeyUtils.sha256Hex(ciphertext)
-        synchronized(sentCiphertextHashes) {
-            sentCiphertextHashes.add(digest)
-            if (sentCiphertextHashes.size > MAX_SENT_CIPHERTEXT_HASHES) {
-                val oldest = sentCiphertextHashes.iterator().next()
-                sentCiphertextHashes.remove(oldest)
-            }
-        }
+        addBoundedUnique(sentCiphertextHashes, MAX_SENT_CIPHERTEXT_HASHES, GhostKeyUtils.sha256Hex(ciphertext))
     }
 
     fun isOwnEcho(ciphertext: String): Boolean {
         val digest = GhostKeyUtils.sha256Hex(ciphertext)
-        synchronized(sentCiphertextHashes) {
-            return sentCiphertextHashes.contains(digest)
-        }
+        synchronized(sentCiphertextHashes) { return sentCiphertextHashes.contains(digest) }
     }
 
     fun insertPendingIncoming(record: EncryptedMessageRecord): ChatMessage? {
@@ -160,6 +147,29 @@ internal class MessagingService(
         return incoming
     }
 
+    private data class DecryptedEnvelope(
+        val plainBytes: ByteArray,
+        val sigStatus: SignatureStatus?,
+        val signerFp: String?,
+        val group: GroupChat?
+    )
+
+    private fun decryptEnvelope(
+        msg: ChatMessage,
+        dropId: String,
+        myKeys: PgpKeyPairArmored,
+        contacts: List<Contact>,
+        groups: List<GroupChat>
+    ): DecryptedEnvelope {
+        val group = groups.find { it.groupDropId == dropId || it.id == dropId }
+        if (group != null) {
+            return DecryptedEnvelope(GroupCrypto.decrypt(msg.ciphertext, group.sharedKeyBase64), null, null, group)
+        }
+        val candidateKeys = contacts.mapNotNull { it.publicKeyArmored.ifBlank { null } }.distinct()
+        val result = StandalonePgpEngine.decryptMulti(msg.ciphertext, myKeys.privateKeyArmored, candidateKeys)
+        return DecryptedEnvelope(result.bytes, result.signatureStatus, result.signerFingerprint, null)
+    }
+
     suspend fun decryptAndProcess(
         msg: ChatMessage,
         dropId: String,
@@ -171,74 +181,41 @@ internal class MessagingService(
         onProfileUpdated: (senderDropId: String, alias: String?, avatarBase64: String?, avatarHash: String?) -> Unit = { _, _, _, _ -> },
         onGroupControlReceived: (MessageContent.GroupControl, senderDropId: String?) -> Unit = { _, _ -> }
     ): ChatMessage? = withContext(Dispatchers.Default) {
-        val group = groups.find { it.groupDropId == dropId || it.id == dropId }
-        val plainBytes: ByteArray
-        var sigStatus: SignatureStatus? = null
-        var signerFp: String? = null
-
-        if (group != null) {
-            plainBytes = GroupCrypto.decrypt(msg.ciphertext, group.sharedKeyBase64)
-        } else {
-            val candidateKeys = contacts.mapNotNull { it.publicKeyArmored.ifBlank { null } }.distinct()
-            val result = StandalonePgpEngine.decryptMulti(msg.ciphertext, myKeys.privateKeyArmored, candidateKeys)
-            plainBytes = result.bytes
-            sigStatus = result.signatureStatus
-            signerFp = result.signerFingerprint
-        }
-
-        val wire = WireFormat.parse(plainBytes)
-        val isNewNonce = recordUniqueId(seenNonces, wire?.nonce)
-        val isNewMsgId = recordUniqueId(seenMsgIds, wire?.msgId)
+        val env = decryptEnvelope(msg, dropId, myKeys, contacts, groups)
+        val wire = WireFormat.parse(env.plainBytes)
+        val isNewNonce = addBoundedUnique(seenNonces, MAX_SEEN_IDS, wire?.nonce)
+        val isNewMsgId = addBoundedUnique(seenMsgIds, MAX_SEEN_IDS, wire?.msgId)
         if (!isNewNonce || !isNewMsgId) {
-            if (fromRelay) transport.torClient.ack(listOf(msg.id), dropId = group?.groupDropId ?: dropId)
+            if (fromRelay) transport.torClient.ack(listOf(msg.id), dropId = env.group?.groupDropId ?: dropId)
             _messages.update { list -> list.filterNot { it.id == msg.id } }
             return@withContext null
         }
 
-        val matchedContact = signerFp?.let { fp -> contacts.find { it.fingerprint == fp } }
+        val matchedContact = env.signerFp?.let { fp -> contacts.find { it.fingerprint == fp } }
         val senderDrop = matchedContact?.dropId ?: dropId
-        val targetChatId = group?.id ?: senderDrop
-        val content = decodeWireContent(wire, plainBytes)
+        val targetChatId = env.group?.id ?: senderDrop
+        val content = decodeWireContent(wire, env.plainBytes)
 
-        when (content) {
-            is MessageContent.GroupInvite -> {
-                onGroupInviteReceived(
-                    GroupChat(
-                        id = content.groupId,
-                        name = content.groupName,
-                        groupDropId = content.groupDropId,
-                        groupReadToken = content.groupReadToken,
-                        sharedKeyBase64 = content.sharedKey,
-                        members = emptyList(),
-                        createdAt = System.currentTimeMillis()
-                    )
-                )
-            }
-            is MessageContent.ProfileUpdate -> {
-                onProfileUpdated(
-                    senderDrop,
-                    content.alias,
-                    wire?.avatarBase64,
-                    content.avatarHash
-                )
-            }
-            is MessageContent.GroupControl -> {
-                onGroupControlReceived(content, matchedContact?.dropId)
-            }
-            else -> Unit
-        }
+        dispatchSpecialContent(
+            content = content,
+            wire = wire,
+            senderDrop = senderDrop,
+            verifiedSenderDrop = matchedContact?.dropId,
+            onGroupInviteReceived = onGroupInviteReceived,
+            onProfileUpdated = onProfileUpdated,
+            onGroupControlReceived = onGroupControlReceived
+        )
 
         val wireTtl = wire?.ttlSeconds
         val expiresAt = if (wireTtl != null && wireTtl > 0) System.currentTimeMillis() + (wireTtl * 1000L) else null
-
         val decrypted = msg.copy(
             content = content,
             ciphertext = "",
-            signatureStatus = sigStatus,
-            signerFingerprint = signerFp,
+            signatureStatus = env.sigStatus,
+            signerFingerprint = env.signerFp,
             chatId = targetChatId,
-            groupId = group?.id,
-            isGroup = group != null,
+            groupId = env.group?.id,
+            isGroup = env.group != null,
             senderAlias = wire?.senderAlias ?: matchedContact?.alias,
             replyToId = wire?.replyTo,
             expiresAt = expiresAt,
@@ -254,15 +231,40 @@ internal class MessagingService(
             }
         }
         if (updated && fromRelay) {
-            transport.torClient.ack(listOf(msg.id), dropId = group?.groupDropId ?: dropId)
+            transport.torClient.ack(listOf(msg.id), dropId = env.group?.groupDropId ?: dropId)
         }
         if (updated) decrypted else null
     }
 
-    private fun decodeWireContent(wire: WireMessage?, rawPlainBytes: ByteArray): MessageContent {
-        if (wire == null) {
-            return MessageContent.Text(String(rawPlainBytes, Charsets.UTF_8))
+    private fun dispatchSpecialContent(
+        content: MessageContent,
+        wire: WireMessage?,
+        senderDrop: String,
+        verifiedSenderDrop: String?,
+        onGroupInviteReceived: (GroupChat) -> Unit,
+        onProfileUpdated: (senderDropId: String, alias: String?, avatarBase64: String?, avatarHash: String?) -> Unit,
+        onGroupControlReceived: (MessageContent.GroupControl, senderDropId: String?) -> Unit
+    ) {
+        when (content) {
+            is MessageContent.GroupInvite -> onGroupInviteReceived(
+                GroupChat(
+                    id = content.groupId,
+                    name = content.groupName,
+                    groupDropId = content.groupDropId,
+                    groupReadToken = content.groupReadToken,
+                    sharedKeyBase64 = content.sharedKey,
+                    members = emptyList(),
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            is MessageContent.ProfileUpdate -> onProfileUpdated(senderDrop, content.alias, wire?.avatarBase64, content.avatarHash)
+            is MessageContent.GroupControl -> onGroupControlReceived(content, verifiedSenderDrop)
+            else -> Unit
         }
+    }
+
+    private fun decodeWireContent(wire: WireMessage?, rawPlainBytes: ByteArray): MessageContent {
+        if (wire == null) return MessageContent.Text(String(rawPlainBytes, Charsets.UTF_8))
         return when {
             wire.isGroupInvite -> MessageContent.GroupInvite(
                 groupId = wire.groupId ?: "",
@@ -295,10 +297,7 @@ internal class MessagingService(
                 when {
                     mimeType.startsWith("image/") -> MessageContent.ImageMedia(mimeType, filename, raw)
                     mimeType.startsWith("audio/") -> MessageContent.AudioNote(
-                        mimeType,
-                        filename,
-                        raw,
-                        MediaSanitizer.extractAudioDurationMs(raw)
+                        mimeType, filename, raw, MediaSanitizer.extractAudioDurationMs(raw)
                     )
                     else -> MessageContent.FileMedia(mimeType, filename, raw.size, raw)
                 }
@@ -322,6 +321,13 @@ internal class MessagingService(
         sendBuiltPayload(target, payload, MessageContent.Text(text), myKeys, userAlias, msgId, replyToId, ttl)
     }
 
+    private data class PreparedMedia(
+        val mimeType: String,
+        val filename: String,
+        val bytes: ByteArray,
+        val content: MessageContent
+    )
+
     suspend fun sendMediaUri(
         target: ChatTarget,
         uri: Uri,
@@ -329,10 +335,11 @@ internal class MessagingService(
         userAlias: String
     ): Result<DeliveryState> {
         val loaded = withContext(Dispatchers.IO) {
-            val bytes = contentResolver.openInputStream(uri)?.use { readLimited(it, MAX_ATTACHMENT_BYTES) }
-                ?: return@withContext Result.failure<Triple<String, String, ByteArray>>(
-                    IllegalArgumentException("File exceeds 15 MB limit")
-                )
+            val bytes = contentResolver.openInputStream(uri)?.use {
+                GhostKeyUtils.readStreamLimited(it, MAX_ATTACHMENT_BYTES)
+            } ?: return@withContext Result.failure<Triple<String, String, ByteArray>>(
+                IllegalArgumentException("File exceeds 12 MB limit")
+            )
             val mime = contentResolver.getType(uri) ?: "application/octet-stream"
             val name = queryFilename(uri) ?: "attachment"
             Result.success(Triple(mime, name, bytes))
@@ -343,30 +350,32 @@ internal class MessagingService(
             val ttl = (target as? ChatTarget.Direct)?.contact?.disappearingTtlSeconds
             val groupId = (target as? ChatTarget.Group)?.group?.id
             val msgId = WireFormat.randomHex16()
-
-            val (finalMime, finalName, finalBytes, content) = if (origMime.startsWith("image/")) {
-                val sanitized = MediaSanitizer.sanitizeImage(origBytes)
-                if (sanitized != null) {
-                    val safeName = origName.substringBeforeLast('.') + ".webp"
-                    Tuple4(
-                        sanitized.mimeType,
-                        safeName,
-                        sanitized.bytes,
-                        MessageContent.ImageMedia(sanitized.mimeType, safeName, sanitized.bytes, sanitized.width, sanitized.height)
-                    )
-                } else {
-                    Tuple4(origMime, origName, origBytes, MessageContent.ImageMedia(origMime, origName, origBytes))
-                }
-            } else if (origMime.startsWith("audio/")) {
-                val duration = MediaSanitizer.extractAudioDurationMs(origBytes)
-                Tuple4(origMime, origName, origBytes, MessageContent.AudioNote(origMime, origName, origBytes, duration))
-            } else {
-                Tuple4(origMime, origName, origBytes, MessageContent.FileMedia(origMime, origName, origBytes.size, origBytes))
-            }
-
-            val payload = WireFormat.buildMedia(finalMime, finalName, finalBytes, userAlias, groupId, ttl, msgId = msgId)
-            sendBuiltPayload(target, payload, content, myKeys, userAlias, msgId, ttlSeconds = ttl)
+            val prepared = prepareOutgoingMedia(origMime, origName, origBytes)
+            val payload = WireFormat.buildMedia(prepared.mimeType, prepared.filename, prepared.bytes, userAlias, groupId, ttl, msgId = msgId)
+            sendBuiltPayload(target, payload, prepared.content, myKeys, userAlias, msgId, ttlSeconds = ttl)
         }
+    }
+
+    private fun prepareOutgoingMedia(origMime: String, origName: String, origBytes: ByteArray): PreparedMedia = when {
+        origMime.startsWith("image/") -> {
+            val sanitized = MediaSanitizer.sanitizeImage(origBytes)
+            if (sanitized != null) {
+                val safeName = origName.substringBeforeLast('.') + ".webp"
+                PreparedMedia(
+                    sanitized.mimeType,
+                    safeName,
+                    sanitized.bytes,
+                    MessageContent.ImageMedia(sanitized.mimeType, safeName, sanitized.bytes, sanitized.width, sanitized.height)
+                )
+            } else {
+                PreparedMedia(origMime, origName, origBytes, MessageContent.ImageMedia(origMime, origName, origBytes))
+            }
+        }
+        origMime.startsWith("audio/") -> {
+            val duration = MediaSanitizer.extractAudioDurationMs(origBytes)
+            PreparedMedia(origMime, origName, origBytes, MessageContent.AudioNote(origMime, origName, origBytes, duration))
+        }
+        else -> PreparedMedia(origMime, origName, origBytes, MessageContent.FileMedia(origMime, origName, origBytes.size, origBytes))
     }
 
     suspend fun sendAudioNote(
@@ -409,10 +418,7 @@ internal class MessagingService(
             target = ChatTarget.Direct(targetContact),
             payload = wireBytes,
             content = MessageContent.ContactIntro(
-                contactToIntroduce.alias,
-                contactToIntroduce.dropId,
-                contactToIntroduce.publicKeyArmored,
-                contactToIntroduce.safetyCode
+                contactToIntroduce.alias, contactToIntroduce.dropId, contactToIntroduce.publicKeyArmored, contactToIntroduce.safetyCode
             ),
             myKeys = myKeys,
             userAlias = userAlias,
@@ -428,18 +434,14 @@ internal class MessagingService(
         avatarBase64: String?,
         avatarHash: String?
     ) = withContext(Dispatchers.Default) {
+        val payload = WireFormat.buildProfileUpdate(
+            profileAlias = userAlias,
+            avatarBase64 = avatarBase64,
+            avatarHash = avatarHash,
+            senderAlias = userAlias
+        )
         for (contact in contacts) {
-            runCatching {
-                val payload = WireFormat.buildProfileUpdate(
-                    profileAlias = userAlias,
-                    avatarBase64 = avatarBase64,
-                    avatarHash = avatarHash,
-                    senderAlias = userAlias
-                )
-                val ciphertext = StandalonePgpEngine.encrypt(payload, contact.publicKeyArmored, myKeys.privateKeyArmored)
-                rememberSentCiphertext(ciphertext)
-                transport.sendEncryptedDirect(contact.dropId, ciphertext)
-            }
+            runCatching { encryptAndSendDirect(contact.dropId, contact.publicKeyArmored, payload, myKeys) }
         }
     }
 
@@ -460,11 +462,7 @@ internal class MessagingService(
         )
         if (action == WireMessage.GROUP_ACTION_KEY_ROTATE && newSharedKey != null && myKeys != null) {
             for (member in group.members) {
-                runCatching {
-                    val ct = StandalonePgpEngine.encrypt(payload, member.publicKeyArmored, myKeys.privateKeyArmored)
-                    rememberSentCiphertext(ct)
-                    transport.sendEncryptedDirect(member.dropId, ct)
-                }
+                runCatching { encryptAndSendDirect(member.dropId, member.publicKeyArmored, payload, myKeys) }
             }
         } else {
             runCatching {
@@ -477,22 +475,29 @@ internal class MessagingService(
 
     suspend fun inviteMembersToGroup(group: GroupChat, myKeys: PgpKeyPairArmored, userAlias: String) =
         withContext(Dispatchers.Default) {
+            val invitePayload = WireFormat.buildGroupInvite(
+                groupId = group.id,
+                groupName = group.name,
+                groupDropId = group.groupDropId,
+                groupReadToken = group.groupReadToken,
+                sharedKey = group.sharedKeyBase64,
+                senderAlias = userAlias
+            )
             for (member in group.members) {
-                runCatching {
-                    val invitePayload = WireFormat.buildGroupInvite(
-                        groupId = group.id,
-                        groupName = group.name,
-                        groupDropId = group.groupDropId,
-                        groupReadToken = group.groupReadToken,
-                        sharedKey = group.sharedKeyBase64,
-                        senderAlias = userAlias
-                    )
-                    val ciphertext = StandalonePgpEngine.encrypt(invitePayload, member.publicKeyArmored, myKeys.privateKeyArmored)
-                    rememberSentCiphertext(ciphertext)
-                    transport.sendEncryptedDirect(member.dropId, ciphertext)
-                }
+                runCatching { encryptAndSendDirect(member.dropId, member.publicKeyArmored, invitePayload, myKeys) }
             }
         }
+
+    private suspend fun encryptAndSendDirect(
+        recipientDropId: String,
+        recipientPubKey: String,
+        payload: ByteArray,
+        myKeys: PgpKeyPairArmored
+    ): Pair<String, Result<DeliveryState>> {
+        val ciphertext = StandalonePgpEngine.encrypt(payload, recipientPubKey, myKeys.privateKeyArmored)
+        rememberSentCiphertext(ciphertext)
+        return ciphertext to transport.sendEncryptedDirect(recipientDropId, ciphertext)
+    }
 
     suspend fun flushOutbox() = withContext(Dispatchers.IO) {
         val snapshot = synchronized(outbox) { outbox.toList() }
@@ -503,10 +508,17 @@ internal class MessagingService(
                 transport.sendEncryptedDirect(item.recipientDropId, item.ciphertext)
             }
             val newState = res.getOrNull() ?: continue
-            synchronized(outbox) { outbox.removeAll { it.msgId == item.msgId } }
-            _messages.update { list ->
-                list.map { if (it.id == item.msgId) it.copy(deliveryState = newState) else it }
+            synchronized(outbox) {
+                val iterator = outbox.iterator()
+                while (iterator.hasNext()) {
+                    val cur = iterator.next()
+                    if (cur.msgId == item.msgId) {
+                        outboxTotalBytes = (outboxTotalBytes - cur.ciphertext.length).coerceAtLeast(0L)
+                        iterator.remove()
+                    }
+                }
             }
+            _messages.update { list -> list.map { if (it.id == item.msgId) it.copy(deliveryState = newState) else it } }
         }
     }
 
@@ -520,36 +532,34 @@ internal class MessagingService(
         replyToId: String? = null,
         ttlSeconds: Long? = null
     ): Result<DeliveryState> {
-        val (recipientDrop, isGroup, ciphertext) = when (target) {
-            is ChatTarget.Group -> Triple(
-                target.group.groupDropId,
-                true,
-                GroupCrypto.encrypt(payload, target.group.sharedKeyBase64)
-            )
-            is ChatTarget.Direct -> Triple(
-                target.contact.dropId,
-                false,
-                StandalonePgpEngine.encrypt(payload, target.contact.publicKeyArmored, myKeys.privateKeyArmored)
-            )
-        }
-        rememberSentCiphertext(ciphertext)
+        val recipientDrop: String
+        val isGroup: Boolean
+        val ciphertext: String
+        val deliveryResult: Result<DeliveryState>
 
-        val deliveryResult = if (isGroup) {
-            transport.sendEncryptedGroup(recipientDrop, ciphertext)
-        } else {
-            transport.sendEncryptedDirect(recipientDrop, ciphertext)
+        when (target) {
+            is ChatTarget.Group -> {
+                recipientDrop = target.group.groupDropId
+                isGroup = true
+                ciphertext = GroupCrypto.encrypt(payload, target.group.sharedKeyBase64)
+                rememberSentCiphertext(ciphertext)
+                deliveryResult = transport.sendEncryptedGroup(recipientDrop, ciphertext)
+            }
+            is ChatTarget.Direct -> {
+                recipientDrop = target.contact.dropId
+                isGroup = false
+                val pair = encryptAndSendDirect(recipientDrop, target.contact.publicKeyArmored, payload, myKeys)
+                ciphertext = pair.first
+                deliveryResult = pair.second
+            }
         }
 
         val state = deliveryResult.getOrElse {
-            enqueueOutbox(OutboxItem(msgId, isGroup, recipientDrop, ciphertext))
-            DeliveryState.QUEUED
+            if (enqueueOutbox(OutboxItem(msgId, isGroup, recipientDrop, ciphertext))) DeliveryState.QUEUED else DeliveryState.FAILED
         }
-
         val expires = if (ttlSeconds != null && ttlSeconds > 0) System.currentTimeMillis() + (ttlSeconds * 1000L) else null
-        val chatId = when (target) {
-            is ChatTarget.Direct -> target.contact.dropId
-            is ChatTarget.Group -> target.group.id
-        }
+        val chatId = (target as? ChatTarget.Group)?.group?.id ?: (target as ChatTarget.Direct).contact.dropId
+
         val msg = ChatMessage(
             id = msgId,
             isOutgoing = true,
@@ -569,11 +579,18 @@ internal class MessagingService(
         return if (deliveryResult.isSuccess) Result.success(state) else deliveryResult
     }
 
-    private fun enqueueOutbox(item: OutboxItem) {
+    private fun enqueueOutbox(item: OutboxItem): Boolean {
+        val itemBytes = item.ciphertext.length.toLong()
+        if (itemBytes > MAX_OUTBOX_BYTES) return false
         synchronized(outbox) {
-            if (outbox.size >= MAX_OUTBOX_SIZE) outbox.removeAt(0)
+            while ((outbox.size >= MAX_OUTBOX_SIZE || outboxTotalBytes + itemBytes > MAX_OUTBOX_BYTES) && outbox.isNotEmpty()) {
+                val removed = outbox.removeAt(0)
+                outboxTotalBytes = (outboxTotalBytes - removed.ciphertext.length).coerceAtLeast(0L)
+            }
             outbox.add(item)
+            outboxTotalBytes += itemBytes
         }
+        return true
     }
 
     fun formatFriendlySendError(err: Throwable): String {
@@ -628,10 +645,7 @@ internal class MessagingService(
             )
         }
 
-        val unknownByChat = allMessages
-            .filter { it.chatId !in knownChatIds && !it.isOutgoing }
-            .groupBy { it.chatId }
-
+        val unknownByChat = allMessages.filter { it.chatId !in knownChatIds && !it.isOutgoing }.groupBy { it.chatId }
         for ((cid, msgs) in unknownByChat) {
             val lastMsg = msgs.lastOrNull() ?: continue
             val sender = lastMsg.senderAlias ?: lastMsg.signerFingerprint?.take(8) ?: "Unknown"
@@ -647,7 +661,6 @@ internal class MessagingService(
                 )
             )
         }
-
         return list.sortedByDescending { it.lastMessageTime }
     }
 
@@ -659,20 +672,4 @@ internal class MessagingService(
         }
         return null
     }
-
-    private fun readLimited(input: InputStream, maxBytes: Int): ByteArray? {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        var total = 0
-        while (true) {
-            val n = input.read(buffer)
-            if (n == -1) break
-            total += n
-            if (total > maxBytes) return null
-            out.write(buffer, 0, n)
-        }
-        return out.toByteArray()
-    }
-
-    private data class Tuple4<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 }

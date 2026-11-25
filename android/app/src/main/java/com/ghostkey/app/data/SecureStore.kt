@@ -40,10 +40,10 @@ data class StoredIdentity(
 )
 
 /**
- * Keeps the identity (my keys, Drop-ID, read token, user alias, contacts, and groups) on disk,
- * encrypted with an AES-256-GCM key that lives in the AndroidKeyStore.
+ * Keeps the identity (keys, Drop-ID, read token, alias, avatar, contacts, and groups) on disk,
+ * encrypted with an AES-256-GCM key stored in AndroidKeyStore.
  *
- * Messages are NOT stored here; they stay in memory (RAM) only.
+ * Messages remain strictly in volatile RAM.
  */
 class SecureStore(private val context: Context) {
 
@@ -54,7 +54,8 @@ class SecureStore(private val context: Context) {
         private const val FORMAT_VERSION: Byte = 1
         private const val IV_BYTES = 12
         private const val TAG_BITS = 128
-        private val AAD = "ghostkey-identity-v1".toByteArray(Charsets.UTF_8)
+        private val AAD_LOCAL = "ghostkey-identity-v1".toByteArray(Charsets.UTF_8)
+        private val AAD_BACKUP = "ghostkey-backup-v1".toByteArray(Charsets.UTF_8)
     }
 
     private val atomicFile: AtomicFile get() = AtomicFile(File(context.filesDir, FILE_NAME))
@@ -67,10 +68,7 @@ class SecureStore(private val context: Context) {
 
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         generator.init(
-            KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-            )
+            KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
@@ -83,12 +81,7 @@ class SecureStore(private val context: Context) {
     fun save(identity: StoredIdentity) {
         val plain = encodeIdentityJson(identity).toString().toByteArray(Charsets.UTF_8)
         try {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-            cipher.updateAAD(AAD)
-            val encrypted = cipher.doFinal(plain)
-            val iv = cipher.iv
-
+            val (iv, encrypted) = aesGcmEncrypt(getOrCreateKey(), AAD_LOCAL, plain, iv = null)
             val file = atomicFile
             val out = file.startWrite()
             try {
@@ -105,7 +98,7 @@ class SecureStore(private val context: Context) {
         }
     }
 
-    /** Throws if the file is missing, corrupt, or its key is gone. */
+    /** Throws if the file is missing, corrupt, or its Keystore key was invalidated. */
     @Synchronized
     fun load(): StoredIdentity {
         val data = atomicFile.readFully()
@@ -113,19 +106,14 @@ class SecureStore(private val context: Context) {
         val iv = data.copyOfRange(1, 1 + IV_BYTES)
         val body = data.copyOfRange(1 + IV_BYTES, data.size)
 
-        val decryptedBytes: ByteArray
-        try {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
-            cipher.updateAAD(AAD)
-            decryptedBytes = cipher.doFinal(body)
+        val decrypted = try {
+            aesGcmDecrypt(getOrCreateKey(), iv, AAD_LOCAL, body)
         } finally {
             data.fill(0)
             body.fill(0)
         }
-
-        val jsonStr = String(decryptedBytes, Charsets.UTF_8)
-        decryptedBytes.fill(0)
+        val jsonStr = String(decrypted, Charsets.UTF_8)
+        decrypted.fill(0)
         return decodeIdentityJson(JSONObject(jsonStr))
     }
 
@@ -136,16 +124,13 @@ class SecureStore(private val context: Context) {
         val secretKey = deriveBackupKey(passphrase, salt)
         val plain = encodeIdentityJson(identity).toString().toByteArray(Charsets.UTF_8)
         return try {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(TAG_BITS, iv))
-            cipher.updateAAD("ghostkey-backup-v1".toByteArray(Charsets.UTF_8))
-            val encrypted = cipher.doFinal(plain)
-            JSONObject().apply {
-                put("v", 1)
-                put("salt", Base64.getEncoder().encodeToString(salt))
-                put("iv", Base64.getEncoder().encodeToString(iv))
-                put("ct", Base64.getEncoder().encodeToString(encrypted))
-            }.toString()
+            val (_, encrypted) = aesGcmEncrypt(secretKey, AAD_BACKUP, plain, iv = iv)
+            JSONObject()
+                .put("v", 1)
+                .put("salt", Base64.getEncoder().encodeToString(salt))
+                .put("iv", Base64.getEncoder().encodeToString(iv))
+                .put("ct", Base64.getEncoder().encodeToString(encrypted))
+                .toString()
         } finally {
             plain.fill(0)
         }
@@ -157,16 +142,33 @@ class SecureStore(private val context: Context) {
         val salt = Base64.getDecoder().decode(wrapper.getString("salt"))
         val iv = Base64.getDecoder().decode(wrapper.getString("iv"))
         val ct = Base64.getDecoder().decode(wrapper.getString("ct"))
-        val secretKey = deriveBackupKey(passphrase, salt)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(TAG_BITS, iv))
-        cipher.updateAAD("ghostkey-backup-v1".toByteArray(Charsets.UTF_8))
-        val plain = cipher.doFinal(ct)
+        val plain = aesGcmDecrypt(deriveBackupKey(passphrase, salt), iv, AAD_BACKUP, ct)
         return try {
             decodeIdentityJson(JSONObject(String(plain, Charsets.UTF_8)))
         } finally {
             plain.fill(0)
         }
+    }
+
+    private fun aesGcmEncrypt(
+        key: SecretKey,
+        aad: ByteArray,
+        plain: ByteArray,
+        iv: ByteArray?
+    ): Pair<ByteArray, ByteArray> {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        if (iv != null) cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
+        else cipher.init(Cipher.ENCRYPT_MODE, key)
+        cipher.updateAAD(aad)
+        val ciphertext = cipher.doFinal(plain)
+        return cipher.iv to ciphertext
+    }
+
+    private fun aesGcmDecrypt(key: SecretKey, iv: ByteArray, aad: ByteArray, ciphertext: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
+        cipher.updateAAD(aad)
+        return cipher.doFinal(ciphertext)
     }
 
     private fun deriveBackupKey(passphrase: String, salt: ByteArray): SecretKeySpec {
@@ -188,19 +190,23 @@ class SecureStore(private val context: Context) {
 
         if (!identity.myAvatarBase64.isNullOrBlank()) json.put("myAvatarBase64", identity.myAvatarBase64)
         if (!identity.myAvatarHash.isNullOrBlank()) json.put("myAvatarHash", identity.myAvatarHash)
-
         identity.peer?.let {
             json.put("peerPublicKeyArmored", it.publicKeyArmored)
-            json.put("peerFingerprint", it.fingerprint)
-            json.put("peerDropId", it.dropId)
+                .put("peerFingerprint", it.fingerprint)
+                .put("peerDropId", it.dropId)
         }
         if (!identity.duressPinHash.isNullOrBlank()) json.put("duressPinHash", identity.duressPinHash)
         if (!identity.appPinHash.isNullOrBlank()) json.put("appPinHash", identity.appPinHash)
         if (!identity.pinSaltHex.isNullOrBlank()) json.put("pinSaltHex", identity.pinSaltHex)
 
-        val contactsArray = JSONArray()
-        for (c in identity.contacts) {
-            val cObj = JSONObject()
+        json.put("contacts", encodeContactsJson(identity.contacts))
+        json.put("groups", encodeGroupsJson(identity.groups))
+        return json
+    }
+
+    private fun encodeContactsJson(contacts: List<Contact>): JSONArray = JSONArray().apply {
+        for (c in contacts) {
+            val obj = JSONObject()
                 .put("id", c.id)
                 .put("alias", c.alias)
                 .put("dropId", c.dropId)
@@ -209,19 +215,19 @@ class SecureStore(private val context: Context) {
                 .put("addedAt", c.addedAt)
                 .put("isVerified", c.isVerified)
                 .put("keyChangedWarning", c.keyChangedWarning)
-            if (c.safetyCode != null) cObj.put("safetyCode", c.safetyCode)
-            if (c.disappearingTtlSeconds != null) cObj.put("disappearingTtlSeconds", c.disappearingTtlSeconds)
-            if (!c.avatarBase64.isNullOrBlank()) cObj.put("avatarBase64", c.avatarBase64)
-            if (!c.avatarHash.isNullOrBlank()) cObj.put("avatarHash", c.avatarHash)
-            contactsArray.put(cObj)
+            if (c.safetyCode != null) obj.put("safetyCode", c.safetyCode)
+            if (c.disappearingTtlSeconds != null) obj.put("disappearingTtlSeconds", c.disappearingTtlSeconds)
+            if (!c.avatarBase64.isNullOrBlank()) obj.put("avatarBase64", c.avatarBase64)
+            if (!c.avatarHash.isNullOrBlank()) obj.put("avatarHash", c.avatarHash)
+            put(obj)
         }
-        json.put("contacts", contactsArray)
+    }
 
-        val groupsArray = JSONArray()
-        for (g in identity.groups) {
-            val membersArray = JSONArray()
+    private fun encodeGroupsJson(groups: List<GroupChat>): JSONArray = JSONArray().apply {
+        for (g in groups) {
+            val members = JSONArray()
             for (m in g.members) {
-                membersArray.put(
+                members.put(
                     JSONObject()
                         .put("dropId", m.dropId)
                         .put("alias", m.alias)
@@ -229,20 +235,18 @@ class SecureStore(private val context: Context) {
                         .put("fingerprint", m.fingerprint)
                 )
             }
-            groupsArray.put(
+            put(
                 JSONObject()
                     .put("id", g.id)
                     .put("name", g.name)
                     .put("groupDropId", g.groupDropId)
                     .put("groupReadToken", g.groupReadToken)
                     .put("sharedKeyBase64", g.sharedKeyBase64)
-                    .put("members", membersArray)
+                    .put("members", members)
                     .put("createdAt", g.createdAt)
                     .put("isAdmin", g.isAdmin)
             )
         }
-        json.put("groups", groupsArray)
-        return json
     }
 
     private fun decodeIdentityJson(json: JSONObject): StoredIdentity {
@@ -261,97 +265,76 @@ class SecureStore(private val context: Context) {
             )
         } else null
 
-        val userAlias = json.optString("userAlias", "")
-
-        val contactsList = mutableListOf<Contact>()
-        val contactsArray = json.optJSONArray("contacts")
-        if (contactsArray != null) {
-            for (i in 0 until contactsArray.length()) {
-                val c = contactsArray.getJSONObject(i)
-                contactsList.add(
-                    Contact(
-                        id = c.optString("id", c.optString("dropId")),
-                        alias = c.optString("alias", "Peer"),
-                        dropId = c.getString("dropId"),
-                        publicKeyArmored = c.getString("publicKeyArmored"),
-                        fingerprint = c.optString("fingerprint", ""),
-                        addedAt = c.optLong("addedAt", System.currentTimeMillis()),
-                        isVerified = c.optBoolean("isVerified", false),
-                        safetyCode = c.optString("safetyCode", null)?.ifBlank { null },
-                        disappearingTtlSeconds = if (c.has("disappearingTtlSeconds")) c.getLong("disappearingTtlSeconds") else null,
-                        avatarBase64 = c.optString("avatarBase64", null)?.ifBlank { null },
-                        avatarHash = c.optString("avatarHash", null)?.ifBlank { null },
-                        keyChangedWarning = c.optBoolean("keyChangedWarning", false)
-                    )
-                )
-            }
-        }
-
-        val groupsList = mutableListOf<GroupChat>()
-        val groupsArray = json.optJSONArray("groups")
-        if (groupsArray != null) {
-            for (i in 0 until groupsArray.length()) {
-                val g = groupsArray.getJSONObject(i)
-                val membersList = mutableListOf<GroupMember>()
-                val membersArray = g.optJSONArray("members")
-                if (membersArray != null) {
-                    for (j in 0 until membersArray.length()) {
-                        val m = membersArray.getJSONObject(j)
-                        membersList.add(
-                            GroupMember(
-                                dropId = m.getString("dropId"),
-                                alias = m.optString("alias", "Member"),
-                                publicKeyArmored = m.optString("publicKeyArmored", ""),
-                                fingerprint = m.optString("fingerprint", "")
-                            )
-                        )
-                    }
-                }
-                groupsList.add(
-                    GroupChat(
-                        id = g.getString("id"),
-                        name = g.getString("name"),
-                        groupDropId = g.getString("groupDropId"),
-                        groupReadToken = g.getString("groupReadToken"),
-                        sharedKeyBase64 = g.getString("sharedKeyBase64"),
-                        members = membersList,
-                        createdAt = g.optLong("createdAt", System.currentTimeMillis()),
-                        isAdmin = g.optBoolean("isAdmin", false)
-                    )
-                )
-            }
-        }
-
         return StoredIdentity(
             mine = mine,
             peer = peer,
-            userAlias = userAlias,
+            userAlias = json.optString("userAlias", ""),
             relayUrl = json.optString("relayUrl", ""),
             myAvatarBase64 = json.optString("myAvatarBase64", null)?.ifBlank { null },
             myAvatarHash = json.optString("myAvatarHash", null)?.ifBlank { null },
-            contacts = contactsList,
-            groups = groupsList,
+            contacts = decodeContactsJson(json.optJSONArray("contacts")),
+            groups = decodeGroupsJson(json.optJSONArray("groups")),
             duressPinHash = json.optString("duressPinHash", null)?.ifBlank { null },
             appPinHash = json.optString("appPinHash", null)?.ifBlank { null },
             pinSaltHex = json.optString("pinSaltHex", null)?.ifBlank { null }
         )
     }
 
-    /** Delete the keystore key and the encrypted files. Safe to call when nothing exists. */
+    private fun decodeContactsJson(array: JSONArray?): List<Contact> {
+        if (array == null) return emptyList()
+        return List(array.length()) { i ->
+            val c = array.getJSONObject(i)
+            Contact(
+                id = c.optString("id", c.optString("dropId")),
+                alias = c.optString("alias", "Peer"),
+                dropId = c.getString("dropId"),
+                publicKeyArmored = c.getString("publicKeyArmored"),
+                fingerprint = c.optString("fingerprint", ""),
+                addedAt = c.optLong("addedAt", System.currentTimeMillis()),
+                isVerified = c.optBoolean("isVerified", false),
+                safetyCode = c.optString("safetyCode", null)?.ifBlank { null },
+                disappearingTtlSeconds = if (c.has("disappearingTtlSeconds")) c.getLong("disappearingTtlSeconds") else null,
+                avatarBase64 = c.optString("avatarBase64", null)?.ifBlank { null },
+                avatarHash = c.optString("avatarHash", null)?.ifBlank { null },
+                keyChangedWarning = c.optBoolean("keyChangedWarning", false)
+            )
+        }
+    }
+
+    private fun decodeGroupsJson(array: JSONArray?): List<GroupChat> {
+        if (array == null) return emptyList()
+        return List(array.length()) { i ->
+            val g = array.getJSONObject(i)
+            val mArr = g.optJSONArray("members")
+            val members = if (mArr == null) emptyList() else List(mArr.length()) { j ->
+                val m = mArr.getJSONObject(j)
+                GroupMember(
+                    dropId = m.getString("dropId"),
+                    alias = m.optString("alias", "Member"),
+                    publicKeyArmored = m.optString("publicKeyArmored", ""),
+                    fingerprint = m.optString("fingerprint", "")
+                )
+            }
+            GroupChat(
+                id = g.getString("id"),
+                name = g.getString("name"),
+                groupDropId = g.getString("groupDropId"),
+                groupReadToken = g.getString("groupReadToken"),
+                sharedKeyBase64 = g.getString("sharedKeyBase64"),
+                members = members,
+                createdAt = g.optLong("createdAt", System.currentTimeMillis()),
+                isAdmin = g.optBoolean("isAdmin", false)
+            )
+        }
+    }
+
+    /** Deletes the Keystore key and encrypted identity file. Safe to call when absent. */
     @Synchronized
     fun wipe() {
-        try {
-            atomicFile.delete()
-        } catch (_: Exception) {
-        }
-        try {
+        runCatching { atomicFile.delete() }
+        runCatching {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (keyStore.containsAlias(KEY_ALIAS)) keyStore.deleteEntry(KEY_ALIAS)
-        } catch (_: Exception) {
-        }
-        try {
-            com.ghostkey.app.crypto.StandalonePgpEngine.clearCache()
-        } catch (_: Exception) {
         }
     }
 }

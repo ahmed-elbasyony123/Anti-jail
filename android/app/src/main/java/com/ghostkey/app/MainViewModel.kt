@@ -2,13 +2,10 @@ package com.ghostkey.app
 
 import android.app.Application
 import android.net.Uri
-import android.os.SystemClock
-import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.ghostkey.app.audio.AudioPlayerManager
-import com.ghostkey.app.audio.AudioRecorderManager
+import com.ghostkey.app.audio.AudioSessionCoordinator
 import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.crypto.StandalonePgpEngine
@@ -20,14 +17,8 @@ import com.ghostkey.app.notify.PushNotificationManager
 import com.ghostkey.app.security.SecurityLockManager
 import com.ghostkey.app.service.TorForegroundService
 import com.ghostkey.app.util.GhostKeyUtils
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 enum class AppNavScreen { CHATS_LIST, CHAT_VIEW, SETTINGS }
@@ -68,6 +59,9 @@ internal data class MainUiState(
     val offlineShareState: OfflineShareState = OfflineShareState()
 )
 
+/**
+ * Slim ViewModel façade delegating Tor, Audio, Vault, Security Lock, and Messaging to dedicated coordinators.
+ */
 internal class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
@@ -75,25 +69,21 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private val lockManager = SecurityLockManager(appContext, identityRepo)
     private val vault = IdentityAndContactsVault(appContext.contentResolver, identityRepo)
     private val torClient = TorRelayClient()
+    private val audioCoordinator = AudioSessionCoordinator(appContext, viewModelScope)
+
     private val transport: GhostTransport = GhostTransport(appContext, torClient, ArtiTorManager) { senderDropId, ciphertext ->
-        val incoming = messagingService.insertMeshIncoming(senderDropId, ciphertext)
-        if (incoming != null) decryptMessage(incoming, senderDropId, fromRelay = false)
+        messagingService.insertMeshIncoming(senderDropId, ciphertext)
+            ?.let { decryptMessage(it, senderDropId, fromRelay = false) }
     }
     private val messagingService: MessagingService = MessagingService(appContext.contentResolver, transport)
-    private val audioRecorderManager = AudioRecorderManager(appContext)
-    private val audioPlayerManager = AudioPlayerManager()
+    private val torCoordinator: TorConnectionCoordinator
 
-    private var orbotSocksPort = OrbotPortWatcher.DEFAULT_SOCKS_PORT
-    private var orbotWatcher: OrbotPortWatcher? = null
-    private var artiRetryCount = 0
     private var isForeground = false
-    private var recordingTimerJob: Job? = null
-
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     val messages: StateFlow<List<ChatMessage>> = messagingService.messages
-    val playbackState: StateFlow<PlaybackState> = audioPlayerManager.playbackState
+    val playbackState: StateFlow<PlaybackState> = audioCoordinator.playbackState
 
     val chatSummaries: StateFlow<List<ChatSummary>> = combine(_uiState, messagingService.messages) { state, msgs ->
         messagingService.buildChatSummaries(state.contacts, state.groups, msgs)
@@ -106,7 +96,6 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     init {
         val prefs = identityRepo.readPreferences(OrbotPortWatcher.DEFAULT_SOCKS_PORT)
-        orbotSocksPort = prefs.orbotSocksPort
         lockManager.loadFromPrefs(prefs.appPinHash, prefs.duressPinHash, prefs.pinSaltHex)
 
         val shouldOnboard = !prefs.hasCompletedOnboarding && !identityRepo.hasStoredIdentity()
@@ -127,11 +116,70 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             offlineWifiDirectEnabled = prefs.offlineWifiDirectEnabled
         )
 
-        PushNotificationManager.init(appContext)
-        observeTransport()
-        initTorNetworkEngine()
-        applyNetworkConfig()
+        torCoordinator = TorConnectionCoordinator(
+            appContext = appContext,
+            scope = viewModelScope,
+            transport = transport,
+            identityRepo = identityRepo,
+            initialSocksPort = prefs.orbotSocksPort,
+            getParams = {
+                val st = _uiState.value
+                TorNetworkParams(
+                    relayServerUrl = st.relayServerUrl,
+                    useTorSocks = st.useTorSocks,
+                    keys = st.myPgpKeys,
+                    groups = st.groups,
+                    offlineBleMeshEnabled = st.offlineBleMeshEnabled,
+                    offlineWifiDirectEnabled = st.offlineWifiDirectEnabled
+                )
+            },
+            onArtiState = { st -> _uiState.value = _uiState.value.copy(artiState = st) },
+            onRelayState = { status, err -> _uiState.value = _uiState.value.copy(relayStatus = status, relayErrorDetail = err) },
+            onRelayMessage = { record ->
+                viewModelScope.launch {
+                    val msg = messagingService.insertPendingIncoming(record) ?: return@launch
+                    decryptMessage(msg, record.dropId, fromRelay = true)
+                }
+            },
+            onRelayConnected = { viewModelScope.launch { messagingService.flushOutbox() } }
+        )
 
+        PushNotificationManager.init(appContext)
+        observeTransportAndAudio()
+        torCoordinator.start()
+        loadOrCreateIdentity(shouldOnboard, shouldLock)
+        if (prefs.keepAlive) TorForegroundService.start(appContext)
+        observeForegroundServiceState()
+        startDisappearingMessagesReaper()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        torCoordinator.stop()
+        transport.close()
+        audioCoordinator.close()
+    }
+
+    private fun observeTransportAndAudio() {
+        viewModelScope.launch {
+            transport.snapshot.collect { snap ->
+                _uiState.value = _uiState.value.copy(
+                    lanPeersCount = snap.lanPeerCount,
+                    blePeersCount = snap.bleMesh.connectedPeers,
+                    wifiDirectPeersCount = snap.wifiDirect.peers.size,
+                    offlineShareState = snap.offlineShare,
+                    relayErrorDetail = snap.relayErrorDetail
+                )
+            }
+        }
+        viewModelScope.launch {
+            audioCoordinator.recordingState.collect { rec ->
+                _uiState.value = _uiState.value.copy(isRecordingAudio = rec.isRecording, recordElapsedMs = rec.elapsedMs)
+            }
+        }
+    }
+
+    private fun loadOrCreateIdentity(shouldOnboard: Boolean, shouldLock: Boolean) {
         if (!shouldOnboard && !shouldLock) {
             bootstrapIdentity()
         } else if (shouldLock && identityRepo.hasStoredIdentity()) {
@@ -143,33 +191,6 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                         duressPinConfigured = lockManager.hasDuressPin
                     )
                 }
-            }
-        }
-
-        if (prefs.keepAlive) TorForegroundService.start(appContext)
-        observeForegroundServiceState()
-        startDisappearingMessagesReaper()
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        transport.close()
-        ArtiTorManager.stop()
-        audioRecorderManager.cancelRecording()
-        audioPlayerManager.stop()
-        orbotWatcher?.stop()
-    }
-
-    private fun observeTransport() {
-        viewModelScope.launch {
-            transport.snapshot.collect { snap ->
-                _uiState.value = _uiState.value.copy(
-                    lanPeersCount = snap.lanPeerCount,
-                    blePeersCount = snap.bleMesh.connectedPeers,
-                    wifiDirectPeersCount = snap.wifiDirect.peers.size,
-                    offlineShareState = snap.offlineShare,
-                    relayErrorDetail = snap.relayErrorDetail
-                )
             }
         }
     }
@@ -227,7 +248,6 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         val cleanAlias = GhostKeyUtils.sanitizeAlias(alias)
         val (newAppHash, newDuressHash, newSalt) = lockManager.configureOnboardingPins(appPin, duressPin, ephemeralMode)
         val lockOn = !ephemeralMode && newAppHash != null
-
         identityRepo.saveOnboardingCompletion(cleanAlias, ephemeralMode, lockOn, newAppHash, newDuressHash, newSalt)
         _uiState.value = _uiState.value.copy(
             userAlias = cleanAlias,
@@ -250,83 +270,6 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    private fun initTorNetworkEngine() {
-        if (ArtiTorManager.isAvailable) {
-            viewModelScope.launch {
-                ArtiTorManager.state.collect { state ->
-                    _uiState.value = _uiState.value.copy(artiState = state)
-                    when (state) {
-                        is ArtiTorState.Starting -> {
-                            _uiState.value = _uiState.value.copy(relayStatus = RelayStatus.BUILDING_CIRCUIT)
-                            if (state.socksPort > 0 && orbotSocksPort != state.socksPort) {
-                                orbotSocksPort = state.socksPort
-                                applyNetworkConfig()
-                            }
-                        }
-                        is ArtiTorState.Connected -> {
-                            orbotSocksPort = state.socksPort
-                            applyNetworkConfig()
-                            _uiState.value.myPgpKeys?.let { connectToRelayMailbox(it) }
-                        }
-                        is ArtiTorState.Error -> {
-                            Log.w("GhostKey", "Arti Tor error: ${state.message}, retrying or falling back to Orbot")
-                            _uiState.value = _uiState.value.copy(relayStatus = RelayStatus.BUILDING_CIRCUIT)
-                            delay(3000)
-                            val st = _uiState.value
-                            if (artiRetryCount < 2 && requiresTor(st.useTorSocks, st.relayServerUrl)) {
-                                artiRetryCount++
-                                ArtiTorManager.start(appContext, viewModelScope)
-                            } else {
-                                startOrbotWatcher()
-                            }
-                        }
-                        is ArtiTorState.Idle -> {}
-                    }
-                }
-            }
-            ensureTorEngineRunningIfNeeded()
-        } else {
-            startOrbotWatcher()
-        }
-    }
-
-    private fun requiresTor(useTor: Boolean, relayUrl: String): Boolean =
-        useTor || relayUrl.contains(".onion", ignoreCase = true)
-
-    private fun ensureTorEngineRunningIfNeeded() {
-        val st = _uiState.value
-        val needed = requiresTor(st.useTorSocks, st.relayServerUrl)
-        if (ArtiTorManager.isAvailable) {
-            if (needed && st.artiState is ArtiTorState.Idle) {
-                artiRetryCount = 0
-                ArtiTorManager.start(appContext, viewModelScope)
-            } else if (!needed && st.artiState !is ArtiTorState.Idle) {
-                ArtiTorManager.stop()
-            }
-        } else if (needed) {
-            startOrbotWatcher()
-        }
-    }
-
-    private fun startOrbotWatcher() {
-        if (orbotWatcher == null) {
-            orbotWatcher = OrbotPortWatcher(appContext) { port ->
-                viewModelScope.launch {
-                    val changed = orbotSocksPort != port
-                    orbotSocksPort = port
-                    identityRepo.saveOrbotPort(port)
-                    applyNetworkConfig()
-                    if (changed) _uiState.value.myPgpKeys?.let { connectToRelayMailbox(it) }
-                }
-            }.also { it.start() }
-        }
-    }
-
-    private fun applyNetworkConfig() {
-        val st = _uiState.value
-        torClient.updateConfig(st.relayServerUrl, st.useTorSocks, socksPort = orbotSocksPort)
-    }
-
     private fun bootstrapIdentity() {
         val st = _uiState.value
         if (st.ephemeralMode || !identityRepo.hasStoredIdentity()) {
@@ -345,15 +288,13 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun applyLoadedIdentity(stored: StoredIdentity) {
-        val prefs = identityRepo.readPreferences(orbotSocksPort)
+        val prefs = identityRepo.readPreferences(OrbotPortWatcher.DEFAULT_SOCKS_PORT)
         val resolvedAlias = prefs.userAlias.ifBlank { stored.userAlias }
         val resolvedRelay = prefs.relayUrl.ifBlank { stored.relayUrl }
         val loadedContacts = stored.contacts.toMutableList()
         stored.peer?.let { peer ->
             if (loadedContacts.none { it.dropId == peer.dropId }) {
-                loadedContacts.add(
-                    Contact(peer.dropId, "Peer ${peer.fingerprint.take(6)}", peer.dropId, peer.publicKeyArmored, peer.fingerprint)
-                )
+                loadedContacts.add(Contact(peer.dropId, "Peer ${peer.fingerprint.take(6)}", peer.dropId, peer.publicKeyArmored, peer.fingerprint))
             }
         }
         lockManager.mergeFromStoredIdentity(stored.appPinHash, stored.duressPinHash, stored.pinSaltHex)
@@ -369,16 +310,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             appPinConfigured = lockManager.hasAppPin,
             duressPinConfigured = lockManager.hasDuressPin
         )
-        applyNetworkConfig()
-        ensureTorEngineRunningIfNeeded()
-
-        val needTor = requiresTor(_uiState.value.useTorSocks, resolvedRelay)
-        if (needTor && ArtiTorManager.isAvailable && _uiState.value.artiState !is ArtiTorState.Connected) {
-            _uiState.value = _uiState.value.copy(relayStatus = RelayStatus.BUILDING_CIRCUIT)
-            startConfiguredOfflineMesh(stored.mine.dropId)
-        } else {
-            connectToRelayMailbox(stored.mine)
-        }
+        torCoordinator.applyNetworkConfig()
+        torCoordinator.ensureTorEngineRunning()
+        val st = _uiState.value
+        torCoordinator.connectOrAwaitTor(stored.mine, stored.groups, st.offlineBleMeshEnabled, st.offlineWifiDirectEnabled)
     }
 
     private fun buildIdentitySnapshot(): StoredIdentity? {
@@ -401,8 +336,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     private fun persistIdentityAsync() {
-        val st = _uiState.value
-        if (st.ephemeralMode) return
+        if (_uiState.value.ephemeralMode) return
         val snapshot = buildIdentitySnapshot() ?: return
         viewModelScope.launch { identityRepo.saveIdentity(snapshot, ephemeralMode = false) }
     }
@@ -425,15 +359,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     buildIdentitySnapshot()?.let { identityRepo.saveIdentity(it, ephemeralMode = false) }
                 }
                 val st = _uiState.value
-                if (requiresTor(st.useTorSocks, st.relayServerUrl) &&
-                    ArtiTorManager.isAvailable &&
-                    st.artiState !is ArtiTorState.Connected
-                ) {
-                    _uiState.value = _uiState.value.copy(relayStatus = RelayStatus.BUILDING_CIRCUIT)
-                    startConfiguredOfflineMesh(pair.dropId)
-                } else {
-                    connectToRelayMailbox(pair)
-                }
+                torCoordinator.connectOrAwaitTor(pair, st.groups, st.offlineBleMeshEnabled, st.offlineWifiDirectEnabled)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isGeneratingKey = false)
                 toast("Key generation failed: ${e.message}", Toast.LENGTH_LONG)
@@ -441,62 +367,18 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    private fun startConfiguredOfflineMesh(dropId: String) {
-        val st = _uiState.value
-        transport.startOfflineMesh(
-            myDropId = dropId,
-            enableBle = st.offlineBleMeshEnabled,
-            enableWifiDirect = st.offlineWifiDirectEnabled
-        )
-    }
-
     fun setOfflineBleMeshEnabled(enabled: Boolean) {
         val st = _uiState.value
         _uiState.value = st.copy(offlineBleMeshEnabled = enabled)
         identityRepo.saveOfflineMeshPrefs(enabled, st.offlineWifiDirectEnabled)
-        if (enabled) {
-            st.myPgpKeys?.dropId?.let { transport.bleMesh.start(it) }
-        } else {
-            transport.bleMesh.stop()
-        }
+        if (enabled) st.myPgpKeys?.dropId?.let { transport.bleMesh.start(it) } else transport.bleMesh.stop()
     }
 
     fun setOfflineWifiDirectEnabled(enabled: Boolean) {
         val st = _uiState.value
         _uiState.value = st.copy(offlineWifiDirectEnabled = enabled)
         identityRepo.saveOfflineMeshPrefs(st.offlineBleMeshEnabled, enabled)
-        if (enabled) {
-            transport.wifiDirect.startDiscovery()
-        } else {
-            transport.wifiDirect.stop()
-        }
-    }
-
-    private fun connectToRelayMailbox(keys: PgpKeyPairArmored) {
-        startConfiguredOfflineMesh(keys.dropId)
-        torClient.subscribeLive(
-            dropId = keys.dropId,
-            readToken = keys.readToken,
-            onMessageReceived = { record ->
-                viewModelScope.launch {
-                    val msg = messagingService.insertPendingIncoming(record) ?: return@launch
-                    decryptMessage(msg, record.dropId, fromRelay = true)
-                }
-            },
-            onStatusChanged = { status ->
-                transport.onRelayStatusChanged(status)
-                _uiState.value = _uiState.value.copy(
-                    relayStatus = status,
-                    relayErrorDetail = if (status == RelayStatus.CONNECTED) null else torClient.lastConnectionError
-                )
-                if (status == RelayStatus.CONNECTED) {
-                    viewModelScope.launch { messagingService.flushOutbox() }
-                }
-            }
-        )
-        for (g in _uiState.value.groups) {
-            torClient.addSubscription(g.groupDropId, g.groupReadToken)
-        }
+        if (enabled) transport.wifiDirect.startDiscovery() else transport.wifiDirect.stop()
     }
 
     fun decryptMessage(msg: ChatMessage, dropId: String, fromRelay: Boolean = true) {
@@ -515,19 +397,19 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                         val cur = _uiState.value.groups
                         if (cur.none { it.id == newGroup.id || it.groupDropId == newGroup.groupDropId }) {
                             _uiState.value = _uiState.value.copy(groups = cur + newGroup)
-                            torClient.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
+                            torCoordinator.addSubscription(newGroup.groupDropId, newGroup.groupReadToken)
                             persistCurrentStateSync()
                             toast("Invited to group: ${newGroup.name} 👥", Toast.LENGTH_LONG)
                         }
                     },
                     onProfileUpdated = { senderDrop, alias, avatarB64, avatarHash ->
                         val updatedContacts = vault.updateContactProfile(_uiState.value.contacts, senderDrop, alias, avatarB64, avatarHash)
-                        _uiState.value = _uiState.value.copy(contacts = updatedContacts)
-                        persistIdentityAsync()
+                        if (updatedContacts !== _uiState.value.contacts) {
+                            _uiState.value = _uiState.value.copy(contacts = updatedContacts)
+                            persistIdentityAsync()
+                        }
                     },
-                    onGroupControlReceived = { ctrl, senderDrop ->
-                        handleIncomingGroupControl(ctrl, senderDrop)
-                    }
+                    onGroupControlReceived = { ctrl, senderDrop -> handleIncomingGroupControl(ctrl, senderDrop) }
                 )
                 if (decrypted != null && !isForeground) {
                     PushNotificationManager.postMessageNotification(appContext, decrypted.isAudio, decrypted.isMedia)
@@ -544,14 +426,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         if (idx < 0) return
         val group = cur[idx]
         val updatedGroup = when (ctrl.action) {
-            WireMessage.GROUP_ACTION_LEAVE -> {
-                val target = ctrl.targetDropId ?: senderDrop ?: return
-                vault.removeGroupMember(group, target)
-            }
-            WireMessage.GROUP_ACTION_KEY_ROTATE -> {
-                val newKey = ctrl.newSharedKey ?: return
-                group.copy(sharedKeyBase64 = newKey)
-            }
+            WireMessage.GROUP_ACTION_LEAVE -> vault.removeGroupMember(group, ctrl.targetDropId ?: senderDrop ?: return)
+            WireMessage.GROUP_ACTION_KEY_ROTATE -> group.copy(sharedKeyBase64 = ctrl.newSharedKey ?: return)
             else -> return
         }
         val list = cur.toMutableList().apply { set(idx, updatedGroup) }
@@ -571,71 +447,35 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun sendMessageToActiveChat(text: String) {
+    private fun launchSendToActiveChat(action: suspend (ChatTarget, PgpKeyPairArmored, String) -> Result<DeliveryState>) {
         val target = activeTarget() ?: return toast("Please select a contact or group first!", Toast.LENGTH_LONG)
         val keys = _uiState.value.myPgpKeys ?: return toast("No active PGP key in RAM. Please generate keys first.", Toast.LENGTH_SHORT)
+        val alias = _uiState.value.userAlias
         viewModelScope.launch {
-            messagingService.sendText(target, text, keys, _uiState.value.userAlias)
-                .onFailure { toast(messagingService.formatFriendlySendError(it), Toast.LENGTH_LONG) }
+            action(target, keys, alias).onFailure { toast(messagingService.formatFriendlySendError(it), Toast.LENGTH_LONG) }
         }
     }
 
-    fun sendMediaToActiveChat(uri: Uri) {
-        val target = activeTarget() ?: return toast("Please select a contact or group first!", Toast.LENGTH_LONG)
-        val keys = _uiState.value.myPgpKeys ?: return
-        viewModelScope.launch {
-            messagingService.sendMediaUri(target, uri, keys, _uiState.value.userAlias)
-                .onFailure { toast(messagingService.formatFriendlySendError(it), Toast.LENGTH_LONG) }
-        }
-    }
+    fun sendMessageToActiveChat(text: String) = launchSendToActiveChat { t, k, a -> messagingService.sendText(t, text, k, a) }
+    fun sendMediaToActiveChat(uri: Uri) = launchSendToActiveChat { t, k, a -> messagingService.sendMediaUri(t, uri, k, a) }
 
     fun startRecordingAudio() {
         if (activeTarget() == null) return toast("Please select a contact or group first!", Toast.LENGTH_SHORT)
-        if (_uiState.value.isRecordingAudio) return
-        if (!audioRecorderManager.startRecording()) return toast("Could not access microphone", Toast.LENGTH_SHORT)
-        _uiState.value = _uiState.value.copy(isRecordingAudio = true, recordElapsedMs = 0L)
-        recordingTimerJob?.cancel()
-        val startElapsed = SystemClock.elapsedRealtime()
-        recordingTimerJob = viewModelScope.launch {
-            while (_uiState.value.isRecordingAudio) {
-                delay(100)
-                _uiState.value = _uiState.value.copy(recordElapsedMs = SystemClock.elapsedRealtime() - startElapsed)
-            }
-        }
+        if (!audioCoordinator.startRecording()) toast("Could not access microphone", Toast.LENGTH_SHORT)
     }
 
     fun onStopAudioRecording() {
-        recordingTimerJob?.cancel()
-        recordingTimerJob = null
-        _uiState.value = _uiState.value.copy(isRecordingAudio = false, recordElapsedMs = 0L)
-        val result = audioRecorderManager.stopRecording() ?: return
-        val target = activeTarget() ?: return
-        val keys = _uiState.value.myPgpKeys ?: return
-        viewModelScope.launch {
-            messagingService.sendAudioNote(target, result, keys, _uiState.value.userAlias)
-                .onFailure { toast(messagingService.formatFriendlySendError(it), Toast.LENGTH_LONG) }
-        }
+        val result = audioCoordinator.stopRecording() ?: return
+        launchSendToActiveChat { t, k, a -> messagingService.sendAudioNote(t, result, k, a) }
     }
 
-    fun onCancelAudioRecording() {
-        recordingTimerJob?.cancel()
-        recordingTimerJob = null
-        _uiState.value = _uiState.value.copy(isRecordingAudio = false, recordElapsedMs = 0L)
-        audioRecorderManager.cancelRecording()
-    }
-
+    fun onCancelAudioRecording() = audioCoordinator.cancelRecording()
     fun toggleAudioPlayback(msg: ChatMessage) {
-        val bytes = (msg.content as? MessageContent.AudioNote)?.audioBytes ?: return
-        audioPlayerManager.play(msg.id, bytes)
+        (msg.content as? MessageContent.AudioNote)?.audioBytes?.let { audioCoordinator.togglePlayback(msg.id, it) }
     }
+    fun seekAudio(msg: ChatMessage, fraction: Float) = audioCoordinator.seekTo(msg.id, fraction)
 
-    fun seekAudio(msg: ChatMessage, fraction: Float) {
-        audioPlayerManager.seekTo(msg.id, fraction)
-    }
-
-    fun navigateTo(screen: AppNavScreen) {
-        _uiState.value = _uiState.value.copy(navScreen = screen)
-    }
+    fun navigateTo(screen: AppNavScreen) { _uiState.value = _uiState.value.copy(navScreen = screen) }
 
     fun selectChat(chatId: String) {
         val st = _uiState.value
@@ -650,82 +490,60 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         val st = _uiState.value
         val updated = vault.upsertContact(st.contacts, contact)
         val resolved = updated.firstOrNull { it.dropId == contact.dropId } ?: contact
-        _uiState.value = st.copy(
-            contacts = updated,
-            activeChatContact = resolved,
-            activeChatGroup = null,
-            navScreen = AppNavScreen.CHAT_VIEW
-        )
+        _uiState.value = st.copy(contacts = updated, activeChatContact = resolved, activeChatGroup = null, navScreen = AppNavScreen.CHAT_VIEW)
         persistIdentityAsync()
     }
 
     fun createGroup(group: GroupChat) {
         val st = _uiState.value
-        _uiState.value = st.copy(
-            groups = st.groups + group,
-            activeChatGroup = group,
-            activeChatContact = null,
-            navScreen = AppNavScreen.CHAT_VIEW
-        )
-        torClient.addSubscription(group.groupDropId, group.groupReadToken)
+        _uiState.value = st.copy(groups = st.groups + group, activeChatGroup = group, activeChatContact = null, navScreen = AppNavScreen.CHAT_VIEW)
+        torCoordinator.addSubscription(group.groupDropId, group.groupReadToken)
         persistIdentityAsync()
-        st.myPgpKeys?.let { keys ->
-            viewModelScope.launch { messagingService.inviteMembersToGroup(group, keys, st.userAlias) }
-        }
+        st.myPgpKeys?.let { keys -> viewModelScope.launch { messagingService.inviteMembersToGroup(group, keys, st.userAlias) } }
     }
 
     fun setContactVerified(contactDropId: String, verified: Boolean) {
         val st = _uiState.value
-        val updatedList = st.contacts.map {
-            if (it.dropId == contactDropId) it.copy(isVerified = verified, keyChangedWarning = false) else it
-        }
+        val updated = st.contacts.map { if (it.dropId == contactDropId) it.copy(isVerified = verified, keyChangedWarning = false) else it }
         _uiState.value = st.copy(
-            contacts = updatedList,
-            activeChatContact = if (st.activeChatContact?.dropId == contactDropId) {
-                updatedList.find { it.dropId == contactDropId }
-            } else st.activeChatContact
+            contacts = updated,
+            activeChatContact = st.activeChatContact?.takeIf { it.dropId == contactDropId }?.let { updated.find { c -> c.dropId == contactDropId } }
+                ?: st.activeChatContact
         )
         persistIdentityAsync()
     }
 
     fun setDisappearingTimerForActiveContact(ttlSeconds: Long?) {
         val contact = _uiState.value.activeChatContact ?: return
-        val st = _uiState.value
         val updatedContact = contact.copy(disappearingTtlSeconds = ttlSeconds)
-        val updatedList = st.contacts.map { if (it.dropId == contact.dropId) updatedContact else it }
-        _uiState.value = st.copy(contacts = updatedList, activeChatContact = updatedContact)
+        val updatedList = _uiState.value.contacts.map { if (it.dropId == contact.dropId) updatedContact else it }
+        _uiState.value = _uiState.value.copy(contacts = updatedList, activeChatContact = updatedContact)
         persistIdentityAsync()
     }
 
     fun setProfilePictureFromUri(uri: Uri) {
         viewModelScope.launch {
-            val res = vault.loadSanitizedAvatar(uri)
-            if (res == null) {
-                toast("Could not process profile picture", Toast.LENGTH_SHORT)
-                return@launch
-            }
+            val res = vault.loadSanitizedAvatar(uri) ?: return@launch toast("Could not process profile picture", Toast.LENGTH_SHORT)
             val (b64, hash) = res
+            if (hash == _uiState.value.myAvatarHash) return@launch
             _uiState.value = _uiState.value.copy(myAvatarBase64 = b64, myAvatarHash = hash)
             persistIdentityAsync()
             val st = _uiState.value
-            st.myPgpKeys?.let { keys ->
-                messagingService.broadcastProfileUpdate(st.contacts, keys, st.userAlias, b64, hash)
-            }
+            st.myPgpKeys?.let { keys -> messagingService.broadcastProfileUpdate(st.contacts, keys, st.userAlias, b64, hash) }
             toast("Profile picture updated (EXIF stripped)", Toast.LENGTH_SHORT)
         }
     }
 
-    fun clearChatHistory(chatId: String) {
-        messagingService.clearChatMessages(chatId)
-    }
+    fun clearChatHistory(chatId: String) = messagingService.clearChatMessages(chatId)
 
     fun deleteContact(dropId: String) {
         messagingService.clearChatMessages(dropId)
         val st = _uiState.value
+        val clearedActive = st.activeChatContact?.dropId == dropId
         _uiState.value = st.copy(
             contacts = st.contacts.filterNot { it.dropId == dropId },
-            activeChatContact = if (st.activeChatContact?.dropId == dropId) null else st.activeChatContact,
-            navScreen = if (st.activeChatContact?.dropId == dropId) AppNavScreen.CHATS_LIST else st.navScreen
+            activeChatContact = if (clearedActive) null else st.activeChatContact,
+            navScreen = if (clearedActive) AppNavScreen.CHATS_LIST else st.navScreen
         )
         persistIdentityAsync()
     }
@@ -733,26 +551,21 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     fun leaveAndDeleteGroup(groupId: String) {
         val st = _uiState.value
         val group = st.groups.find { it.id == groupId } ?: return
-        val myDrop = st.myPgpKeys?.dropId
         viewModelScope.launch {
-            messagingService.sendGroupControl(group, WireMessage.GROUP_ACTION_LEAVE, myDrop, userAlias = st.userAlias)
+            messagingService.sendGroupControl(group, WireMessage.GROUP_ACTION_LEAVE, st.myPgpKeys?.dropId, userAlias = st.userAlias)
         }
         messagingService.clearChatMessages(groupId)
+        val clearedActive = st.activeChatGroup?.id == groupId
         _uiState.value = st.copy(
             groups = st.groups.filterNot { it.id == groupId },
-            activeChatGroup = if (st.activeChatGroup?.id == groupId) null else st.activeChatGroup,
-            navScreen = if (st.activeChatGroup?.id == groupId) AppNavScreen.CHATS_LIST else st.navScreen
+            activeChatGroup = if (clearedActive) null else st.activeChatGroup,
+            navScreen = if (clearedActive) AppNavScreen.CHATS_LIST else st.navScreen
         )
         persistIdentityAsync()
     }
 
-    fun startOfflineApkSharing(createWifiDirectGroup: Boolean = true) {
-        transport.startOfflineApkSharing(createWifiDirectGroup)
-    }
-
-    fun stopOfflineApkSharing() {
-        transport.stopOfflineApkSharing()
-    }
+    fun startOfflineApkSharing(createWifiDirectGroup: Boolean = true) { transport.startOfflineApkSharing(createWifiDirectGroup) }
+    fun stopOfflineApkSharing() { transport.stopOfflineApkSharing() }
 
     fun exportEncryptedBackup(passphrase: String): Result<String> {
         val snapshot = buildIdentitySnapshot() ?: return Result.failure(IllegalStateException("No identity loaded"))
@@ -787,8 +600,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     fun setAppPin(pin: String?) {
         val st = _uiState.value
-        val newLockEnabled = lockManager.setAppPin(pin, st.ephemeralMode)
-        _uiState.value = st.copy(lockEnabled = newLockEnabled, appPinConfigured = lockManager.hasAppPin)
+        _uiState.value = st.copy(lockEnabled = lockManager.setAppPin(pin, st.ephemeralMode), appPinConfigured = lockManager.hasAppPin)
         persistIdentityAsync()
     }
 
@@ -802,7 +614,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     fun saveAllSettings(newUrl: String, newTor: Boolean, newKeepAlive: Boolean, newEphemeral: Boolean, newLock: Boolean, newAlias: String) {
         val cleanUrl = GhostKeyUtils.sanitizeRelayUrl(newUrl)
         val cleanAlias = GhostKeyUtils.sanitizeAlias(newAlias)
-        val effectiveTor = newTor || cleanUrl.contains(".onion", ignoreCase = true)
+        val effectiveTor = newTor || torCoordinator.requiresTor(false, cleanUrl)
 
         var effectiveLock = newLock
         if (newLock && !lockManager.hasAppPin && !lockManager.hasDeviceKeyguard()) {
@@ -811,8 +623,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
 
         val current = _uiState.value
-        val networkChanged = cleanUrl != torClient.serverBaseUrl || effectiveTor != torClient.useTorProxy || orbotSocksPort != torClient.torSocksPort
-        val needsReconnect = networkChanged || (cleanUrl.isNotBlank() && current.relayStatus != RelayStatus.CONNECTED)
+        val needsReconnect = torCoordinator.isNetworkConfigChanged(cleanUrl, effectiveTor) ||
+            (cleanUrl.isNotBlank() && current.relayStatus != RelayStatus.CONNECTED)
 
         if (newKeepAlive != current.keepAlive) {
             if (newKeepAlive) TorForegroundService.start(appContext) else TorForegroundService.stop(appContext)
@@ -835,12 +647,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
 
         if (needsReconnect) {
-            applyNetworkConfig()
-            ensureTorEngineRunningIfNeeded()
-            if (requiresTor(effectiveTor, cleanUrl) && ArtiTorManager.isAvailable && _uiState.value.artiState !is ArtiTorState.Connected) {
-                _uiState.value = _uiState.value.copy(relayStatus = RelayStatus.BUILDING_CIRCUIT)
-            } else {
-                current.myPgpKeys?.let { connectToRelayMailbox(it) }
+            torCoordinator.applyNetworkConfig()
+            torCoordinator.ensureTorEngineRunning()
+            current.myPgpKeys?.let {
+                torCoordinator.connectOrAwaitTor(it, current.groups, current.offlineBleMeshEnabled, current.offlineWifiDirectEnabled)
             }
         }
     }
@@ -857,16 +667,11 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun setShowMyQrDialog(show: Boolean) {
-        if (show && _uiState.value.myPgpKeys == null) {
-            toast("Generating PGP identity, please wait...", Toast.LENGTH_SHORT)
-            return
-        }
+        if (show && _uiState.value.myPgpKeys == null) return toast("Generating PGP identity, please wait...", Toast.LENGTH_SHORT)
         _uiState.value = _uiState.value.copy(showMyQrDialog = show)
     }
 
-    fun setShowPairContactDialog(show: Boolean) {
-        _uiState.value = _uiState.value.copy(showPairContactDialog = show)
-    }
+    fun setShowPairContactDialog(show: Boolean) { _uiState.value = _uiState.value.copy(showPairContactDialog = show) }
 
     fun setShowSecurityDiagnostics(show: Boolean) {
         val snap = transport.snapshot.value
@@ -886,8 +691,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     fun executePanicWipe() {
         messagingService.clearAllMessages()
         transport.wipeAll()
-        audioPlayerManager.wipe()
-        audioRecorderManager.cancelRecording()
+        audioCoordinator.wipe()
         lockManager.clearClipboardAndSecrets()
         TorForegroundService.stop(appContext)
         _uiState.value = MainUiState()

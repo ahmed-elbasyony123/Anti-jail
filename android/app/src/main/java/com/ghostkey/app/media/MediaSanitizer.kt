@@ -35,6 +35,7 @@ object MediaSanitizer {
     private const val DEFAULT_MAX_EDGE_PX = 1280
     private const val DEFAULT_IMAGE_QUALITY = 80
     private const val AVATAR_SIZE_PX = 192
+    private const val MAX_DECODE_INPUT_BYTES = 20 * 1024 * 1024
     const val MAX_AVATAR_BYTES = 25 * 1024
 
     fun sanitizeImage(
@@ -42,7 +43,7 @@ object MediaSanitizer {
         maxEdgePx: Int = DEFAULT_MAX_EDGE_PX,
         quality: Int = DEFAULT_IMAGE_QUALITY
     ): SanitizedImage? {
-        if (rawBytes.isEmpty()) return null
+        if (rawBytes.isEmpty() || rawBytes.size > MAX_DECODE_INPUT_BYTES) return null
         val orientation = readExifOrientation(rawBytes)
         val decoded = decodeSampledAndOriented(rawBytes, maxEdgePx, orientation) ?: return null
         return try {
@@ -190,7 +191,7 @@ object MediaSanitizer {
 
     @Suppress("DEPRECATION")
     private fun compressWebp(bitmap: Bitmap, quality: Int): ByteArray {
-        val out = ByteArrayOutputStream()
+        val out = ByteArrayOutputStream(32 * 1024)
         val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Bitmap.CompressFormat.WEBP_LOSSY
         } else {

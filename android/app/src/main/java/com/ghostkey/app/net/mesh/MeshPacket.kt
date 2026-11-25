@@ -1,6 +1,7 @@
 package com.ghostkey.app.net.mesh
 
 import com.ghostkey.app.crypto.StandalonePgpEngine
+import com.ghostkey.app.util.GhostKeyUtils
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.security.KeyPair
@@ -154,7 +155,7 @@ data class MeshPacket(
 
     fun decrementedHop(): MeshPacket = copy(ttlHops = (ttlHops - 1).coerceAtLeast(0))
 
-    fun packetIdHex(): String = packetId.joinToString("") { "%02x".format(it) }
+    fun packetIdHex(): String = GhostKeyUtils.bytesToHex(packetId)
 
     fun isBroadcast(): Boolean = recipientTag.all { it == 0.toByte() }
 }
@@ -190,6 +191,11 @@ class BleFragmenter(
     private val stateLock = Any()
     private val inFlight = LinkedHashMap<Int, AssemblyBuffer>()
     private var globalBufferedBytes: Long = 0L
+
+    val maxPacketBytes: Int get() = chunkDataSize * maxFragmentsPerId
+
+    fun canFragment(packetBytesLength: Int): Boolean =
+        packetBytesLength > 0 && packetBytesLength <= maxPacketBytes && maxFragmentsPerId <= 65535
 
     fun fragment(packetBytes: ByteArray): List<ByteArray> {
         require(packetBytes.isNotEmpty()) { "Cannot fragment empty packet" }

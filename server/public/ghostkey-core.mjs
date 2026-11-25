@@ -278,7 +278,8 @@ export function createCore(openpgp, options = {}) {
                     nonce
                 };
             }
-            if (obj.type === 'group_invite' || obj.type === 'introduction') {
+            if (obj.type === 'group_invite' || obj.type === 'introduction' ||
+                obj.type === 'profile_update' || obj.type === 'group_control') {
                 return {
                     type: obj.type,
                     unsupported: true,

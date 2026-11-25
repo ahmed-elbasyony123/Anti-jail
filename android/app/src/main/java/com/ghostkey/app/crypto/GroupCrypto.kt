@@ -22,49 +22,47 @@ object GroupCrypto {
     fun generateGroupKey(): String {
         val keyGen = KeyGenerator.getInstance("AES")
         keyGen.init(AES_KEY_SIZE, random)
-        val secretKey = keyGen.generateKey()
-        return Base64.getEncoder().encodeToString(secretKey.encoded)
-    }
-
-    fun encrypt(plaintext: ByteArray, base64Key: String, aad: ByteArray? = null): String {
-        val keyBytes = Base64.getDecoder().decode(base64Key)
-        require(keyBytes.size == 32) { "Group key must be exactly 32 bytes (AES-256)" }
-        try {
-            val keySpec = SecretKeySpec(keyBytes, "AES")
-            val iv = ByteArray(GCM_IV_LENGTH)
-            random.nextBytes(iv)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec, GCMParameterSpec(GCM_TAG_LENGTH, iv))
-            if (aad != null && aad.isNotEmpty()) {
-                cipher.updateAAD(aad)
-            }
-            val ciphertext = cipher.doFinal(plaintext)
-            val combined = ByteArray(iv.size + ciphertext.size)
-            System.arraycopy(iv, 0, combined, 0, iv.size)
-            System.arraycopy(ciphertext, 0, combined, iv.size, ciphertext.size)
-            return Base64.getEncoder().encodeToString(combined)
+        val encoded = keyGen.generateKey().encoded
+        return try {
+            Base64.getEncoder().encodeToString(encoded)
         } finally {
-            keyBytes.fill(0)
+            encoded.fill(0)
         }
     }
 
-    fun decrypt(base64Ciphertext: String, base64Key: String, aad: ByteArray? = null): ByteArray {
-        val keyBytes = Base64.getDecoder().decode(base64Key)
-        require(keyBytes.size == 32) { "Group key must be exactly 32 bytes (AES-256)" }
-        try {
-            val keySpec = SecretKeySpec(keyBytes, "AES")
+    fun encrypt(plaintext: ByteArray, base64Key: String, aad: ByteArray? = null): String =
+        withValidatedKey(base64Key) { keySpec ->
+            val iv = ByteArray(GCM_IV_LENGTH).also { random.nextBytes(it) }
+            val ciphertext = runAesGcm(Cipher.ENCRYPT_MODE, keySpec, iv, aad, plaintext)
+            val combined = ByteArray(iv.size + ciphertext.size)
+            System.arraycopy(iv, 0, combined, 0, iv.size)
+            System.arraycopy(ciphertext, 0, combined, iv.size, ciphertext.size)
+            Base64.getEncoder().encodeToString(combined)
+        }
+
+    fun decrypt(base64Ciphertext: String, base64Key: String, aad: ByteArray? = null): ByteArray =
+        withValidatedKey(base64Key) { keySpec ->
             val combined = Base64.getDecoder().decode(base64Ciphertext)
             require(combined.size >= GCM_IV_LENGTH + 16) { "Invalid group ciphertext: must be at least 28 bytes" }
             val iv = combined.copyOfRange(0, GCM_IV_LENGTH)
             val cipherBytes = combined.copyOfRange(GCM_IV_LENGTH, combined.size)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, GCMParameterSpec(GCM_TAG_LENGTH, iv))
-            if (aad != null && aad.isNotEmpty()) {
-                cipher.updateAAD(aad)
-            }
-            return cipher.doFinal(cipherBytes)
+            runAesGcm(Cipher.DECRYPT_MODE, keySpec, iv, aad, cipherBytes)
+        }
+
+    private inline fun <T> withValidatedKey(base64Key: String, block: (SecretKeySpec) -> T): T {
+        val keyBytes = Base64.getDecoder().decode(base64Key)
+        require(keyBytes.size == 32) { "Group key must be exactly 32 bytes (AES-256)" }
+        return try {
+            block(SecretKeySpec(keyBytes, "AES"))
         } finally {
             keyBytes.fill(0)
         }
+    }
+
+    private fun runAesGcm(mode: Int, key: SecretKeySpec, iv: ByteArray, aad: ByteArray?, input: ByteArray): ByteArray {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(mode, key, GCMParameterSpec(GCM_TAG_LENGTH, iv))
+        if (aad != null && aad.isNotEmpty()) cipher.updateAAD(aad)
+        return cipher.doFinal(input)
     }
 }

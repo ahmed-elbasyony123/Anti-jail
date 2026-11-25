@@ -3,6 +3,7 @@ package com.ghostkey.app.net
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
+import com.ghostkey.app.util.GhostKeyUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -164,29 +165,27 @@ class LocalLanMesh(
     suspend fun sendDirect(recipientDropId: String, ciphertext: String): Boolean = withContext(Dispatchers.IO) {
         pruneExpiredPeers()
         val peer = discoveredPeers[recipientDropId] ?: return@withContext false
-
-        try {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(peer.ipAddress, peer.port), 3000)
-                socket.soTimeout = 5000
-
-                val writer = PrintWriter(socket.getOutputStream(), true)
-                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-
-                // Send JSON payload
-                val envelope = JSONObject().apply {
-                    put("type", "direct_mesh")
-                    put("senderDropId", myDropId)
-                    put("ciphertext", ciphertext)
-                }
-                writer.println(envelope.toString())
-
-                val ack = readLineWithLimit(reader, 1024)
-                return@withContext ack == "ACK"
-            }
+        val envelope = JSONObject().apply {
+            put("type", "direct_mesh")
+            put("senderDropId", myDropId)
+            put("ciphertext", ciphertext)
+        }
+        return@withContext try {
+            requestTcpLine(peer.ipAddress, peer.port, envelope.toString(), maxReplyChars = 1024) == "ACK"
         } catch (e: Exception) {
             Log.w(TAG, "Failed direct delivery to ${peer.ipAddress}: ${e.message}")
             false
+        }
+    }
+
+    private fun requestTcpLine(address: InetAddress, port: Int, line: String, maxReplyChars: Int): String? {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(address, port), 3000)
+            socket.soTimeout = 5000
+            val writer = PrintWriter(socket.getOutputStream(), true)
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            writer.println(line)
+            return readLineWithLimit(reader, maxReplyChars)
         }
     }
 
@@ -324,35 +323,25 @@ class LocalLanMesh(
 
         serviceScope.launch {
             try {
-                Socket().use { socket ->
-                    socket.connect(InetSocketAddress(address, port), 3000)
-                    socket.soTimeout = 5000
-
-                    val writer = PrintWriter(socket.getOutputStream(), true)
-                    val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-
-                    val req = JSONObject().apply {
-                        put("type", "mesh_id_exchange")
-                        put("dropId", myDropId)
-                        put("port", DEFAULT_MESH_PORT)
-                    }
-                    writer.println(req.toString())
-
-                    val responseLine = readLineWithLimit(reader, 4096)
-                    if (!responseLine.isNullOrBlank()) {
-                        val json = JSONObject(responseLine)
-                        if (json.optString("type") == "mesh_id_exchange_ack") {
-                            val peerDrop = json.optString("dropId")
-                            val peerPort = json.optInt("port", DEFAULT_MESH_PORT)
-                            if (peerDrop.isNotBlank() && peerDrop != myDropId) {
-                                discoveredPeers[peerDrop] = LanPeer(
-                                    dropId = peerDrop,
-                                    ipAddress = address,
-                                    port = peerPort,
-                                    lastSeen = System.currentTimeMillis()
-                                )
-                                Log.d(TAG, "Discovered LAN peer via safe exchange: $peerDrop at $address:$peerPort")
-                            }
+                val req = JSONObject().apply {
+                    put("type", "mesh_id_exchange")
+                    put("dropId", myDropId)
+                    put("port", DEFAULT_MESH_PORT)
+                }
+                val responseLine = requestTcpLine(address, port, req.toString(), maxReplyChars = 4096)
+                if (!responseLine.isNullOrBlank()) {
+                    val json = JSONObject(responseLine)
+                    if (json.optString("type") == "mesh_id_exchange_ack") {
+                        val peerDrop = json.optString("dropId")
+                        val peerPort = json.optInt("port", DEFAULT_MESH_PORT)
+                        if (peerDrop.isNotBlank() && peerDrop != myDropId) {
+                            discoveredPeers[peerDrop] = LanPeer(
+                                dropId = peerDrop,
+                                ipAddress = address,
+                                port = peerPort,
+                                lastSeen = System.currentTimeMillis()
+                            )
+                            Log.d(TAG, "Discovered LAN peer via safe exchange: $peerDrop at $address:$peerPort")
                         }
                     }
                 }
@@ -396,25 +385,14 @@ class LocalLanMesh(
      */
     private fun getBroadcastAddresses(): List<InetAddress> {
         val list = mutableListOf<InetAddress>()
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return list
-            while (interfaces.hasMoreElements()) {
-                val netIf = interfaces.nextElement()
-                if (netIf.isLoopback || !netIf.isUp || netIf.isVirtual) continue
-                val name = netIf.name.lowercase()
-                if (name.startsWith("tun") || name.startsWith("tap") || name.startsWith("ppp") ||
-                    name.startsWith("p2p") || name.startsWith("dummy") || name.contains("vpn") ||
-                    name.startsWith("rmnet") || name.startsWith("ccmni") || name.startsWith("usbnet")) {
-                    continue
-                }
-                for (interfaceAddress in netIf.interfaceAddresses) {
-                    val broadcast = interfaceAddress.broadcast
-                    if (broadcast != null && !broadcast.isLoopbackAddress && !broadcast.isAnyLocalAddress) {
-                        list.add(broadcast)
-                    }
+        for (netIf in GhostKeyUtils.localNetworkInterfaces(includeP2p = false)) {
+            for (interfaceAddress in netIf.interfaceAddresses) {
+                val broadcast = interfaceAddress.broadcast
+                if (broadcast != null && !broadcast.isLoopbackAddress && !broadcast.isAnyLocalAddress) {
+                    list.add(broadcast)
                 }
             }
-        } catch (_: Exception) {}
+        }
         return list.distinct()
     }
 

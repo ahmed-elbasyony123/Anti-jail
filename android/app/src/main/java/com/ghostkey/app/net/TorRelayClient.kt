@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -345,6 +346,13 @@ class TorRelayClient(
         try {
             httpClient.connectionPool.evictAll()
         } catch (_: Exception) {}
+    }
+
+    /** Permanently release the HTTP thread pool and coroutine scope on ViewModel teardown. */
+    fun close() {
+        wipe()
+        closeHttpClient(httpClient)
+        scope.cancel()
     }
 
     /**

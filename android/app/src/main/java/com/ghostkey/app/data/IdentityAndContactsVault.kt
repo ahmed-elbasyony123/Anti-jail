@@ -9,7 +9,6 @@ import com.ghostkey.app.media.MediaSanitizer
 import com.ghostkey.app.util.GhostKeyUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 
 /**
  * Vault coordinating local PGP identity, E2EE profile picture, contacts (with key-change warning),
@@ -24,18 +23,8 @@ internal class IdentityAndContactsVault(
     }
 
     suspend fun loadSanitizedAvatar(uri: Uri): Pair<String, String>? = withContext(Dispatchers.IO) {
-        val raw = contentResolver.openInputStream(uri)?.use { input ->
-            val out = ByteArrayOutputStream()
-            val buf = ByteArray(8192)
-            var total = 0
-            while (true) {
-                val n = input.read(buf)
-                if (n == -1) break
-                total += n
-                if (total > MAX_AVATAR_PICK_BYTES) return@withContext null
-                out.write(buf, 0, n)
-            }
-            out.toByteArray()
+        val raw = contentResolver.openInputStream(uri)?.use {
+            GhostKeyUtils.readStreamLimited(it, MAX_AVATAR_PICK_BYTES)
         } ?: return@withContext null
 
         val sanitized = MediaSanitizer.sanitizeAvatar(raw) ?: return@withContext null
@@ -70,12 +59,19 @@ internal class IdentityAndContactsVault(
         alias: String?,
         avatarBase64: String?,
         avatarHash: String?
-    ): List<Contact> = contacts.map { c ->
-        if (c.dropId != dropId) c else c.copy(
-            alias = alias?.takeIf { it.isNotBlank() }?.let { GhostKeyUtils.sanitizeAlias(it) } ?: c.alias,
-            avatarBase64 = avatarBase64?.takeIf { it.isNotBlank() } ?: c.avatarBase64,
-            avatarHash = avatarHash?.takeIf { it.isNotBlank() } ?: c.avatarHash
-        )
+    ): List<Contact> {
+        val idx = contacts.indexOfFirst { it.dropId == dropId }
+        if (idx < 0) return contacts
+        val current = contacts[idx]
+        val nextAlias = alias?.takeIf { it.isNotBlank() }?.let { GhostKeyUtils.sanitizeAlias(it) } ?: current.alias
+        val nextAvatar = avatarBase64?.takeIf { it.isNotBlank() } ?: current.avatarBase64
+        val nextHash = avatarHash?.takeIf { it.isNotBlank() } ?: current.avatarHash
+        if (nextAlias == current.alias && nextHash == current.avatarHash && nextAvatar == current.avatarBase64) {
+            return contacts
+        }
+        return contacts.toMutableList().apply {
+            set(idx, current.copy(alias = nextAlias, avatarBase64 = nextAvatar, avatarHash = nextHash))
+        }
     }
 
     fun rotateGroupKey(group: GroupChat): GroupChat =

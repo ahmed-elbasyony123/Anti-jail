@@ -85,4 +85,27 @@ class MeshRouterAndFragmenterTest {
         assertNotNull(reassembled)
         assertArrayEquals(payload, reassembled)
     }
+
+    @Test
+    fun fragmenter_enforcesMaxPacketSizeAndGlobalMemoryBudget() {
+        val fragmenter = BleFragmenter(
+            chunkDataSize = 10,
+            maxFragmentsPerId = 4,
+            maxSetBytes = 64,
+            maxGlobalBufferedBytes = 25L
+        )
+        assertEquals(40, fragmenter.maxPacketBytes)
+        assertTrue(fragmenter.canFragment(40))
+        assertFalse(fragmenter.canFragment(41))
+        assertFalse(fragmenter.canFragment(0))
+
+        // First partial transfer consumes 20 bytes of the 25-byte global budget
+        val chunksA = fragmenter.fragment(ByteArray(30) { 1 })
+        assertNull(fragmenter.onChunkReceived(chunksA[0]))
+        assertNull(fragmenter.onChunkReceived(chunksA[1]))
+
+        // Second transfer pushing total buffered bytes over 25 is rejected cleanly
+        val chunksB = fragmenter.fragment(ByteArray(30) { 2 })
+        assertNull(fragmenter.onChunkReceived(chunksB[0]))
+    }
 }

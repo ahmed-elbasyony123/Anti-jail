@@ -3,8 +3,10 @@ package com.ghostkey.app.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.ghostkey.app.audio.AudioRecorderManager
 import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.crypto.StandalonePgpEngine
+import com.ghostkey.app.util.GhostKeyUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -187,7 +189,7 @@ internal class IdentityRepository(context: Context) {
         if (!existingSaltHex.isNullOrBlank()) return existingSaltHex
         val bytes = ByteArray(16)
         secureRandom.nextBytes(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }
+        return GhostKeyUtils.bytesToHex(bytes)
     }
 
     fun hashPin(pin: String, saltHex: String?): String {
@@ -201,7 +203,7 @@ internal class IdentityRepository(context: Context) {
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         val hash = factory.generateSecret(spec).encoded
         spec.clearPassword()
-        return hash.joinToString("") { "%02x".format(it) }
+        return GhostKeyUtils.bytesToHex(hash).also { hash.fill(0) }
     }
 
     fun verifyPinConstantTime(pin: String, expectedHashHex: String?, saltHex: String?): Boolean {
@@ -222,6 +224,7 @@ internal class IdentityRepository(context: Context) {
     fun wipeAllSync() {
         try { persistDispatcher.close() } catch (_: Exception) {}
         StandalonePgpEngine.clearCache()
+        AudioRecorderManager.purgeOrphanedCacheFiles(appContext)
         secureStore.wipe()
         prefs.edit().clear().commit()
     }

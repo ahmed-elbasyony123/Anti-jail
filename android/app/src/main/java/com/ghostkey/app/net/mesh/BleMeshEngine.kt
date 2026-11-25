@@ -25,6 +25,7 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import com.ghostkey.app.util.GhostKeyUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -241,10 +242,14 @@ class BleMeshEngine(
             put("ciphertext", ciphertext)
         }.toString().toByteArray(Charsets.UTF_8)
 
+        // Guard against oversized media envelopes that exceed the ~46 KB BLE fragmentation limit
+        if (envelopeBytes.size + 256 > fragmenter.maxPacketBytes) return false
+
         val packet = router.createOutgoingPacket(
             recipientDropId = recipientDropId,
             payloadBytes = envelopeBytes
         )
+        if (!fragmenter.canFragment(packet.encode().size)) return false
         val meshScope = scope ?: return false
         meshScope.launch { sendPacketToAllConnected(packet) }
         return serverCentrals.isNotEmpty() || clientGatts.isNotEmpty()
@@ -259,7 +264,7 @@ class BleMeshEngine(
         val addr = device.address ?: return
         val serviceData = result.scanRecord?.getServiceData(ParcelUuid(MESH_SERVICE_UUID))
         if (serviceData != null && serviceData.size >= 8) {
-            val tagHex = serviceData.take(8).joinToString("") { "%02x".format(it) }
+            val tagHex = GhostKeyUtils.bytesToHex(serviceData.copyOfRange(0, 8))
             val prevAddr = discoveredOriginTags.put(tagHex, addr)
             if (prevAddr != null && prevAddr != addr && clientGatts.containsKey(prevAddr)) {
                 return // Same node rotated MAC and is already connected
@@ -391,17 +396,20 @@ class BleMeshEngine(
         }
     }
 
+    private fun buildScanConfig(): Pair<List<ScanFilter>, ScanSettings> =
+        listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(MESH_SERVICE_UUID)).build()) to
+            ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
+
     @SuppressLint("MissingPermission")
     private fun startDutyCycledScan(adapter: BluetoothAdapter, meshScope: CoroutineScope) {
         val leScanner = adapter.bluetoothLeScanner ?: return
         scanner = leScanner
-        val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MESH_SERVICE_UUID)).build()
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
+        val (filters, settings) = buildScanConfig()
 
         scanLoopJob = meshScope.launch {
             while (isActive) {
                 if (scanningDesired && adapter.isEnabled && MeshPermissions.hasBlePermissions(context)) {
-                    startScanInternal(leScanner, listOf(filter), settings)
+                    startScanInternal(leScanner, filters, settings)
                     delay(SCAN_BURST_MS)
                     stopScanInternal(force = false)
                 }
@@ -446,9 +454,8 @@ class BleMeshEngine(
             val leScanner = scanner ?: adapter.bluetoothLeScanner ?: return@launch
             scanner = leScanner
             if (isActive && scanningDesired && !isCurrentlyScanning) {
-                val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MESH_SERVICE_UUID)).build()
-                val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
-                startScanInternal(leScanner, listOf(filter), settings)
+                val (filters, settings) = buildScanConfig()
+                startScanInternal(leScanner, filters, settings)
             }
         }
     }
@@ -465,9 +472,8 @@ class BleMeshEngine(
                     delay(500)
                     val leScanner = scanner ?: adapter.bluetoothLeScanner ?: continue
                     scanner = leScanner
-                    val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(MESH_SERVICE_UUID)).build()
-                    val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
-                    startScanInternal(leScanner, listOf(filter), settings)
+                    val (filters, settings) = buildScanConfig()
+                    startScanInternal(leScanner, filters, settings)
                 }
             }
         }
@@ -562,22 +568,18 @@ class BleMeshEngine(
     }
 
     private suspend fun sendPacketToAllConnected(packet: MeshPacket) {
-        val chunks = fragmenter.fragment(packet.encode())
+        val raw = packet.encode()
+        if (!fragmenter.canFragment(raw.size)) return
+        val chunks = fragmenter.fragment(raw)
         writeMutex.withLock {
             for ((addr, gatt) in clientGatts) {
                 val char = clientCharacteristics[addr] ?: continue
-                for (chunk in chunks) {
-                    writeClientChunk(gatt, char, chunk)
-                    delay(12)
-                }
+                sendChunksWithDelay(chunks) { writeClientChunk(gatt, char, it) }
             }
             val sChar = serverCharacteristic
             if (sChar != null) {
                 for (device in serverCentrals.values) {
-                    for (chunk in chunks) {
-                        notifyServerChunk(device, sChar, chunk)
-                        delay(12)
-                    }
+                    sendChunksWithDelay(chunks) { notifyServerChunk(device, sChar, it) }
                 }
             }
         }
@@ -585,28 +587,29 @@ class BleMeshEngine(
 
     private suspend fun replayStoredPacketsToCentral(device: BluetoothDevice) {
         val char = serverCharacteristic ?: return
+        replayPendingLocked { chunk -> notifyServerChunk(device, char, chunk) }
+    }
+
+    private suspend fun replayStoredPacketsToClient(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
+        replayPendingLocked { chunk -> writeClientChunk(gatt, char, chunk) }
+    }
+
+    private suspend inline fun replayPendingLocked(crossinline transmit: (ByteArray) -> Unit) {
         val pending = router.pendingForwardPackets()
         if (pending.isEmpty()) return
         writeMutex.withLock {
             for (pkt in pending) {
-                for (chunk in fragmenter.fragment(pkt.encode())) {
-                    notifyServerChunk(device, char, chunk)
-                    delay(12)
-                }
+                val raw = pkt.encode()
+                if (!fragmenter.canFragment(raw.size)) continue
+                sendChunksWithDelay(fragmenter.fragment(raw), transmit)
             }
         }
     }
 
-    private suspend fun replayStoredPacketsToClient(gatt: BluetoothGatt, char: BluetoothGattCharacteristic) {
-        val pending = router.pendingForwardPackets()
-        if (pending.isEmpty()) return
-        writeMutex.withLock {
-            for (pkt in pending) {
-                for (chunk in fragmenter.fragment(pkt.encode())) {
-                    writeClientChunk(gatt, char, chunk)
-                    delay(12)
-                }
-            }
+    private suspend inline fun sendChunksWithDelay(chunks: List<ByteArray>, crossinline transmit: (ByteArray) -> Unit) {
+        for (chunk in chunks) {
+            transmit(chunk)
+            delay(12)
         }
     }
 
