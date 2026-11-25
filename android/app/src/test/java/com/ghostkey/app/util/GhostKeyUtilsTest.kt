@@ -28,7 +28,7 @@ class GhostKeyUtilsTest {
 
     @Test
     fun sanitizers_stripControlCharsAndDefaultScheme() {
-        assertEquals("Alice", GhostKeyUtils.sanitizeAlias("  Alice\n<script>  "))
+        assertEquals("Alice", GhostKeyUtils.sanitizeAlias("  Alice\n<>\t\u202E  "))
         assertEquals("http://abc123.onion", GhostKeyUtils.sanitizeRelayUrl("abc123.onion/"))
         assertEquals("https://relay.example.com", GhostKeyUtils.sanitizeRelayUrl("relay.example.com/"))
         assertEquals(4, GhostKeyUtils.calculateInSampleSize(4000, 3000, 1024))
