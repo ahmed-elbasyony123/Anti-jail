@@ -157,7 +157,9 @@ internal fun MainModernApp(
                     duressPinConfigured = state.duressPinConfigured,
                     onSetDuressPin = viewModel::setDuressPin,
                     appPinConfigured = state.appPinConfigured,
-                    onSetAppPin = viewModel::setAppPin
+                    onSetAppPin = viewModel::setAppPin,
+                    relayStatus = state.relayStatus,
+                    relayErrorDetail = state.relayErrorDetail
                 )
             }
         }
@@ -212,6 +214,7 @@ internal fun MainModernApp(
             hasDuressPin = state.duressPinConfigured,
             myFingerprint = state.myPgpKeys?.fingerprint.orEmpty(),
             myDropId = state.myPgpKeys?.dropId.orEmpty(),
+            relayErrorDetail = state.relayErrorDetail,
             onDismiss = { viewModel.setShowSecurityDiagnostics(false) }
         )
     }

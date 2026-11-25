@@ -86,6 +86,8 @@ class TorRelayClient(
     private val activeSubscriptions = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var messageListener: ((EncryptedMessageRecord) -> Unit)? = null
     private var statusListener: ((RelayStatus) -> Unit)? = null
+    @Volatile var lastConnectionError: String? = null
+        private set
 
     // ---------------------------------------------------------------------------------------
     // Configuration
@@ -408,6 +410,7 @@ class TorRelayClient(
                     val json = JSONObject(text)
                     when (json.optString("type")) {
                         "SUBSCRIBED" -> {
+                            lastConnectionError = null
                             subscriptionConfirmed = true
                             emit(RelayStatus.CONNECTED)
                         }
@@ -432,6 +435,7 @@ class TorRelayClient(
                 if (!isCurrent(generation)) return
                 socketGeneration.incrementAndGet()     // later events of this socket are ignored
                 subscriptionConfirmed = false
+                lastConnectionError = "WebSocket closed ($code ${reason.ifBlank { "no reason" }})"
                 emit(RelayStatus.DISCONNECTED)
                 scheduleReconnect()
             }
@@ -440,6 +444,9 @@ class TorRelayClient(
                 if (!isCurrent(generation)) return
                 socketGeneration.incrementAndGet()
                 subscriptionConfirmed = false
+                val httpDetail = response?.let { " HTTP ${it.code}" }.orEmpty()
+                lastConnectionError = "${t.javaClass.simpleName}$httpDetail: ${t.message ?: "unknown error"}"
+                android.util.Log.w("GhostKey-Relay", "WebSocket failure ($serverBaseUrl): $lastConnectionError")
                 emit(classifyFailure(t))
                 scheduleReconnect()
             }

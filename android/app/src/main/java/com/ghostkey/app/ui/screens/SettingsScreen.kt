@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import com.ghostkey.app.BuildConfig
 import com.ghostkey.app.crypto.PgpKeyPairArmored
 import com.ghostkey.app.net.ArtiTorManager
+import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.*
 import com.ghostkey.app.util.GhostKeyUtils
 import java.util.Date
@@ -74,7 +75,9 @@ fun SettingsScreen(
     onSetDuressPin: (String?) -> Unit = {},
     appPinConfigured: Boolean = false,
     onSetAppPin: (String?) -> Unit = {},
-    onAutoSave: (relayUrl: String, alias: String) -> Unit = { _, _ -> }
+    onAutoSave: (relayUrl: String, alias: String) -> Unit = { _, _ -> },
+    relayStatus: RelayStatus = RelayStatus.DISCONNECTED,
+    relayErrorDetail: String? = null
 ) {
     var relayUrl by remember { mutableStateOf(initialRelayUrl) }
     var useTorSocks by remember { mutableStateOf(initialUseTorSocks) }
@@ -303,6 +306,8 @@ fun SettingsScreen(
                             --- GHOSTKEY DIAGNOSTICS ---
                             App Version: ${BuildConfig.VERSION_NAME}
                             Relay URL: '$relayUrl'
+                            Relay Status: $relayStatus
+                            Relay Error: ${relayErrorDetail ?: "none"}
                             Use Tor SOCKS: $useTorSocks
                             Arti Native Library Loaded: $artiAvailable
                             Arti Engine State: $artiStateStr

@@ -67,6 +67,7 @@ internal data class MainUiState(
     val appPinConfigured: Boolean = false,
     val duressPinConfigured: Boolean = false,
     val relayStatus: RelayStatus = RelayStatus.DISCONNECTED,
+    val relayErrorDetail: String? = null,
     val artiState: ArtiTorState = ArtiTorState.Idle,
     val isRecordingAudio: Boolean = false,
     val recordElapsedMs: Long = 0L,
@@ -503,7 +504,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 viewModelScope.launch { handleIncomingFromRelay(record) }
             },
             onStatusChanged = { status ->
-                _uiState.value = _uiState.value.copy(relayStatus = status)
+                _uiState.value = _uiState.value.copy(
+                    relayStatus = status,
+                    relayErrorDetail = if (status == RelayStatus.CONNECTED) null else torClient.lastConnectionError
+                )
             }
         )
         for (g in _uiState.value.groups) {
@@ -824,7 +828,11 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
 
         val current = _uiState.value
-        val networkChanged = cleanUrl != current.relayServerUrl || effectiveTor != current.useTorSocks
+        val networkChanged = cleanUrl != torClient.serverBaseUrl ||
+            effectiveTor != torClient.useTorProxy ||
+            orbotSocksPort != torClient.torSocksPort
+        val needsReconnect = networkChanged ||
+            (cleanUrl.isNotBlank() && current.relayStatus != RelayStatus.CONNECTED)
         val keepAliveChanged = newKeepAlive != current.keepAlive
         val ephemeralChanged = newEphemeral != current.ephemeralMode
 
@@ -856,10 +864,15 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             persistIdentityAsync()
         }
 
-        if (networkChanged) {
+        if (needsReconnect) {
             applyNetworkConfig()
             ensureTorEngineRunningIfNeeded()
-            current.myPgpKeys?.let { connectToRelayMailbox(it) }
+            val needTor = requiresTor(effectiveTor, cleanUrl)
+            if (needTor && ArtiTorManager.isAvailable && _uiState.value.artiState !is ArtiTorState.Connected) {
+                _uiState.value = _uiState.value.copy(relayStatus = RelayStatus.BUILDING_CIRCUIT)
+            } else {
+                current.myPgpKeys?.let { connectToRelayMailbox(it) }
+            }
         }
     }
 

@@ -32,6 +32,7 @@ fun SecurityStatusDialog(
     hasDuressPin: Boolean,
     myFingerprint: String,
     myDropId: String,
+    relayErrorDetail: String? = null,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -62,7 +63,7 @@ fun SecurityStatusDialog(
                     DiagnosticsRow(
                         icon = AppIcons.Public,
                         title = "Tor Circuit",
-                        value = torLabel,
+                        value = if (!relayErrorDetail.isNullOrBlank()) "$torLabel ($relayErrorDetail)" else torLabel,
                         valueColor = torColor
                     )
 
