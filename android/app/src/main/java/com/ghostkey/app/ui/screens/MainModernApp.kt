@@ -5,8 +5,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import com.ghostkey.app.AppNavScreen
-import com.ghostkey.app.MainActivity
+import com.ghostkey.app.*
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.ui.dialogs.*
 import kotlinx.coroutines.delay
