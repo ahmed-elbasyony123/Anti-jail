@@ -9,10 +9,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.security.KeyStore
+import java.security.SecureRandom
+import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 data class PeerIdentity(
     val publicKeyArmored: String,
@@ -25,6 +30,8 @@ data class StoredIdentity(
     val peer: PeerIdentity? = null,
     val userAlias: String = "",
     val relayUrl: String = "",
+    val myAvatarBase64: String? = null,
+    val myAvatarHash: String? = null,
     val contacts: List<Contact> = emptyList(),
     val groups: List<GroupChat> = emptyList(),
     val duressPinHash: String? = null,
@@ -74,75 +81,7 @@ class SecureStore(private val context: Context) {
 
     @Synchronized
     fun save(identity: StoredIdentity) {
-        val json = JSONObject()
-            .put("privateKeyArmored", identity.mine.privateKeyArmored)
-            .put("publicKeyArmored", identity.mine.publicKeyArmored)
-            .put("fingerprint", identity.mine.fingerprint)
-            .put("dropId", identity.mine.dropId)
-            .put("readToken", identity.mine.readToken)
-            .put("userAlias", identity.userAlias)
-            .put("relayUrl", identity.relayUrl)
-
-        identity.peer?.let {
-            json.put("peerPublicKeyArmored", it.publicKeyArmored)
-            json.put("peerFingerprint", it.fingerprint)
-            json.put("peerDropId", it.dropId)
-        }
-        if (!identity.duressPinHash.isNullOrBlank()) {
-            json.put("duressPinHash", identity.duressPinHash)
-        }
-        if (!identity.appPinHash.isNullOrBlank()) {
-            json.put("appPinHash", identity.appPinHash)
-        }
-        if (!identity.pinSaltHex.isNullOrBlank()) {
-            json.put("pinSaltHex", identity.pinSaltHex)
-        }
-
-        // Serialize contacts
-        val contactsArray = JSONArray()
-        for (c in identity.contacts) {
-            val cObj = JSONObject()
-                .put("id", c.id)
-                .put("alias", c.alias)
-                .put("dropId", c.dropId)
-                .put("publicKeyArmored", c.publicKeyArmored)
-                .put("fingerprint", c.fingerprint)
-                .put("addedAt", c.addedAt)
-                .put("isVerified", c.isVerified)
-            if (c.safetyCode != null) cObj.put("safetyCode", c.safetyCode)
-            if (c.disappearingTtlSeconds != null) cObj.put("disappearingTtlSeconds", c.disappearingTtlSeconds)
-            contactsArray.put(cObj)
-        }
-        json.put("contacts", contactsArray)
-
-        // Serialize groups
-        val groupsArray = JSONArray()
-        for (g in identity.groups) {
-            val membersArray = JSONArray()
-            for (m in g.members) {
-                membersArray.put(
-                    JSONObject()
-                        .put("dropId", m.dropId)
-                        .put("alias", m.alias)
-                        .put("publicKeyArmored", m.publicKeyArmored)
-                        .put("fingerprint", m.fingerprint)
-                )
-            }
-            groupsArray.put(
-                JSONObject()
-                    .put("id", g.id)
-                    .put("name", g.name)
-                    .put("groupDropId", g.groupDropId)
-                    .put("groupReadToken", g.groupReadToken)
-                    .put("sharedKeyBase64", g.sharedKeyBase64)
-                    .put("members", membersArray)
-                    .put("createdAt", g.createdAt)
-                    .put("isAdmin", g.isAdmin)
-            )
-        }
-        json.put("groups", groupsArray)
-
-        val plain = json.toString().toByteArray(Charsets.UTF_8)
+        val plain = encodeIdentityJson(identity).toString().toByteArray(Charsets.UTF_8)
         try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -187,8 +126,126 @@ class SecureStore(private val context: Context) {
 
         val jsonStr = String(decryptedBytes, Charsets.UTF_8)
         decryptedBytes.fill(0)
-        val json = JSONObject(jsonStr)
+        return decodeIdentityJson(JSONObject(jsonStr))
+    }
 
+    fun exportEncryptedBackup(identity: StoredIdentity, passphrase: String): String {
+        require(passphrase.length >= 6) { "Backup passphrase must be at least 6 characters" }
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val iv = ByteArray(IV_BYTES).also { SecureRandom().nextBytes(it) }
+        val secretKey = deriveBackupKey(passphrase, salt)
+        val plain = encodeIdentityJson(identity).toString().toByteArray(Charsets.UTF_8)
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(TAG_BITS, iv))
+            cipher.updateAAD("ghostkey-backup-v1".toByteArray(Charsets.UTF_8))
+            val encrypted = cipher.doFinal(plain)
+            JSONObject().apply {
+                put("v", 1)
+                put("salt", Base64.getEncoder().encodeToString(salt))
+                put("iv", Base64.getEncoder().encodeToString(iv))
+                put("ct", Base64.getEncoder().encodeToString(encrypted))
+            }.toString()
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    fun importEncryptedBackup(backupJson: String, passphrase: String): StoredIdentity {
+        val wrapper = JSONObject(backupJson.trim())
+        require(wrapper.optInt("v", -1) == 1) { "Unsupported backup format version" }
+        val salt = Base64.getDecoder().decode(wrapper.getString("salt"))
+        val iv = Base64.getDecoder().decode(wrapper.getString("iv"))
+        val ct = Base64.getDecoder().decode(wrapper.getString("ct"))
+        val secretKey = deriveBackupKey(passphrase, salt)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(TAG_BITS, iv))
+        cipher.updateAAD("ghostkey-backup-v1".toByteArray(Charsets.UTF_8))
+        val plain = cipher.doFinal(ct)
+        return try {
+            decodeIdentityJson(JSONObject(String(plain, Charsets.UTF_8)))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    private fun deriveBackupKey(passphrase: String, salt: ByteArray): SecretKeySpec {
+        val spec = PBEKeySpec(passphrase.toCharArray(), salt, 100_000, 256)
+        val raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        spec.clearPassword()
+        return SecretKeySpec(raw, "AES").also { raw.fill(0) }
+    }
+
+    private fun encodeIdentityJson(identity: StoredIdentity): JSONObject {
+        val json = JSONObject()
+            .put("privateKeyArmored", identity.mine.privateKeyArmored)
+            .put("publicKeyArmored", identity.mine.publicKeyArmored)
+            .put("fingerprint", identity.mine.fingerprint)
+            .put("dropId", identity.mine.dropId)
+            .put("readToken", identity.mine.readToken)
+            .put("userAlias", identity.userAlias)
+            .put("relayUrl", identity.relayUrl)
+
+        if (!identity.myAvatarBase64.isNullOrBlank()) json.put("myAvatarBase64", identity.myAvatarBase64)
+        if (!identity.myAvatarHash.isNullOrBlank()) json.put("myAvatarHash", identity.myAvatarHash)
+
+        identity.peer?.let {
+            json.put("peerPublicKeyArmored", it.publicKeyArmored)
+            json.put("peerFingerprint", it.fingerprint)
+            json.put("peerDropId", it.dropId)
+        }
+        if (!identity.duressPinHash.isNullOrBlank()) json.put("duressPinHash", identity.duressPinHash)
+        if (!identity.appPinHash.isNullOrBlank()) json.put("appPinHash", identity.appPinHash)
+        if (!identity.pinSaltHex.isNullOrBlank()) json.put("pinSaltHex", identity.pinSaltHex)
+
+        val contactsArray = JSONArray()
+        for (c in identity.contacts) {
+            val cObj = JSONObject()
+                .put("id", c.id)
+                .put("alias", c.alias)
+                .put("dropId", c.dropId)
+                .put("publicKeyArmored", c.publicKeyArmored)
+                .put("fingerprint", c.fingerprint)
+                .put("addedAt", c.addedAt)
+                .put("isVerified", c.isVerified)
+                .put("keyChangedWarning", c.keyChangedWarning)
+            if (c.safetyCode != null) cObj.put("safetyCode", c.safetyCode)
+            if (c.disappearingTtlSeconds != null) cObj.put("disappearingTtlSeconds", c.disappearingTtlSeconds)
+            if (!c.avatarBase64.isNullOrBlank()) cObj.put("avatarBase64", c.avatarBase64)
+            if (!c.avatarHash.isNullOrBlank()) cObj.put("avatarHash", c.avatarHash)
+            contactsArray.put(cObj)
+        }
+        json.put("contacts", contactsArray)
+
+        val groupsArray = JSONArray()
+        for (g in identity.groups) {
+            val membersArray = JSONArray()
+            for (m in g.members) {
+                membersArray.put(
+                    JSONObject()
+                        .put("dropId", m.dropId)
+                        .put("alias", m.alias)
+                        .put("publicKeyArmored", m.publicKeyArmored)
+                        .put("fingerprint", m.fingerprint)
+                )
+            }
+            groupsArray.put(
+                JSONObject()
+                    .put("id", g.id)
+                    .put("name", g.name)
+                    .put("groupDropId", g.groupDropId)
+                    .put("groupReadToken", g.groupReadToken)
+                    .put("sharedKeyBase64", g.sharedKeyBase64)
+                    .put("members", membersArray)
+                    .put("createdAt", g.createdAt)
+                    .put("isAdmin", g.isAdmin)
+            )
+        }
+        json.put("groups", groupsArray)
+        return json
+    }
+
+    private fun decodeIdentityJson(json: JSONObject): StoredIdentity {
         val mine = PgpKeyPairArmored(
             publicKeyArmored = json.getString("publicKeyArmored"),
             privateKeyArmored = json.getString("privateKeyArmored"),
@@ -221,7 +278,10 @@ class SecureStore(private val context: Context) {
                         addedAt = c.optLong("addedAt", System.currentTimeMillis()),
                         isVerified = c.optBoolean("isVerified", false),
                         safetyCode = c.optString("safetyCode", null)?.ifBlank { null },
-                        disappearingTtlSeconds = if (c.has("disappearingTtlSeconds")) c.getLong("disappearingTtlSeconds") else null
+                        disappearingTtlSeconds = if (c.has("disappearingTtlSeconds")) c.getLong("disappearingTtlSeconds") else null,
+                        avatarBase64 = c.optString("avatarBase64", null)?.ifBlank { null },
+                        avatarHash = c.optString("avatarHash", null)?.ifBlank { null },
+                        keyChangedWarning = c.optBoolean("keyChangedWarning", false)
                     )
                 )
             }
@@ -262,21 +322,18 @@ class SecureStore(private val context: Context) {
             }
         }
 
-        val duressPinHash = json.optString("duressPinHash", null)?.ifBlank { null }
-        val appPinHash = json.optString("appPinHash", null)?.ifBlank { null }
-        val pinSaltHex = json.optString("pinSaltHex", null)?.ifBlank { null }
-        val relayUrl = json.optString("relayUrl", "")
-
         return StoredIdentity(
             mine = mine,
             peer = peer,
             userAlias = userAlias,
-            relayUrl = relayUrl,
+            relayUrl = json.optString("relayUrl", ""),
+            myAvatarBase64 = json.optString("myAvatarBase64", null)?.ifBlank { null },
+            myAvatarHash = json.optString("myAvatarHash", null)?.ifBlank { null },
             contacts = contactsList,
             groups = groupsList,
-            duressPinHash = duressPinHash,
-            appPinHash = appPinHash,
-            pinSaltHex = pinSaltHex
+            duressPinHash = json.optString("duressPinHash", null)?.ifBlank { null },
+            appPinHash = json.optString("appPinHash", null)?.ifBlank { null },
+            pinSaltHex = json.optString("pinSaltHex", null)?.ifBlank { null }
         )
     }
 

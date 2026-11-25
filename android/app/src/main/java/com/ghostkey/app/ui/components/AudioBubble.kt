@@ -30,7 +30,8 @@ fun AudioBubble(
     val isThisActive = playbackState.activeMessageId == message.id
 
     val currentMs = if (isThisActive) playbackState.currentPositionMs else 0L
-    val totalMs = if (isThisActive && playbackState.durationMs > 0) playbackState.durationMs else message.audioDurationMs
+    val noteDurationMs = (message.content as? com.ghostkey.app.data.MessageContent.AudioNote)?.durationMs ?: 0L
+    val totalMs = if (isThisActive && playbackState.durationMs > 0) playbackState.durationMs else noteDurationMs
     val progress = if (isThisActive) playbackState.progress else 0f
 
     Column(

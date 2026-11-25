@@ -25,7 +25,9 @@ internal data class AppPreferencesSnapshot(
     val userAlias: String,
     val appPinHash: String?,
     val duressPinHash: String?,
-    val pinSaltHex: String?
+    val pinSaltHex: String?,
+    val offlineBleMeshEnabled: Boolean = false,
+    val offlineWifiDirectEnabled: Boolean = false
 )
 
 /**
@@ -59,7 +61,9 @@ internal class IdentityRepository(context: Context) {
         userAlias = prefs.getString("user_alias", "") ?: "",
         appPinHash = prefs.getString("app_pin_hash", null),
         duressPinHash = prefs.getString("duress_pin_hash", null),
-        pinSaltHex = prefs.getString("pin_salt_hex", null)
+        pinSaltHex = prefs.getString("pin_salt_hex", null),
+        offlineBleMeshEnabled = prefs.getBoolean("offline_ble_mesh_enabled", false),
+        offlineWifiDirectEnabled = prefs.getBoolean("offline_wifi_direct_enabled", false)
     )
 
     fun hasStoredIdentity(): Boolean = secureStore.hasIdentity()
@@ -133,6 +137,13 @@ internal class IdentityRepository(context: Context) {
 
     fun saveLockEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("lock_enabled", enabled).commit()
+    }
+
+    fun saveOfflineMeshPrefs(bleEnabled: Boolean, wifiDirectEnabled: Boolean) {
+        prefs.edit()
+            .putBoolean("offline_ble_mesh_enabled", bleEnabled)
+            .putBoolean("offline_wifi_direct_enabled", wifiDirectEnabled)
+            .commit()
     }
 
     fun saveOnboardingCompletion(
@@ -219,4 +230,10 @@ internal class IdentityRepository(context: Context) {
         withContext(Dispatchers.Default) {
             StandalonePgpEngine.generateKeyPair(alias)
         }
+
+    fun exportEncryptedBackup(identity: StoredIdentity, passphrase: String): String =
+        secureStore.exportEncryptedBackup(identity, passphrase)
+
+    fun importEncryptedBackup(backupJson: String, passphrase: String): StoredIdentity =
+        secureStore.importEncryptedBackup(backupJson, passphrase)
 }

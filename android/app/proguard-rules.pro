@@ -1,7 +1,25 @@
 # Proguard / R8 rules for GhostKey
-# Retain BouncyCastle provider, JCA algorithms, and OpenPGP classes loaded via reflection
+# Retain only the BouncyCastle JCA/OpenPGP classes actually required (PQC/X509 are stripped)
 -keep class org.bouncycastle.jce.provider.** { *; }
--keep class org.bouncycastle.jcajce.provider.** { *; }
+-keep class org.bouncycastle.jce.spec.** { *; }
+-keep class org.bouncycastle.jcajce.spec.** { *; }
+-keep class org.bouncycastle.jcajce.provider.config.** { *; }
+-keep class org.bouncycastle.jcajce.provider.util.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.EdEC** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.edec.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.EC** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.ec.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.RSA** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.rsa.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.DSA** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.dsa.** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.ElGamal** { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.elgamal.** { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.AES** { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.SHA** { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.MD5** { *; }
+-keep class org.bouncycastle.jcajce.provider.digest.RIPEMD160** { *; }
+-keep class org.bouncycastle.jcajce.provider.drbg.** { *; }
 -keep class org.bouncycastle.openpgp.** { *; }
 -keep class org.bouncycastle.bcpg.** { *; }
 -keep class org.bouncycastle.crypto.** { *; }

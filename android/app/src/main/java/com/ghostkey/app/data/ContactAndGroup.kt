@@ -12,7 +12,10 @@ data class Contact(
     val addedAt: Long = System.currentTimeMillis(),
     val isVerified: Boolean = false,
     val safetyCode: String? = null,
-    val disappearingTtlSeconds: Long? = null
+    val disappearingTtlSeconds: Long? = null,
+    val avatarBase64: String? = null,
+    val avatarHash: String? = null,
+    val keyChangedWarning: Boolean = false
 )
 
 @Immutable

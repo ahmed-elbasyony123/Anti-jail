@@ -12,8 +12,8 @@ android {
         applicationId = "com.ghostkey.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 25
-        versionName = "2.8.3"
+        versionCode = 26
+        versionName = "2.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -64,6 +64,8 @@ android {
             excludes += "META-INF/versions/**"
             excludes += "META-INF/*.version"
             excludes += "META-INF/*.kotlin_module"
+            excludes += "org/bouncycastle/pqc/**"
+            excludes += "org/bouncycastle/x509/**"
         }
     }
 }
@@ -101,4 +103,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+
+    // Unit testing
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

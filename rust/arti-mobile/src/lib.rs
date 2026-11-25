@@ -281,7 +281,6 @@ pub extern "system" fn Java_com_ghostkey_app_net_ArtiTorManager_startNative(
     // Install ring crypto provider for rustls 0.23 and disable fs-mistrust for Android sandbox
     let _ = rustls::crypto::ring::default_provider().install_default();
     std::env::set_var("FS_MISTRUST_DISABLE_PERMISSIONS_CHECKS", "1");
-    std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "yes");
     std::env::set_var("ARTI_FS_DISABLE_PERMISSION_CHECKS", "1");
 
     if IS_RUNNING.load(Ordering::Relaxed) {

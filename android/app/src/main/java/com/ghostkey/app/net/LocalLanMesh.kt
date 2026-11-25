@@ -77,6 +77,18 @@ class LocalLanMesh(
     }
 
     /**
+     * Directly initiates TCP identity exchange with a known host (e.g. Wi-Fi Direct Group Owner).
+     */
+    fun probeDirectHost(hostIp: String) {
+        val activeScope = scope ?: return
+        if (!isRunning || myDropId.isBlank()) return
+        runCatching {
+            val addr = InetAddress.getByName(hostIp)
+            initiateIdentityExchange(activeScope, addr, DEFAULT_MESH_PORT)
+        }
+    }
+
+    /**
      * Start the LAN mesh services: UDP discovery and TCP direct message listener.
      */
     fun start(myDropId: String) {
