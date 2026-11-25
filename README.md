@@ -1,6 +1,6 @@
-# GHOSTKEY // E2EE Messaging Suite (v2.4.0)
+# GHOSTKEY // E2EE Messaging Suite (v2.7.1)
 
-> **End-to-End Encrypted • Embedded Tor (Arti Rust Engine) • Ed25519/X25519 • Blind Dead-Drop Relay • Tor Push Notifications • Opus PTT Voice**
+> **End-to-End Encrypted • Embedded Tor (Arti Rust Engine) • Ed25519/X25519 • AES-256-GCM Groups • Blind Dead-Drop Relay • QR Pairing & LAN Mesh • Opus PTT Voice**
 
 ---
 
@@ -9,7 +9,11 @@
 **GhostKey** is an end-to-end encrypted messaging suite designed to resist network eavesdropping, traffic inspection, and hostile relay infrastructure. It pairs standard OpenPGP cryptography (Ed25519 + X25519) with an **Embedded Tor Onion Routing Engine (Arti in Rust)** to minimize metadata exposure to ISPs and intermediate relays without requiring any external apps like Orbot.
 
 > [!NOTE]
-> **GhostKey v2.4.0 Updates:** Features **Zero-Leakage Tor Push Notifications** delivered directly over Tor Onion WebSocket circuits without Google Play Services (FCM) or third-party telemetry, stealth lockscreen privacy (`VISIBILITY_PRIVATE`), web desktop notification alerts, embedded **Arti Tor Engine** in Rust, encrypted Push-to-Talk (PTT) voice notes (Opus), and zero disk footprint RAM-only audio streaming.
+> **GhostKey v2.7.1 Updates:**
+> - **Comprehensive Security Audit Remediation:** Enforced strict SEIPD/MDC integrity checks (anti-Efail), `SUBKEY_BINDING` and `KeyFlags.SIGN_DATA` verification, AES-only cipher enforcement, bounded LRU key caches, and Zip-Bomb recursion limits.
+> - **Encrypted Group Chats & Disappearing Messages:** AES-256-GCM group encryption with AAD, cryptographic group invite validation, and automatic RAM-zeroing TTL message expiration.
+> - **Hardened Transport & Relay:** Eliminated `.onion` DNS leaks, added CSRF/CSWSH protection, `SocksPort 0` + Tor v3 PoW defenses, PBKDF2-HMAC-SHA256 PIN/Duress PIN hashing, and ephemeral-ID Local LAN Mesh.
+> - **Modular Architecture:** Refactored `MainActivity.kt` by extracting `MainModernApp.kt` (Jetpack Compose navigation/screens) and `MainActivityMessaging.kt` (crypto/messaging pipeline).
 
 ---
 
@@ -98,16 +102,18 @@ flowchart TD
 │
 ├── android/                # Native Android Application (Kotlin + Jetpack Compose)
 │   ├── app/src/main/java/com/ghostkey/app/
-│   │   ├── MainActivity.kt # Streamlined Entry point, Lifecycle & State coordination
+│   │   ├── MainActivity.kt          # Entry point, Lifecycle, PIN/Duress Lock & State
+│   │   ├── MainActivityMessaging.kt # Sign-then-Encrypt, Decrypt, Groups & Media Pipeline
 │   │   ├── audio/          # AudioRecorderManager (Opus), AudioPlayerManager (RAM-only)
-│   │   ├── crypto/         # StandalonePgpEngine (Ed25519/X25519 Keyring Cache), WireFormat
-│   │   ├── data/           # ChatMessage (@Immutable), SecureStore (Keystore AES-256-GCM)
-│   │   ├── net/            # ArtiTorManager (Embedded Rust Tor), TorRelayClient
-│   │   ├── service/        # Stealth Foreground Service (Neutral Sync Service)
+│   │   ├── crypto/         # StandalonePgpEngine (LRU Cache), GroupCrypto, WireFormat, InPersonPairing
+│   │   ├── data/           # ChatMessage (@Immutable), ContactAndGroup, SecureStore (Keystore AES-256-GCM)
+│   │   ├── net/            # ArtiTorManager (Rust), TorRelayClient, LocalLanMesh, OrbotDiscovery
+│   │   ├── notify/         # PushNotificationManager (Zero-leakage Tor alerts)
+│   │   ├── service/        # TorForegroundService (Stealth sync service)
 │   │   └── ui/             # Modular Jetpack Compose UI
 │   │       ├── components/ # AudioBubble, KeyBar, MessageBubble, StatusBadges
-│   │       ├── dialogs/    # KeyDialogs, SettingsDialog
-│   │       └── screens/    # LockedScreen
+│   │       ├── dialogs/    # KeyDialogs, PairingDialogs, SecurityStatusDialog, SettingsDialog
+│   │       └── screens/    # MainModernApp, ChatsListScreen, CleanChatScreen, LockedScreen, SettingsScreen, TelegramDrawer, WelcomeOnboardingScreen
 │   ├── build.gradle.kts
 │   └── AndroidManifest.xml
 │
