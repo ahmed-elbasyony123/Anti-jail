@@ -362,7 +362,6 @@ fun CleanChatScreen(
                             placeholder = { Text("Encrypted message...", color = AnthropicTextMuted, fontSize = 14.sp) },
                             shape = RoundedCornerShape(24.dp),
                             maxLines = 4,
-                            @Suppress("DEPRECATION")
                             keyboardOptions = KeyboardOptions(autoCorrect = false),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedContainerColor = AnthropicSurfaceVariant,
