@@ -1,23 +1,24 @@
 # Proguard / R8 rules for GhostKey
-# Retain only the BouncyCastle JCA provider entries resolved via string reflection;
-# direct calls into bcpg/openpgp are traced by R8 so unused PQC/X509/legacy ciphers can be stripped.
--keep class org.bouncycastle.jce.provider.BouncyCastleProvider { *; }
--keep class org.bouncycastle.jcajce.provider.asymmetric.edec.** { *; }
--keep class org.bouncycastle.jcajce.provider.symmetric.AES** { *; }
--keep class org.bouncycastle.jcajce.provider.digest.SHA** { *; }
--keep class org.bouncycastle.jcajce.provider.drbg.** { *; }
+# Retain BouncyCastle provider, JCA algorithms, and OpenPGP classes loaded via reflection
+-keep class org.bouncycastle.jce.provider.** { *; }
+-keep class org.bouncycastle.jcajce.provider.** { *; }
+-keep class org.bouncycastle.openpgp.** { *; }
+-keep class org.bouncycastle.bcpg.** { *; }
+-keep class org.bouncycastle.crypto.** { *; }
 -dontwarn org.bouncycastle.**
 
 # Standard Kotlin & Coroutines reflection metadata
--keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
--dontwarn java.lang.invoke.**
+-keepclassmembers class kotlinx.coroutines.** { *; }
+-dontwarn kotlinx.coroutines.**
 
-# Preserve JNI native bindings for embedded Arti Tor Engine
--keepclassmembers class * {
+# JNI entrypoints for Embedded Arti Tor (Rust)
+-keepclasseswithmembers class com.ghostkey.app.net.ArtiTorManager {
     native <methods>;
 }
 -keep class com.ghostkey.app.net.ArtiTorManager { *; }
+-keep class com.ghostkey.app.net.ArtiTorState { *; }
+-keep class com.ghostkey.app.net.ArtiTorState$* { *; }
 
-# ZXing Core (QR code generation & scanning only)
--keep class com.google.zxing.qrcode.** { *; }
+# ZXing Core (QR code generation & scanning)
+-keep class com.google.zxing.** { *; }
 -dontwarn com.google.zxing.**

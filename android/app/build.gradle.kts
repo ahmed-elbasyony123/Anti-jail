@@ -12,8 +12,8 @@ android {
         applicationId = "com.ghostkey.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "2.8.0"
+        versionCode = 23
+        versionName = "2.8.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -64,8 +64,6 @@ android {
             excludes += "META-INF/versions/**"
             excludes += "META-INF/*.version"
             excludes += "META-INF/*.kotlin_module"
-            excludes += "org/bouncycastle/pqc/**"
-            excludes += "org/bouncycastle/x509/**"
         }
     }
 }
