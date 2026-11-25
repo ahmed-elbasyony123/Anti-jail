@@ -6,6 +6,7 @@ const cfg = require('./config');
 class MailboxStore {
     constructor() {
         this.drops = new Map();
+        this.unclaimedCount = 0;
         this.totalBytes = 0;
         this.authFailures = new Map();
         this.activeSubscriptions = new Map();
@@ -30,8 +31,8 @@ class MailboxStore {
         return (now - m.createdAt) >= m.ttl;
     }
 
-    newDrop(now = Date.now()) {
-        return { claimed: false, queue: [], lastActive: now, winStart: now, winCount: 0 };
+    newDrop(now = Date.now(), claimed = false) {
+        return { claimed, queue: [], lastActive: now, winStart: now, winCount: 0 };
     }
 
     parseTtlSeconds(value) {
@@ -51,11 +52,12 @@ class MailboxStore {
         return set;
     }
 
-    removeMessages(drop, idSet) {
+    _filterDropQueue(drop, shouldRemove) {
+        if (drop.queue.length === 0) return 0;
         const kept = [];
         let removed = 0;
         for (const m of drop.queue) {
-            if (idSet.has(m.id)) {
+            if (shouldRemove(m)) {
                 this.totalBytes -= m.bytes;
                 removed++;
             } else {
@@ -66,20 +68,12 @@ class MailboxStore {
         return removed;
     }
 
+    removeMessages(drop, idSet) {
+        return this._filterDropQueue(drop, (m) => idSet.has(m.id));
+    }
+
     purgeExpired(drop, now) {
-        if (drop.queue.length === 0) return 0;
-        const kept = [];
-        let purged = 0;
-        for (const m of drop.queue) {
-            if (this.isExpired(m, now)) {
-                this.totalBytes -= m.bytes;
-                purged++;
-            } else {
-                kept.push(m);
-            }
-        }
-        drop.queue = kept;
-        return purged;
+        return this._filterDropQueue(drop, (m) => this.isExpired(m, now));
     }
 
     authenticate(dropId, tokenHex) {
@@ -116,10 +110,12 @@ class MailboxStore {
         let drop = this.drops.get(dropId);
         if (!drop) {
             if (this.drops.size >= cfg.MAX_ACTIVE_DROPS) return { ok: false, reason: 'capacity' };
-            drop = this.newDrop(now);
+            drop = this.newDrop(now, true);
             this.drops.set(dropId, drop);
+        } else if (!drop.claimed) {
+            drop.claimed = true;
+            this.unclaimedCount = Math.max(0, this.unclaimedCount - 1);
         }
-        drop.claimed = true;
         drop.lastActive = now;
         return { ok: true, drop };
     }
@@ -130,11 +126,11 @@ class MailboxStore {
 
         const now = Date.now();
         let drop = this.drops.get(dropId);
-        if (!drop && this.drops.size >= cfg.MAX_ACTIVE_DROPS) {
-            return { ok: false, status: 503, error: 'Relay at capacity' };
-        }
-
-        if (drop) {
+        if (!drop) {
+            if (this.drops.size >= cfg.MAX_ACTIVE_DROPS || this.unclaimedCount >= cfg.MAX_UNCLAIMED_DROPS) {
+                return { ok: false, status: 503, error: 'Relay at capacity' };
+            }
+        } else {
             this.purgeExpired(drop, now);
             if ((now - drop.winStart) >= 60000) {
                 drop.winStart = now;
@@ -154,8 +150,9 @@ class MailboxStore {
         }
 
         if (!drop) {
-            drop = this.newDrop(now);
+            drop = this.newDrop(now, false);
             this.drops.set(dropId, drop);
+            this.unclaimedCount++;
         }
 
         const record = {
@@ -177,6 +174,7 @@ class MailboxStore {
             this.purgeExpired(drop, now);
             if (drop.queue.length > 0 || this.activeSubscriptions.has(dropId)) continue;
             if (!drop.claimed || (now - drop.lastActive) > cfg.CLAIM_IDLE_MS) {
+                if (!drop.claimed) this.unclaimedCount = Math.max(0, this.unclaimedCount - 1);
                 this.drops.delete(dropId);
             }
         }

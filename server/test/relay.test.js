@@ -121,7 +121,7 @@ test('input handling: bad JSON, bad ids, oversize body, odd Host, static path tr
         assert.equal((await send(s, 'zz'.repeat(32))).status, 400);
         assert.equal((await s.req('POST', '/api/v2/send', { body: { dropId: hex32() } })).status, 400);
 
-        const big = await s.req('POST', '/api/v2/send', { body: JSON.stringify({ dropId: hex32(), ciphertext: 'a'.repeat(26 * 1024 * 1024) }) });
+        const big = await s.req('POST', '/api/v2/send', { body: JSON.stringify({ dropId: hex32(), ciphertext: 'a'.repeat(33 * 1024 * 1024) }) });
         assert.equal(big.status, 413);
         assert.equal((await s.req('GET', '/api/v2/ping')).status, 200, 'server survives oversize body');
 
@@ -169,6 +169,16 @@ test('per-dropId rate limit (30/min), queue cap, active-dropId cap, global RAM c
         assert.equal((await send(s, hex32())).status, 503);
         const tCap = hex32(), dCap = deriveDrop(tCap);
         assert.equal((await s.req('GET', `/api/v2/inbox/${dCap}`, { token: tCap })).status, 503);
+    } finally { await s.stop(); }
+
+    // Unclaimed drop spam cannot starve reserved slots for authenticated users
+    s = await start({ GK_MAX_ACTIVE_DROPS: '4', GK_MAX_UNCLAIMED_DROPS: '2' });
+    try {
+        assert.equal((await send(s, hex32())).status, 200);
+        assert.equal((await send(s, hex32())).status, 200);
+        assert.equal((await send(s, hex32())).status, 503, 'unclaimed cap blocks excess spam');
+        const tAuth = hex32(), dAuth = deriveDrop(tAuth);
+        assert.equal((await s.req('GET', `/api/v2/inbox/${dAuth}`, { token: tAuth })).status, 200, 'reserved claimed slot succeeds');
     } finally { await s.stop(); }
 
     s = await start({ GK_MAX_TOTAL_BYTES: '1000' });
@@ -267,12 +277,12 @@ test('websocket: server heartbeat terminates connections that never pong', async
     } finally { await s.stop(); }
 });
 
-test('websocket: oversized frames (>25 MB) are refused', async () => {
+test('websocket: oversized frames (>32 MB) are refused', async () => {
     const s = await start();
     try {
         const ws = await wsOpen(s);
         const closed = new Promise((r) => ws.on('close', (code) => r(code)));
-        ws.send('x'.repeat(25 * 1024 * 1024 + 10));
+        ws.send('x'.repeat(32 * 1024 * 1024 + 10));
         const code = await closed;
         assert.ok(code === 1009 || code === 1006, 'connection must be closed, got ' + code);
         assert.equal((await s.req('GET', '/api/v2/ping')).status, 200, 'server survives');

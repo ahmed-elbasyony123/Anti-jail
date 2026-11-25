@@ -42,7 +42,7 @@ internal data class OutboxItem(
  * Unified messaging pipeline coordinating:
  * - Bounded RAM Outbox queuing & retry across Tor, Wi-Fi Direct/LAN, and BLE Mesh
  * - Anti-replay nonce & msgId deduplication
- * - EXIF/Metadata sanitization via [MediaSanitizer] with 12 MB raw cap (<= 25 MB server limit after PGP armor)
+ * - EXIF/Metadata sanitization via [MediaSanitizer] with 15 MB raw cap (<= 32 MB server limit after PGP armor)
  * - Disappearing message expiry, E2EE profile updates, and group control events
  */
 internal class MessagingService(
@@ -50,9 +50,9 @@ internal class MessagingService(
     private val transport: GhostTransport
 ) {
     companion object {
-        // 12 MB raw media remains comfortably below the 25 MB server limit after Base64 + OpenPGP armor
-        const val MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
-        const val MAX_OUTBOX_BYTES = 16 * 1024 * 1024L
+        // 15 MB raw media expands to ~28.1 MB after Base64 + OpenPGP armor (under 32 MB relay cap)
+        const val MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+        const val MAX_OUTBOX_BYTES = 32 * 1024 * 1024L
         private const val MAX_SEEN_IDS = 2000
         private const val MAX_SENT_CIPHERTEXT_HASHES = 1000
         private const val MAX_OUTBOX_SIZE = 128
@@ -338,7 +338,7 @@ internal class MessagingService(
             val bytes = contentResolver.openInputStream(uri)?.use {
                 GhostKeyUtils.readStreamLimited(it, MAX_ATTACHMENT_BYTES)
             } ?: return@withContext Result.failure<Triple<String, String, ByteArray>>(
-                IllegalArgumentException("File exceeds 12 MB limit")
+                IllegalArgumentException("File exceeds 15 MB limit")
             )
             val mime = contentResolver.getType(uri) ?: "application/octet-stream"
             val name = queryFilename(uri) ?: "attachment"

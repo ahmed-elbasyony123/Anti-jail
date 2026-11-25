@@ -43,6 +43,10 @@ function createWsHub(server, store) {
         const snapshot = drop.queue.slice();
         for (const m of snapshot) {
             if (ws.readyState !== 1 || !ws.subs.has(dropId)) return;
+            while (ws.bufferedAmount >= cfg.WS_BACKPRESSURE_BYTES) {
+                if (ws.readyState !== 1 || !ws.subs.has(dropId)) return;
+                await new Promise((r) => setTimeout(r, 25));
+            }
             if (store.isExpired(m, Date.now())) continue;
             const payload = JSON.stringify({ type: 'MESSAGE', dropId, message: store.toWire(m) });
             await new Promise((resolve) => {
