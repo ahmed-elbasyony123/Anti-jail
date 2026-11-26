@@ -28,16 +28,16 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Make Gradlew Executable
         working-directory: ./android
@@ -45,7 +45,7 @@ jobs:
 
       - name: Cache Arti Native Libraries (libarti_mobile.so)
         id: cache-arti
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: android/app/src/main/jniLibs
           key: arti-jni-arm64-v2-${{ hashFiles('rust/arti-mobile/**') }}
@@ -72,7 +72,7 @@ jobs:
         run: ./gradlew testDebugUnitTest assembleRelease --no-daemon --stacktrace
 
       - name: Upload Release APK Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: GhostKey-Android-APK
           path: android/app/build/outputs/apk/release/app-release.apk
@@ -81,7 +81,7 @@ jobs:
 
       - name: Publish v2 preview pre-release (feature branches only)
         if: startsWith(github.ref, 'refs/heads/feat/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v2-preview
           name: "GhostKey v2 preview"
@@ -112,7 +112,7 @@ jobs:
 
       - name: Publish New GitHub Release
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           name: ${{ steps.release_meta.outputs.title }}
