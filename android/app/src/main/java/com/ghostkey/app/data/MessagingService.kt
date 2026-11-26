@@ -606,10 +606,16 @@ internal class MessagingService(
     fun buildChatSummaries(
         contacts: List<Contact>,
         groups: List<GroupChat>,
-        allMessages: List<ChatMessage>
+        allMessages: List<ChatMessage>,
+        lastReadByChat: Map<String, Long> = emptyMap()
     ): List<ChatSummary> {
         val list = ArrayList<ChatSummary>(groups.size + contacts.size)
         val knownChatIds = HashSet<String>(groups.size * 2 + contacts.size)
+
+        fun countUnread(chatId: String): Int {
+            val lastRead = lastReadByChat[chatId] ?: 0L
+            return allMessages.count { !it.isOutgoing && it.chatId == chatId && it.timestamp > lastRead }
+        }
 
         for (g in groups) {
             knownChatIds.add(g.id)
@@ -623,7 +629,11 @@ internal class MessagingService(
                     isGroup = true,
                     lastMessageText = lastMsg?.previewText("Group session ready") ?: "Group session ready",
                     lastMessageTime = lastMsg?.timestamp ?: g.createdAt,
-                    avatarLetter = g.name.take(1)
+                    unreadCount = countUnread(g.id),
+                    avatarLetter = g.name.take(1),
+                    isPinned = g.isPinned,
+                    isMuted = g.isMuted,
+                    isArchived = g.isArchived
                 )
             )
         }
@@ -639,8 +649,14 @@ internal class MessagingService(
                     isGroup = false,
                     lastMessageText = lastMsg?.previewText("Direct E2EE session") ?: "Direct E2EE session",
                     lastMessageTime = lastMsg?.timestamp ?: c.addedAt,
+                    unreadCount = countUnread(c.dropId),
                     avatarLetter = c.alias.take(1),
-                    isVerified = c.isVerified
+                    avatarBase64 = c.avatarBase64,
+                    isVerified = c.isVerified,
+                    keyChangedWarning = c.keyChangedWarning,
+                    isPinned = c.isPinned,
+                    isMuted = c.isMuted,
+                    isArchived = c.isArchived
                 )
             )
         }
@@ -657,11 +673,14 @@ internal class MessagingService(
                     isGroup = false,
                     lastMessageText = lastMsg.previewText("Incoming message"),
                     lastMessageTime = lastMsg.timestamp,
+                    unreadCount = countUnread(cid),
                     avatarLetter = sender.take(1).uppercase()
                 )
             )
         }
-        return list.sortedByDescending { it.lastMessageTime }
+        return list.sortedWith(
+            compareByDescending<ChatSummary> { it.isPinned }.thenByDescending { it.lastMessageTime }
+        )
     }
 
     private fun queryFilename(uri: Uri): String? {

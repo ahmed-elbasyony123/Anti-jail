@@ -15,7 +15,10 @@ data class Contact(
     val disappearingTtlSeconds: Long? = null,
     val avatarBase64: String? = null,
     val avatarHash: String? = null,
-    val keyChangedWarning: Boolean = false
+    val keyChangedWarning: Boolean = false,
+    val isPinned: Boolean = false,
+    val isMuted: Boolean = false,
+    val isArchived: Boolean = false
 )
 
 @Immutable
@@ -35,11 +38,14 @@ data class GroupChat(
     val sharedKeyBase64: String,
     val members: List<GroupMember> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
-    val isAdmin: Boolean = false
+    val isAdmin: Boolean = false,
+    val isPinned: Boolean = false,
+    val isMuted: Boolean = false,
+    val isArchived: Boolean = false
 )
 
 /**
- * Summary representation of a 1-to-1 or group chat for the Telegram-style chat list.
+ * Summary representation of a 1-to-1 or group chat for the chats list.
  */
 @Immutable
 data class ChatSummary(
@@ -51,6 +57,11 @@ data class ChatSummary(
     val lastMessageTime: Long = 0L,
     val unreadCount: Int = 0,
     val avatarLetter: String = "G",
+    val avatarBase64: String? = null,
     val isOnline: Boolean = true,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val keyChangedWarning: Boolean = false,
+    val isPinned: Boolean = false,
+    val isMuted: Boolean = false,
+    val isArchived: Boolean = false
 )

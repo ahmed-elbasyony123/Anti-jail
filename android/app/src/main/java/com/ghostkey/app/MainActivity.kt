@@ -15,10 +15,10 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
-import com.ghostkey.app.ui.GhostKeyTheme
-import com.ghostkey.app.ui.screens.LockedScreen
-import com.ghostkey.app.ui.screens.MainModernApp
-import com.ghostkey.app.ui.screens.WelcomeOnboardingScreen
+import com.ghostkey.app.ui.screens.MainApp
+import com.ghostkey.app.ui.screens.lock.LockScreen
+import com.ghostkey.app.ui.screens.onboarding.OnboardingFlow
+import com.ghostkey.app.ui.theme.GhostKeyTheme
 import kotlin.system.exitProcess
 
 class MainActivity : ComponentActivity() {
@@ -63,17 +63,26 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by viewModel.uiState.collectAsState()
-            GhostKeyTheme {
+            GhostKeyTheme(
+                themeMode = state.themeMode,
+                language = state.language
+            ) {
                 when {
                     state.isOnboarding -> {
-                        WelcomeOnboardingScreen(
-                            onCompleteOnboarding = { alias, appPin, duressPin, isEphemeral ->
-                                viewModel.completeOnboarding(alias, appPin, duressPin, isEphemeral)
+                        OnboardingFlow(
+                            language = state.language,
+                            onToggleLanguage = viewModel::setLanguage,
+                            relayTestState = state.relayTestState,
+                            onTestRelay = viewModel::testRelayConnection,
+                            onResetRelayTest = viewModel::resetRelayTest,
+                            isGeneratingKey = state.isGeneratingKey,
+                            onCompleteOnboarding = { alias, relayUrl, appPin, isEphemeral ->
+                                viewModel.completeOnboarding(alias, appPin, null, isEphemeral, relayUrl)
                             }
                         )
                     }
                     state.isLocked -> {
-                        LockedScreen(
+                        LockScreen(
                             onUnlock = { viewModel.onAppUnlocked() },
                             onDeviceUnlock = { requestDeviceUnlock() },
                             onVerifyPin = { pin ->
@@ -87,7 +96,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     else -> {
-                        MainModernApp(
+                        MainApp(
                             viewModel = viewModel,
                             onMicClick = { requestMicAndRecord() },
                             onEmergencyPanic = { triggerEmergencyPanicWipe() }

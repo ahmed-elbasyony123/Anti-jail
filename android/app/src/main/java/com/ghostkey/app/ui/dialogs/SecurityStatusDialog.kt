@@ -14,20 +14,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.net.ArtiTorState
 import com.ghostkey.app.net.RelayStatus
-import com.ghostkey.app.ui.*
+import com.ghostkey.app.ui.AppIcons
+import com.ghostkey.app.ui.theme.GhostTheme
+import com.ghostkey.app.ui.theme.statusColor
+import com.ghostkey.app.ui.theme.statusLabel
 
-/**
- * Security & Network Health Diagnostics Dialog.
- */
 @Composable
 fun SecurityStatusDialog(
     relayStatus: RelayStatus,
     artiState: ArtiTorState,
     lanPeersCount: Int,
+    blePeersCount: Int,
+    wifiDirectPeersCount: Int,
     isEphemeral: Boolean,
     hasDuressPin: Boolean,
     myFingerprint: String,
@@ -35,102 +38,76 @@ fun SecurityStatusDialog(
     relayErrorDetail: String? = null,
     onDismiss: () -> Unit
 ) {
+    val palette = GhostTheme.colors
+    val strings = GhostTheme.strings
+
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = palette.surface,
         icon = {
-            Icon(
-                imageVector = AppIcons.VerifiedUser,
-                contentDescription = null,
-                tint = AnthropicTerracotta,
-                modifier = Modifier.size(32.dp)
-            )
+            Icon(AppIcons.VerifiedUser, contentDescription = null, tint = palette.accent, modifier = Modifier.size(30.dp))
         },
         title = {
-            Text(
-                text = "Security & Network Health",
-                style = MaterialTheme.typography.titleMedium,
-                color = AnthropicCream
-            )
+            Text("Security & Network Health", color = palette.textPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                DiagnosticsCategory(title = "Network & Routing") {
-                    val (torLabel, torColor) = relayStatus.statusDisplay()
+                DiagnosticsGroup("Network & Mesh") {
+                    val label = relayStatus.statusLabel(strings)
                     DiagnosticsRow(
                         icon = AppIcons.Public,
-                        title = "Tor Circuit",
-                        value = if (!relayErrorDetail.isNullOrBlank()) "$torLabel ($relayErrorDetail)" else torLabel,
-                        valueColor = torColor
+                        title = "Tor Relay",
+                        value = if (!relayErrorDetail.isNullOrBlank()) "$label ($relayErrorDetail)" else label,
+                        valueColor = relayStatus.statusColor(palette)
                     )
-
                     val artiDetails = when (artiState) {
-                        is ArtiTorState.Connected -> "Embedded Arti Rust Engine (SOCKS5 :${artiState.socksPort})"
-                        is ArtiTorState.Starting -> "Bootstrapping Circuit (${artiState.progress}%)..."
-                        is ArtiTorState.Error -> "Arti Error (Fallback to External Tor)"
-                        is ArtiTorState.Idle -> "Tor SOCKS Proxy Ready"
+                        is ArtiTorState.Connected -> "Embedded Arti (SOCKS5 :${artiState.socksPort})"
+                        is ArtiTorState.Starting -> "Bootstrapping Circuit (${artiState.progress}%)"
+                        is ArtiTorState.Error -> "Arti Fallback (Orbot)"
+                        is ArtiTorState.Idle -> "Tor SOCKS Ready"
                     }
-                    DiagnosticsRow(
-                        icon = AppIcons.Public,
-                        title = "Tor Engine",
-                        value = artiDetails,
-                        valueColor = AnthropicTextMuted
-                    )
-
+                    DiagnosticsRow(AppIcons.Public, "Tor Engine", artiDetails, palette.textSecondary)
                     DiagnosticsRow(
                         icon = AppIcons.Wifi,
-                        title = "Offline LAN Mesh",
-                        value = if (lanPeersCount > 0) "$lanPeersCount peer(s) nearby on LAN" else "Active (Listening :8766)",
-                        valueColor = if (lanPeersCount > 0) AnthropicSage else AnthropicTextMuted
+                        title = "Local & Mesh Peers",
+                        value = "LAN: $lanPeersCount · BLE: $blePeersCount · Wi-Fi Direct: $wifiDirectPeersCount",
+                        valueColor = if (lanPeersCount + blePeersCount + wifiDirectPeersCount > 0) palette.connected else palette.textSecondary
                     )
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                DiagnosticsCategory(title = "Device & Anti-Forensics") {
+                DiagnosticsGroup("Anti-Forensics") {
+                    DiagnosticsRow(Icons.Default.Lock, "Screen Capture Block", "FLAG_SECURE Active", palette.connected)
                     DiagnosticsRow(
-                        icon = Icons.Default.Lock,
-                        title = "Screen Capture Lock",
-                        value = "FLAG_SECURE Active (Zero Screenshots)",
-                        valueColor = AnthropicSage
+                        AppIcons.Memory,
+                        "Storage Mode",
+                        if (isEphemeral) "Ephemeral RAM-Only" else "Hardware KeyStore + Volatile RAM Messages",
+                        palette.connected
                     )
                     DiagnosticsRow(
-                        icon = AppIcons.Memory,
-                        title = "Storage Mode",
-                        value = if (isEphemeral) "Ephemeral (Zero Disk Storage)" else "RAM-Only Messages (Encrypted Identity)",
-                        valueColor = AnthropicSage
-                    )
-                    DiagnosticsRow(
-                        icon = AppIcons.Shield,
-                        title = "Duress Panic Wipe",
-                        value = if (hasDuressPin) "Armed & Ready (Silent Wipe)" else "Not Configured",
-                        valueColor = if (hasDuressPin) AnthropicSage else AnthropicTextMuted
-                    )
-                    DiagnosticsRow(
-                        icon = AppIcons.Hourglass,
-                        title = "Disappearing Reaper",
-                        value = "Active (Periodic RAM zeroization)",
-                        valueColor = AnthropicSage
+                        AppIcons.Shield,
+                        "Duress Panic Wipe",
+                        if (hasDuressPin) "Armed" else "Not Set",
+                        if (hasDuressPin) palette.connected else palette.textSecondary
                     )
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                DiagnosticsCategory(title = "Cryptography & Identity") {
+                DiagnosticsGroup("Cryptographic Identity") {
                     DiagnosticsRow(
-                        icon = AppIcons.Key,
-                        title = "PGP Fingerprint",
-                        value = if (myFingerprint.isNotBlank()) myFingerprint.take(16) + "..." else "Not Generated",
-                        valueColor = AnthropicTerracotta
+                        AppIcons.Key,
+                        strings.fingerprintLabel,
+                        if (myFingerprint.isNotBlank()) myFingerprint.take(16) + "..." else "Pending",
+                        palette.accent
                     )
                     DiagnosticsRow(
-                        icon = Icons.Default.Email,
-                        title = "Drop ID",
-                        value = if (myDropId.isNotBlank()) myDropId.take(16) + "..." else "None",
-                        valueColor = AnthropicTextMuted
+                        Icons.Default.Email,
+                        strings.dropIdLabel,
+                        if (myDropId.isNotBlank()) myDropId.take(16) + "..." else "Pending",
+                        palette.textSecondary
                     )
                 }
             }
@@ -138,73 +115,41 @@ fun SecurityStatusDialog(
         confirmButton = {
             Button(
                 onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = AnthropicTerracotta,
-                    contentColor = AnthropicSurface
-                )
-            ) {
-                Text("Close")
-            }
-        },
-        containerColor = AnthropicSurface
+                colors = ButtonDefaults.buttonColors(containerColor = palette.accent, contentColor = palette.accentText)
+            ) { Text("Close") }
+        }
     )
 }
 
 @Composable
-private fun DiagnosticsCategory(
-    title: String,
-    content: @Composable ColumnScope.() -> Unit
-) {
+private fun DiagnosticsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    val palette = GhostTheme.colors
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AnthropicSurfaceVariant, RoundedCornerShape(8.dp))
+            .background(palette.surfaceVariant, RoundedCornerShape(12.dp))
             .padding(12.dp)
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelMedium,
-            color = AnthropicTerracotta,
-            fontSize = 12.sp
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+        Text(title, color = palette.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(6.dp))
         content()
     }
 }
 
 @Composable
-private fun DiagnosticsRow(
-    icon: ImageVector,
-    title: String,
-    value: String,
-    valueColor: Color
-) {
+private fun DiagnosticsRow(icon: ImageVector, title: String, value: String, valueColor: Color) {
+    val palette = GhostTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = AnthropicTextMuted,
-            modifier = Modifier.size(18.dp)
-        )
+        Icon(icon, contentDescription = null, tint = palette.textSecondary, modifier = Modifier.size(18.dp))
         Spacer(modifier = Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodySmall,
-                color = AnthropicCream,
-                fontSize = 12.sp
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodySmall,
-                color = valueColor,
-                fontSize = 11.sp
-            )
+        Column {
+            Text(title, color = palette.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Text(value, color = valueColor, fontSize = 11.sp)
         }
     }
 }

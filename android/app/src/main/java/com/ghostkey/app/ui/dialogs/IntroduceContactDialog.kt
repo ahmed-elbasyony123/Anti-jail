@@ -14,12 +14,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.data.Contact
-import com.ghostkey.app.ui.*
+import com.ghostkey.app.ui.AppIcons
+import com.ghostkey.app.ui.theme.GhostTheme
 
-/**
- * Contact Introduction Dialog:
- * Allows a mutual friend to introduce two contacts over encrypted channels.
- */
 @Composable
 fun IntroduceContactDialog(
     currentContactAlias: String,
@@ -27,42 +24,26 @@ fun IntroduceContactDialog(
     onDismiss: () -> Unit,
     onIntroduce: (introducedContact: Contact) -> Unit
 ) {
+    val palette = GhostTheme.colors
+    val strings = GhostTheme.strings
     var selectedContact by remember { mutableStateOf<Contact?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = AppIcons.Handshake,
-                contentDescription = null,
-                tint = AnthropicTerracotta,
-                modifier = Modifier.size(32.dp)
-            )
-        },
-        title = {
-            Text(
-                text = "Introduce a Contact",
-                style = MaterialTheme.typography.titleMedium,
-                color = AnthropicCream
-            )
-        },
+        containerColor = palette.surface,
+        icon = { Icon(AppIcons.Handshake, contentDescription = null, tint = palette.accent, modifier = Modifier.size(30.dp)) },
+        title = { Text(strings.introduceContactAction, color = palette.textPrimary, fontSize = 18.sp) },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Select a contact to introduce to $currentContactAlias. Both parties will receive each other's verified public keys.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AnthropicTextMuted,
+                    text = "Select a contact to introduce to $currentContactAlias.",
+                    color = palette.textSecondary,
+                    fontSize = 13.sp,
                     lineHeight = 18.sp
                 )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
+                Spacer(modifier = Modifier.height(14.dp))
                 if (availableContacts.isEmpty()) {
-                    Text(
-                        text = "No other contacts available to introduce.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AnthropicTextMuted
-                    )
+                    Text("No other contacts available.", color = palette.textSecondary, fontSize = 13.sp)
                 } else {
                     LazyColumn(
                         modifier = Modifier
@@ -72,46 +53,30 @@ fun IntroduceContactDialog(
                         items(availableContacts, key = { it.id }) { contact ->
                             val isSelected = selectedContact?.id == contact.id
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) AnthropicSurfaceVariant else AnthropicSurface,
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) palette.selectionHighlight else palette.surfaceVariant,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp)
                                     .clickable { selectedContact = contact }
                             ) {
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(10.dp),
+                                    modifier = Modifier.padding(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Person,
+                                        Icons.Default.Person,
                                         contentDescription = null,
-                                        tint = if (isSelected) AnthropicTerracotta else AnthropicTextMuted,
-                                        modifier = Modifier.size(24.dp)
+                                        tint = if (isSelected) palette.accent else palette.textSecondary,
+                                        modifier = Modifier.size(22.dp)
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = contact.alias,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = AnthropicCream
-                                        )
-                                        Text(
-                                            text = "FP: ${contact.fingerprint.take(12)}...",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = AnthropicTextMuted,
-                                            fontSize = 11.sp
-                                        )
+                                        Text(contact.alias, color = palette.textPrimary, fontSize = 14.sp)
+                                        Text("FP: ${contact.fingerprint.take(12)}...", color = palette.textSecondary, fontSize = 11.sp)
                                     }
                                     if (contact.isVerified) {
-                                        Icon(
-                                            imageVector = AppIcons.Shield,
-                                            contentDescription = "Verified",
-                                            tint = AnthropicSage,
-                                            modifier = Modifier.size(16.dp)
-                                        )
+                                        Icon(AppIcons.Shield, contentDescription = null, tint = palette.connected, modifier = Modifier.size(16.dp))
                                     }
                                 }
                             }
@@ -122,21 +87,13 @@ fun IntroduceContactDialog(
         },
         confirmButton = {
             Button(
-                onClick = { selectedContact?.let { onIntroduce(it) } },
+                onClick = { selectedContact?.let(onIntroduce) },
                 enabled = selectedContact != null,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = AnthropicTerracotta,
-                    contentColor = AnthropicSurface
-                )
-            ) {
-                Text("Introduce")
-            }
+                colors = ButtonDefaults.buttonColors(containerColor = palette.accent, contentColor = palette.accentText)
+            ) { Text("Introduce") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = AnthropicTextMuted)
-            }
-        },
-        containerColor = AnthropicSurface
+            TextButton(onClick = onDismiss) { Text(strings.cancelBtn, color = palette.textSecondary) }
+        }
     )
 }

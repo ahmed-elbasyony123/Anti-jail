@@ -1,15 +1,16 @@
 package com.ghostkey.app.ui.components
 
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -17,54 +18,72 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.audio.PlaybackState
 import com.ghostkey.app.crypto.SignatureStatus
 import com.ghostkey.app.data.ChatMessage
+import com.ghostkey.app.data.DeliveryState
 import com.ghostkey.app.data.MessageContent
-import com.ghostkey.app.ui.*
+import com.ghostkey.app.ui.AppIcons
+import com.ghostkey.app.ui.icons.ExtraIcons
+import com.ghostkey.app.ui.theme.GhostTheme
 import com.ghostkey.app.util.GhostKeyUtils
 
 /**
- * Asymmetric message bubble with Anthropic warm cream/terracotta aesthetics.
+ * Minimal chat bubble: black/white outgoing, light gray incoming, with embedded reply quote support.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
     message: ChatMessage,
+    replyTargetMessage: ChatMessage? = null,
     playbackState: PlaybackState = PlaybackState(),
     nowMs: Long = System.currentTimeMillis(),
     onManualDecrypt: () -> Unit,
     onAudioPlayPause: (ChatMessage) -> Unit = {},
     onAudioSeek: (ChatMessage, Float) -> Unit = { _, _ -> },
+    onReplyToMessage: (ChatMessage) -> Unit = {},
     onAcceptIntroduction: (alias: String, dropId: String, armoredKey: String, safetyCode: String?) -> Unit = { _, _, _, _ -> }
 ) {
+    val palette = GhostTheme.colors
+    val strings = GhostTheme.strings
     val isOut = message.isOutgoing
     val align = if (isOut) Alignment.End else Alignment.Start
-    val bubbleColor = if (isOut) AnthropicBubbleOutgoing else AnthropicBubbleIncoming
-    val borderColor = if (isOut) AnthropicTerracotta.copy(alpha = 0.3f) else AnthropicBorder
+    val bubbleBg = if (isOut) palette.bubbleOutgoing else palette.bubbleIncoming
+    val textColor = if (isOut) palette.bubbleOutgoingText else palette.bubbleIncomingText
+    val subColor = if (isOut) palette.bubbleOutgoingSubtext else palette.bubbleIncomingSubtext
 
     val bubbleShape = if (isOut) {
-        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
     } else {
-        RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
     }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = 12.dp, vertical = 2.dp),
         horizontalAlignment = align
     ) {
         Box(
             modifier = Modifier
-                .widthIn(min = 90.dp, max = 310.dp)
+                .widthIn(min = 84.dp, max = 304.dp)
                 .clip(bubbleShape)
-                .background(bubbleColor)
-                .border(1.dp, borderColor, bubbleShape)
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .background(bubbleBg)
+                .combinedClickable(
+                    onClick = {
+                        if (!message.isDecrypted) onManualDecrypt()
+                    },
+                    onLongClick = {
+                        if (message.isDecrypted) onReplyToMessage(message)
+                    }
+                )
+                .padding(horizontal = 14.dp, vertical = 9.dp)
         ) {
             Column {
                 if (!isOut && (message.isGroup || !message.senderAlias.isNullOrBlank())) {
@@ -75,20 +94,28 @@ fun MessageBubble(
                     ) {
                         Text(
                             text = displayName,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
                             fontSize = 12.sp,
-                            color = AnthropicTerracotta
+                            color = palette.accent
                         )
                         if (message.signatureStatus == SignatureStatus.VERIFIED) {
                             Spacer(modifier = Modifier.width(4.dp))
                             Icon(
                                 AppIcons.VerifiedUser,
-                                contentDescription = "Verified PGP Signature",
-                                tint = AnthropicSage,
-                                modifier = Modifier.size(13.dp)
+                                contentDescription = null,
+                                tint = palette.connected,
+                                modifier = Modifier.size(12.dp)
                             )
                         }
                     }
+                }
+
+                if (replyTargetMessage != null) {
+                    ReplyQuotePreview(
+                        target = replyTargetMessage,
+                        isOutgoing = isOut
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
                 }
 
                 when (val content = message.content) {
@@ -96,6 +123,7 @@ fun MessageBubble(
                         AudioBubble(
                             message = message,
                             playbackState = playbackState,
+                            isOutgoing = isOut,
                             onPlayPause = { onAudioPlayPause(message) },
                             onSeek = { fraction -> onAudioSeek(message, fraction) }
                         )
@@ -115,63 +143,61 @@ fun MessageBubble(
                             Image(
                                 bitmap = imageBitmap,
                                 contentDescription = content.filename,
+                                contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .heightIn(max = 240.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(14.dp))
                             )
                         } else {
-                            FileAttachmentFallback(content.filename, content.mimeType)
+                            FileAttachmentChip(content.filename, content.mimeType, isOut)
                         }
                     }
                     is MessageContent.FileMedia -> {
-                        FileAttachmentFallback(content.filename, content.mimeType)
+                        FileAttachmentChip(content.filename, content.mimeType, isOut)
                     }
                     is MessageContent.ContactIntro -> {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(AnthropicSurfaceVariant)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(textColor.copy(alpha = 0.08f))
                                 .padding(10.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
                                     AppIcons.Handshake,
                                     contentDescription = null,
-                                    tint = AnthropicTerracotta,
-                                    modifier = Modifier.size(20.dp)
+                                    tint = palette.accent,
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Contact Introduction",
-                                    color = AnthropicTerracotta,
+                                    text = strings.contactIntroTitle,
+                                    color = palette.accent,
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
-                            Spacer(modifier = Modifier.height(6.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (isOut) {
-                                    "You introduced ${content.alias}"
-                                } else {
-                                    "${message.senderAlias ?: "Peer"} wants to introduce ${content.alias}"
-                                },
-                                color = AnthropicCream,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
+                                text = content.alias,
+                                color = textColor,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
                             if (content.dropId.isNotBlank()) {
                                 Text(
-                                    text = "Drop ID: ${content.dropId.take(12)}...",
-                                    color = AnthropicTextMuted,
-                                    fontSize = 11.sp
+                                    text = "ID: ${content.dropId.take(12)}...",
+                                    color = subColor,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
                             if (!content.safetyCode.isNullOrBlank()) {
                                 Text(
-                                    text = "Safety Code: ${content.safetyCode}",
-                                    color = AnthropicSage,
+                                    text = "SAS: ${content.safetyCode}",
+                                    color = palette.connected,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -180,109 +206,97 @@ fun MessageBubble(
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Button(
                                     onClick = {
-                                        onAcceptIntroduction(
-                                            content.alias,
-                                            content.dropId,
-                                            content.armoredKey,
-                                            content.safetyCode
-                                        )
+                                        onAcceptIntroduction(content.alias, content.dropId, content.armoredKey, content.safetyCode)
                                     },
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = AnthropicTerracotta,
-                                        contentColor = AnthropicDarkBg
+                                        containerColor = palette.accent,
+                                        contentColor = palette.accentText
                                     ),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    contentPadding = PaddingValues(vertical = 4.dp, horizontal = 8.dp)
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(vertical = 6.dp, horizontal = 12.dp),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Add Contact", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(strings.addIntroducedContact, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
                     }
                     MessageContent.Encrypted -> {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onManualDecrypt() }
-                                .padding(vertical = 4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 4.dp)
                         ) {
                             Icon(
                                 Icons.Default.Lock,
-                                contentDescription = "Encrypted",
-                                tint = AnthropicTerracotta,
-                                modifier = Modifier.size(20.dp)
+                                contentDescription = null,
+                                tint = palette.accent,
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Encrypted OpenPGP Message",
-                                color = AnthropicCream,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = "Tap to decrypt with your private key",
-                                color = AnthropicTextMuted,
-                                fontSize = 10.sp
-                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = strings.encryptedPlaceholderTitle,
+                                    color = textColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = strings.encryptedPlaceholderSubtitle,
+                                    color = subColor,
+                                    fontSize = 11.sp
+                                )
+                            }
                         }
                     }
                     else -> {
                         Text(
                             text = message.previewText(""),
-                            color = AnthropicCream,
-                            fontSize = 14.5.sp,
-                            lineHeight = 20.sp,
-                            fontWeight = FontWeight.Normal
+                            color = textColor,
+                            fontSize = 15.sp,
+                            lineHeight = 20.sp
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(3.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Row(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (message.expiresAt != null) {
                         val rem = message.remainingSeconds(nowMs)
-                        val remText = if (rem != null) {
+                        val remText = rem?.let {
                             when {
-                                rem >= 3600 -> "${rem / 3600}h"
-                                rem >= 60 -> "${rem / 60}m"
-                                else -> "${rem}s"
+                                it >= 3600 -> "${it / 3600}h"
+                                it >= 60 -> "${it / 60}m"
+                                else -> "${it}s"
                             }
-                        } else ""
+                        }.orEmpty()
                         Icon(
                             AppIcons.Hourglass,
-                            contentDescription = "Disappearing message",
-                            tint = AnthropicTerracotta,
+                            contentDescription = null,
+                            tint = palette.accent,
                             modifier = Modifier.size(11.dp)
                         )
                         if (remText.isNotBlank()) {
                             Spacer(modifier = Modifier.width(2.dp))
                             Text(
                                 text = remText,
-                                fontSize = 9.sp,
-                                color = AnthropicTerracotta,
+                                fontSize = 10.sp,
+                                color = palette.accent,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                     }
                     Text(
                         text = GhostKeyUtils.formatClockTime(message.timestamp),
                         fontSize = 10.sp,
-                        color = AnthropicTextMuted
+                        color = subColor
                     )
                     if (isOut) {
                         Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.Done,
-                            contentDescription = "Sent to Relay",
-                            tint = AnthropicTextMuted,
-                            modifier = Modifier.size(13.dp)
-                        )
+                        DeliveryStateIcon(state = message.deliveryState, tint = subColor)
                     }
                 }
             }
@@ -291,28 +305,94 @@ fun MessageBubble(
 }
 
 @Composable
-private fun FileAttachmentFallback(filename: String, mimeType: String) {
+private fun ReplyQuotePreview(
+    target: ChatMessage,
+    isOutgoing: Boolean
+) {
+    val palette = GhostTheme.colors
+    val textColor = if (isOutgoing) palette.bubbleOutgoingText else palette.bubbleIncomingText
+    val subColor = if (isOutgoing) palette.bubbleOutgoingSubtext else palette.bubbleIncomingSubtext
+    val senderLabel = if (target.isOutgoing) "You" else (target.senderAlias ?: "Peer")
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(textColor.copy(alpha = 0.08f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(28.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(palette.accent)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = senderLabel,
+                color = palette.accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = target.previewText("Message"),
+                color = subColor,
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeliveryStateIcon(state: DeliveryState, tint: androidx.compose.ui.graphics.Color) {
+    val palette = GhostTheme.colors
+    when (state) {
+        DeliveryState.FAILED -> Icon(Icons.Default.Warning, contentDescription = null, tint = palette.error, modifier = Modifier.size(13.dp))
+        DeliveryState.QUEUED -> Icon(AppIcons.Hourglass, contentDescription = null, tint = tint, modifier = Modifier.size(12.dp))
+        DeliveryState.DELIVERED_LAN,
+        DeliveryState.RELAYED_BLE_MESH -> Icon(ExtraIcons.DoneAll, contentDescription = null, tint = palette.accent, modifier = Modifier.size(14.dp))
+        DeliveryState.SENT_RELAY,
+        DeliveryState.NONE -> Icon(Icons.Default.Done, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
+    }
+}
+
+@Composable
+private fun FileAttachmentChip(filename: String, mimeType: String, isOutgoing: Boolean) {
+    val palette = GhostTheme.colors
+    val textColor = if (isOutgoing) palette.bubbleOutgoingText else palette.bubbleIncomingText
+    val subColor = if (isOutgoing) palette.bubbleOutgoingSubtext else palette.bubbleIncomingSubtext
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(AnthropicSurfaceVariant)
-            .padding(8.dp)
+            .background(textColor.copy(alpha = 0.08f))
+            .padding(10.dp)
     ) {
-        Icon(AppIcons.AttachFile, contentDescription = null, tint = AnthropicTerracotta)
+        Icon(AppIcons.AttachFile, contentDescription = null, tint = palette.accent, modifier = Modifier.size(20.dp))
         Spacer(modifier = Modifier.width(8.dp))
         Column {
             Text(
                 text = filename.ifEmpty { "Attachment" },
-                color = AnthropicCream,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium
+                color = textColor,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = mimeType.ifEmpty { "application/octet-stream" },
-                color = AnthropicTextMuted,
-                fontSize = 10.sp
+                color = subColor,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

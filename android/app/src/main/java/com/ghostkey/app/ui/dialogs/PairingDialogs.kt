@@ -46,7 +46,8 @@ import com.ghostkey.app.MainActivity
 import com.ghostkey.app.crypto.ContactCard
 import com.ghostkey.app.crypto.InPersonPairing
 import com.ghostkey.app.data.Contact
-import com.ghostkey.app.ui.*
+import com.ghostkey.app.ui.AppIcons
+import com.ghostkey.app.ui.theme.GhostTheme
 import com.ghostkey.app.util.GhostKeyUtils
 import java.util.concurrent.Executors
 
@@ -58,7 +59,10 @@ fun MyQrCodeDialog(
     myPublicKeyArmored: String,
     onDismiss: () -> Unit
 ) {
+    val palette = GhostTheme.colors
+    val strings = GhostTheme.strings
     val context = LocalContext.current
+
     val contactCardJson = remember(myAlias, myDropId, myFingerprint, myPublicKeyArmored) {
         InPersonPairing.encodeContactCard(
             alias = myAlias.ifBlank { "GhostKey User" },
@@ -69,28 +73,16 @@ fun MyQrCodeDialog(
     }
 
     val qrBitmap = remember(contactCardJson) {
-        try {
-            InPersonPairing.generateQrBitmap(contactCardJson, 400).asImageBitmap()
-        } catch (_: Exception) {
-            null
-        }
+        runCatching { InPersonPairing.generateQrBitmap(contactCardJson, 400).asImageBitmap() }.getOrNull()
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = AnthropicSurface,
+        containerColor = palette.surface,
         title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(AppIcons.QrCode, contentDescription = null, tint = AnthropicTerracotta)
-                Text(
-                    "My Contact QR Card",
-                    color = AnthropicCream,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp
-                )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(AppIcons.QrCode, contentDescription = null, tint = palette.accent)
+                Text(strings.myQrButton, color = palette.textPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
         },
         text = {
@@ -102,71 +94,48 @@ fun MyQrCodeDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    "Ask your friend to scan this QR code with their camera to pair instantly and verify safety codes.",
-                    color = AnthropicTextMid,
+                    "Scan this QR code in person to exchange keys and verify safety codes instantly.",
+                    color = palette.textSecondary,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center
                 )
-
                 if (qrBitmap != null) {
                     Box(
                         modifier = Modifier
-                            .background(Color.White, RoundedCornerShape(12.dp))
+                            .background(Color.White, RoundedCornerShape(14.dp))
                             .padding(12.dp)
                     ) {
-                        Image(
-                            bitmap = qrBitmap,
-                            contentDescription = "Contact QR Code",
-                            modifier = Modifier.size(220.dp)
-                        )
+                        Image(bitmap = qrBitmap, contentDescription = "Contact QR", modifier = Modifier.size(220.dp))
                     }
                 }
-
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(AnthropicSurfaceVariant, RoundedCornerShape(8.dp))
+                        .background(palette.surfaceVariant, RoundedCornerShape(10.dp))
                         .padding(10.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        "Alias: ${myAlias.ifBlank { "Anonymous" }}",
-                        color = AnthropicCream,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "Drop ID: ${myDropId.take(16)}...",
-                        color = AnthropicTextMid,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Text(
-                        "Fingerprint: ${myFingerprint.take(20)}...",
-                        color = AnthropicTextMuted,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
+                    Text(myAlias.ifBlank { "Anonymous" }, color = palette.textPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text("ID: ${myDropId.take(16)}...", color = palette.textSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    Text("FP: ${myFingerprint.take(20)}...", color = palette.textSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 }
-
                 OutlinedButton(
                     onClick = {
                         val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clip.setPrimaryClip(ClipData.newPlainText("GhostKey Contact Card", contactCardJson))
-                        Toast.makeText(context, "Contact Card JSON copied to clipboard", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Contact Card copied", Toast.LENGTH_SHORT).show()
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicTerracotta)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(AppIcons.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Copy Contact Card Data", fontSize = 12.sp)
+                    Text("Copy Contact Card", fontSize = 12.sp)
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close", color = AnthropicTerracotta, fontWeight = FontWeight.Bold)
+                Text("Close", color = palette.accent, fontWeight = FontWeight.Bold)
             }
         }
     )
@@ -178,6 +147,8 @@ fun PairContactDialog(
     onDismiss: () -> Unit,
     onContactVerified: (Contact) -> Unit
 ) {
+    val palette = GhostTheme.colors
+    val strings = GhostTheme.strings
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
     var inputText by remember { mutableStateOf("") }
@@ -195,16 +166,14 @@ fun PairContactDialog(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasCameraPermission = granted
-        if (!granted) {
-            Toast.makeText(context, "Camera permission is needed for live QR scanning", Toast.LENGTH_SHORT).show()
-        }
+        if (!granted) Toast.makeText(context, "Camera permission required", Toast.LENGTH_SHORT).show()
     }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
+            runCatching {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val bitmap = BitmapFactory.decodeStream(stream)
                     val text = bitmap?.let { InPersonPairing.decodeQrFromBitmap(it) }
@@ -216,15 +185,13 @@ fun PairContactDialog(
                             customAlias = card.alias
                             errorText = null
                         } else {
-                            errorText = "QR decoded but not a recognized GhostKey contact format."
+                            errorText = "Unrecognized QR format"
                         }
                     } else {
-                        errorText = "No QR code could be detected in this image."
+                        errorText = "No QR code found in image"
                     }
                 }
-            } catch (e: Exception) {
-                errorText = "Failed to read image: ${e.message}"
-            }
+            }.onFailure { errorText = it.message }
         }
     }
 
@@ -237,16 +204,13 @@ fun PairContactDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = AnthropicSurface,
+        containerColor = palette.surface,
         title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(AppIcons.Shield, contentDescription = null, tint = AnthropicTerracotta)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(AppIcons.Shield, contentDescription = null, tint = palette.accent)
                 Text(
-                    if (parsedCard == null) "In-Person Contact Pairing" else "Verify Safety Code (SAS)",
-                    color = AnthropicCream,
+                    if (parsedCard == null) strings.scanQrPair else strings.safetyCodeAction,
+                    color = palette.textPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp
                 )
@@ -262,20 +226,20 @@ fun PairContactDialog(
                 if (parsedCard == null) {
                     TabRow(
                         selectedTabIndex = selectedTab,
-                        containerColor = AnthropicSurfaceVariant,
-                        contentColor = AnthropicTerracotta,
-                        modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                        containerColor = palette.surfaceVariant,
+                        contentColor = palette.accent,
+                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
                     ) {
                         Tab(
                             selected = selectedTab == 0,
                             onClick = { selectedTab = 0 },
-                            text = { Text("Live Camera", fontSize = 12.sp, color = if (selectedTab == 0) AnthropicTerracotta else AnthropicTextMuted) },
+                            text = { Text("Camera", fontSize = 12.sp) },
                             icon = { Icon(AppIcons.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         Tab(
                             selected = selectedTab == 1,
                             onClick = { selectedTab = 1 },
-                            text = { Text("Paste / Image", fontSize = 12.sp, color = if (selectedTab == 1) AnthropicTerracotta else AnthropicTextMuted) },
+                            text = { Text("Paste / Image", fontSize = 12.sp) },
                             icon = { Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                     }
@@ -288,7 +252,7 @@ fun PairContactDialog(
 
                             DisposableEffect(Unit) {
                                 onDispose {
-                                    try { boundProvider?.unbindAll() } catch (_: Exception) {}
+                                    runCatching { boundProvider?.unbindAll() }
                                     analysisExecutor.shutdownNow()
                                 }
                             }
@@ -296,10 +260,9 @@ fun PairContactDialog(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(260.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.Black)
-                                    .border(2.dp, AnthropicTerracotta.copy(alpha = 0.5f), RoundedCornerShape(12.dp)),
+                                    .height(250.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color.Black),
                                 contentAlignment = Alignment.Center
                             ) {
                                 AndroidView(
@@ -310,20 +273,19 @@ fun PairContactDialog(
                                                 ViewGroup.LayoutParams.MATCH_PARENT
                                             )
                                         }
-                                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                                        cameraProviderFuture.addListener({
-                                            val cameraProvider = cameraProviderFuture.get()
+                                        val future = ProcessCameraProvider.getInstance(ctx)
+                                        future.addListener({
+                                            val cameraProvider = future.get()
                                             boundProvider = cameraProvider
                                             val preview = Preview.Builder().build().also {
                                                 it.setSurfaceProvider(previewView.surfaceProvider)
                                             }
-                                            val imageAnalysis = ImageAnalysis.Builder()
+                                            val analysis = ImageAnalysis.Builder()
                                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                                 .build()
-
-                                            imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                                                val scanned = InPersonPairing.decodeQrFromImageProxy(imageProxy)
-                                                imageProxy.close()
+                                            analysis.setAnalyzer(analysisExecutor) { proxy ->
+                                                val scanned = InPersonPairing.decodeQrFromImageProxy(proxy)
+                                                proxy.close()
                                                 if (scanned != null && parsedCard == null) {
                                                     val card = InPersonPairing.parseContactCard(scanned)
                                                     if (card != null) {
@@ -335,72 +297,44 @@ fun PairContactDialog(
                                                     }
                                                 }
                                             }
-
-                                            try {
+                                            runCatching {
                                                 cameraProvider.unbindAll()
                                                 cameraProvider.bindToLifecycle(
                                                     lifecycleOwner,
                                                     CameraSelector.DEFAULT_BACK_CAMERA,
                                                     preview,
-                                                    imageAnalysis
+                                                    analysis
                                                 )
-                                            } catch (_: Exception) {}
+                                            }
                                         }, ContextCompat.getMainExecutor(ctx))
                                         previewView
                                     },
                                     modifier = Modifier.fillMaxSize()
                                 )
-
                                 Box(
                                     modifier = Modifier
-                                        .size(180.dp)
-                                        .border(2.dp, AnthropicSage, RoundedCornerShape(16.dp))
+                                        .size(170.dp)
+                                        .border(2.dp, palette.connected, RoundedCornerShape(16.dp))
                                 )
                             }
-                            Text(
-                                "Point camera at your friend's GhostKey QR code",
-                                color = AnthropicTextMid,
-                                fontSize = 11.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            )
                         } else {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(AnthropicSurfaceVariant, RoundedCornerShape(8.dp))
+                                    .background(palette.surfaceVariant, RoundedCornerShape(12.dp))
                                     .padding(16.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(AppIcons.CameraAlt, contentDescription = null, tint = AnthropicTerracotta, modifier = Modifier.size(36.dp))
-                                Text(
-                                    "Camera Access Required",
-                                    color = AnthropicCream,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
-                                Text(
-                                    "To scan in-person contact QR codes directly, allow GhostKey to use your camera.",
-                                    color = AnthropicTextMid,
-                                    fontSize = 12.sp,
-                                    textAlign = TextAlign.Center
-                                )
+                                Icon(AppIcons.CameraAlt, contentDescription = null, tint = palette.accent, modifier = Modifier.size(34.dp))
+                                Text("Camera Permission Needed", color = palette.textPrimary, fontWeight = FontWeight.Bold)
                                 Button(
                                     onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = AnthropicTerracotta, contentColor = AnthropicDarkBg)
-                                ) {
-                                    Text("Grant Camera Permission", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.accent, contentColor = palette.accentText)
+                                ) { Text("Grant Camera") }
                             }
                         }
                     } else {
-                        Text(
-                            "Paste your friend's Contact Card JSON or OpenPGP Public Key Block:",
-                            color = AnthropicTextMid,
-                            fontSize = 12.sp
-                        )
-
                         OutlinedTextField(
                             value = inputText,
                             onValueChange = {
@@ -414,26 +348,12 @@ fun PairContactDialog(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(120.dp),
-                            placeholder = { Text("Paste contact JSON or PGP key here...", color = AnthropicTextMuted, fontSize = 12.sp) },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AnthropicTerracotta,
-                                unfocusedBorderColor = AnthropicBorder,
-                                focusedTextColor = AnthropicCream,
-                                unfocusedTextColor = AnthropicCream,
-                                focusedContainerColor = AnthropicDarkNeutral,
-                                unfocusedContainerColor = AnthropicDarkNeutral
-                            ),
-                            textStyle = TextStyle(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp
-                            )
+                                .height(110.dp),
+                            placeholder = { Text("Paste JSON or PGP public key...", color = palette.textTertiary, fontSize = 12.sp) },
+                            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                         )
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = {
                                     val item = GhostKeyUtils.readClipboardText(context)
@@ -444,118 +364,72 @@ fun PairContactDialog(
                                             parsedCard = card
                                             customAlias = card.alias
                                             errorText = null
-                                        } else {
-                                            errorText = "Clipboard data is not a valid contact card or PGP key."
-                                        }
-                                    } else {
-                                        Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                                        } else errorText = "Invalid contact data"
                                     }
                                 },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicCream)
+                                modifier = Modifier.weight(1f)
                             ) {
                                 Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("Paste", fontSize = 12.sp)
                             }
-
                             OutlinedButton(
                                 onClick = {
                                     MainActivity.isExternalPickerActive = true
                                     imagePickerLauncher.launch("image/*")
                                 },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = AnthropicTerracotta)
+                                modifier = Modifier.weight(1f)
                             ) {
                                 Icon(AppIcons.Image, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("From Image", fontSize = 12.sp)
+                                Text("Image", fontSize = 12.sp)
                             }
                         }
                     }
 
                     if (errorText != null) {
-                        Text(
-                            text = errorText ?: "",
-                            color = AnthropicCrimson,
-                            fontSize = 11.sp
-                        )
+                        Text(errorText!!, color = palette.error, fontSize = 12.sp)
                     }
                 } else {
                     val card = parsedCard!!
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(AnthropicSurfaceVariant, RoundedCornerShape(8.dp))
+                            .background(palette.surfaceVariant, RoundedCornerShape(10.dp))
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = AnthropicSage, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = palette.connected, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Peer Identity Detected", color = AnthropicSage, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Peer Detected", color = palette.connected, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
-
                         OutlinedTextField(
                             value = customAlias,
                             onValueChange = { customAlias = it },
-                            label = { Text("Contact Nickname", color = AnthropicTextMid, fontSize = 11.sp) },
+                            label = { Text(strings.displayNameLabel) },
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AnthropicTerracotta,
-                                unfocusedBorderColor = AnthropicBorder,
-                                focusedTextColor = AnthropicCream,
-                                unfocusedTextColor = AnthropicCream
-                            )
+                            singleLine = true
                         )
-
-                        Text(
-                            "Drop ID: ${card.dropId}",
-                            color = AnthropicTextMid,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-
-                        Text(
-                            "Fingerprint: ${card.fingerprint}",
-                            color = AnthropicTextMuted,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
+                        Text("Drop ID: ${card.dropId}", color = palette.textSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                     }
-
                     if (sasCode != null) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(AnthropicDarkBg, RoundedCornerShape(8.dp))
-                                .border(1.dp, AnthropicSage.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .background(palette.background, RoundedCornerShape(10.dp))
+                                .border(1.dp, palette.connected.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
                                 .padding(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(
-                                "Safety Code (Compare on both screens):",
-                                color = AnthropicSage,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            // sasCode is already formatted in 6 groups of 5 digits separated by spaces
+                            Text("Safety Code (Compare both screens)", color = palette.connected, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             Text(
                                 text = sasCode.replace(" ", "  "),
-                                color = AnthropicCream,
+                                color = palette.textPrimary,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace,
-                                textAlign = TextAlign.Center
-                            )
-
-                            Text(
-                                "If the 30 digits match on both phones, your link is cryptographically immune to man-in-the-middle attacks.",
-                                color = AnthropicTextMuted,
-                                fontSize = 10.sp,
                                 textAlign = TextAlign.Center
                             )
                         }
@@ -568,34 +442,26 @@ fun PairContactDialog(
                 Button(
                     onClick = {
                         val card = parsedCard!!
-                        val contact = Contact(
-                            id = card.dropId,
-                            alias = customAlias.ifBlank { card.alias },
-                            dropId = card.dropId,
-                            publicKeyArmored = card.publicKeyArmored,
-                            fingerprint = card.fingerprint,
-                            isVerified = true
+                        onContactVerified(
+                            Contact(
+                                id = card.dropId,
+                                alias = customAlias.ifBlank { card.alias },
+                                dropId = card.dropId,
+                                publicKeyArmored = card.publicKeyArmored,
+                                fingerprint = card.fingerprint,
+                                isVerified = true
+                            )
                         )
-                        onContactVerified(contact)
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AnthropicSage,
-                        contentColor = AnthropicDarkBg
-                    )
-                ) {
-                    Text("Trust & Add Contact", fontWeight = FontWeight.Bold)
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.connected, contentColor = Color.White)
+                ) { Text("Trust & Add", fontWeight = FontWeight.Bold) }
             }
         },
         dismissButton = {
             TextButton(onClick = {
-                if (parsedCard != null) {
-                    parsedCard = null
-                } else {
-                    onDismiss()
-                }
+                if (parsedCard != null) parsedCard = null else onDismiss()
             }) {
-                Text(if (parsedCard != null) "Back" else "Cancel", color = AnthropicTextMuted)
+                Text(if (parsedCard != null) strings.backBtn else strings.cancelBtn, color = palette.textSecondary)
             }
         }
     )

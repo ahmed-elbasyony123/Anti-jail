@@ -174,6 +174,49 @@ class TorRelayClient(
     // HTTP API
     // ---------------------------------------------------------------------------------------
 
+    /** GET /api/v2/ping: verifies relay reachability (routing via Tor SOCKS5 when enabled or .onion). */
+    suspend fun pingRelay(rawUrl: String = serverBaseUrl): Result<Long> =
+        withContext(Dispatchers.IO) {
+            val cleanUrl = GhostKeyUtils.sanitizeRelayUrl(rawUrl)
+            if (cleanUrl.isBlank()) {
+                return@withContext Result.failure(IllegalArgumentException("Relay URL is empty"))
+            }
+            val needsTor = useTorProxy || cleanUrl.contains(".onion", ignoreCase = true)
+            val client = if (needsTor == useTorProxy && cleanUrl == serverBaseUrl) {
+                httpClient
+            } else {
+                OkHttpClient.Builder()
+                    .connectTimeout(25, TimeUnit.SECONDS)
+                    .readTimeout(25, TimeUnit.SECONDS)
+                    .apply {
+                        if (needsTor) {
+                            proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved(torSocksHost, torSocksPort)))
+                            dns(object : Dns {
+                                override fun lookup(hostname: String): List<InetAddress> {
+                                    if (hostname.matches(Regex("""^(\d{1,3}\.){3}\d{1,3}$""")) || hostname == "localhost" || hostname == "::1") {
+                                        return listOf(InetAddress.getByName(hostname))
+                                    }
+                                    throw UnknownHostException("Direct DNS lookup blocked when Tor is active")
+                                }
+                            })
+                        }
+                    }
+                    .build()
+            }
+            try {
+                val started = System.currentTimeMillis()
+                val request = Request.Builder().url("$cleanUrl/api/v2/ping").get().build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw RelayHttpException(response.code)
+                    Result.success((System.currentTimeMillis() - started).coerceAtLeast(1L))
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            } finally {
+                if (client !== httpClient) closeHttpClient(client)
+            }
+        }
+
     /** POST /api/v2/send. Returns the relay's message id. */
     suspend fun sendMessage(dropId: String, ciphertext: String, ttlSeconds: Int = 3600): Result<String> =
         withContext(Dispatchers.IO) {

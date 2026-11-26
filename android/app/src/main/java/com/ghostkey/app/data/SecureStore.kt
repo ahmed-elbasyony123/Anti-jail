@@ -215,6 +215,9 @@ class SecureStore(private val context: Context) {
                 .put("addedAt", c.addedAt)
                 .put("isVerified", c.isVerified)
                 .put("keyChangedWarning", c.keyChangedWarning)
+                .put("isPinned", c.isPinned)
+                .put("isMuted", c.isMuted)
+                .put("isArchived", c.isArchived)
             if (c.safetyCode != null) obj.put("safetyCode", c.safetyCode)
             if (c.disappearingTtlSeconds != null) obj.put("disappearingTtlSeconds", c.disappearingTtlSeconds)
             if (!c.avatarBase64.isNullOrBlank()) obj.put("avatarBase64", c.avatarBase64)
@@ -245,6 +248,9 @@ class SecureStore(private val context: Context) {
                     .put("members", members)
                     .put("createdAt", g.createdAt)
                     .put("isAdmin", g.isAdmin)
+                    .put("isPinned", g.isPinned)
+                    .put("isMuted", g.isMuted)
+                    .put("isArchived", g.isArchived)
             )
         }
     }
@@ -296,7 +302,10 @@ class SecureStore(private val context: Context) {
                 disappearingTtlSeconds = if (c.has("disappearingTtlSeconds")) c.getLong("disappearingTtlSeconds") else null,
                 avatarBase64 = c.optString("avatarBase64", null)?.ifBlank { null },
                 avatarHash = c.optString("avatarHash", null)?.ifBlank { null },
-                keyChangedWarning = c.optBoolean("keyChangedWarning", false)
+                keyChangedWarning = c.optBoolean("keyChangedWarning", false),
+                isPinned = c.optBoolean("isPinned", false),
+                isMuted = c.optBoolean("isMuted", false),
+                isArchived = c.optBoolean("isArchived", false)
             )
         }
     }
@@ -323,7 +332,10 @@ class SecureStore(private val context: Context) {
                 sharedKeyBase64 = g.getString("sharedKeyBase64"),
                 members = members,
                 createdAt = g.optLong("createdAt", System.currentTimeMillis()),
-                isAdmin = g.optBoolean("isAdmin", false)
+                isAdmin = g.optBoolean("isAdmin", false),
+                isPinned = g.optBoolean("isPinned", false),
+                isMuted = g.optBoolean("isMuted", false),
+                isArchived = g.optBoolean("isArchived", false)
             )
         }
     }

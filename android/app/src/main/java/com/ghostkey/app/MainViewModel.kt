@@ -21,7 +21,38 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-enum class AppNavScreen { CHATS_LIST, CHAT_VIEW, SETTINGS }
+enum class AppNavScreen { CHATS_LIST, CHAT_VIEW, SETTINGS, PROFILE }
+
+enum class AppLanguage(val code: String) {
+    EN("en"),
+    AR("ar");
+
+    companion object {
+        fun fromCode(code: String?): AppLanguage =
+            if (code.equals("ar", ignoreCase = true)) AR else EN
+    }
+}
+
+enum class AppThemeMode(val code: String) {
+    LIGHT("light"),
+    DARK("dark"),
+    SYSTEM("system");
+
+    companion object {
+        fun fromCode(code: String?): AppThemeMode = when (code?.lowercase()) {
+            "dark" -> DARK
+            "system" -> SYSTEM
+            else -> LIGHT
+        }
+    }
+}
+
+sealed interface RelayTestState {
+    data object Idle : RelayTestState
+    data object Testing : RelayTestState
+    data class Success(val latencyMs: Long) : RelayTestState
+    data class Failed(val reason: String) : RelayTestState
+}
 
 internal data class MainUiState(
     val navScreen: AppNavScreen = AppNavScreen.CHATS_LIST,
@@ -45,6 +76,7 @@ internal data class MainUiState(
     val duressPinConfigured: Boolean = false,
     val relayStatus: RelayStatus = RelayStatus.DISCONNECTED,
     val relayErrorDetail: String? = null,
+    val relayTestState: RelayTestState = RelayTestState.Idle,
     val artiState: ArtiTorState = ArtiTorState.Idle,
     val isRecordingAudio: Boolean = false,
     val recordElapsedMs: Long = 0L,
@@ -56,7 +88,9 @@ internal data class MainUiState(
     val wifiDirectPeersCount: Int = 0,
     val offlineBleMeshEnabled: Boolean = false,
     val offlineWifiDirectEnabled: Boolean = false,
-    val offlineShareState: OfflineShareState = OfflineShareState()
+    val offlineShareState: OfflineShareState = OfflineShareState(),
+    val language: AppLanguage = AppLanguage.EN,
+    val themeMode: AppThemeMode = AppThemeMode.LIGHT
 )
 
 /**
@@ -82,11 +116,13 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
+    private val lastReadByChat = MutableStateFlow<Map<String, Long>>(emptyMap())
+
     val messages: StateFlow<List<ChatMessage>> = messagingService.messages
     val playbackState: StateFlow<PlaybackState> = audioCoordinator.playbackState
 
-    val chatSummaries: StateFlow<List<ChatSummary>> = combine(_uiState, messagingService.messages) { state, msgs ->
-        messagingService.buildChatSummaries(state.contacts, state.groups, msgs)
+    val chatSummaries: StateFlow<List<ChatSummary>> = combine(_uiState, messagingService.messages, lastReadByChat) { state, msgs, readMap ->
+        messagingService.buildChatSummaries(state.contacts, state.groups, msgs, readMap)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val activeChatMessages: StateFlow<List<ChatMessage>> = combine(_uiState, messagingService.messages) { state, msgs ->
@@ -113,7 +149,9 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             appPinConfigured = lockManager.hasAppPin,
             duressPinConfigured = lockManager.hasDuressPin,
             offlineBleMeshEnabled = prefs.offlineBleMeshEnabled,
-            offlineWifiDirectEnabled = prefs.offlineWifiDirectEnabled
+            offlineWifiDirectEnabled = prefs.offlineWifiDirectEnabled,
+            language = AppLanguage.fromCode(prefs.languageCode),
+            themeMode = AppThemeMode.fromCode(prefs.themeMode)
         )
 
         torCoordinator = TorConnectionCoordinator(
@@ -244,20 +282,79 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     fun verifyPin(pin: String): Boolean = lockManager.verifyPin(pin)
     fun isDuressPin(pin: String): Boolean = lockManager.isDuressPin(pin)
 
-    fun completeOnboarding(alias: String, appPin: String?, duressPin: String?, ephemeralMode: Boolean) {
+    fun completeOnboarding(
+        alias: String,
+        appPin: String?,
+        duressPin: String?,
+        ephemeralMode: Boolean,
+        relayUrl: String = ""
+    ) {
         val cleanAlias = GhostKeyUtils.sanitizeAlias(alias)
+        val cleanRelay = GhostKeyUtils.sanitizeRelayUrl(relayUrl)
         val (newAppHash, newDuressHash, newSalt) = lockManager.configureOnboardingPins(appPin, duressPin, ephemeralMode)
         val lockOn = !ephemeralMode && newAppHash != null
         identityRepo.saveOnboardingCompletion(cleanAlias, ephemeralMode, lockOn, newAppHash, newDuressHash, newSalt)
+        if (!ephemeralMode && cleanRelay.isNotBlank()) {
+            identityRepo.saveRelayAndAliasPrefs(cleanRelay, cleanAlias, ephemeralMode = false, markOnboarded = true)
+        }
+        val needTor = torCoordinator.requiresTor(_uiState.value.useTorSocks, cleanRelay)
         _uiState.value = _uiState.value.copy(
             userAlias = cleanAlias,
+            relayServerUrl = cleanRelay,
+            useTorSocks = needTor,
             ephemeralMode = ephemeralMode,
             lockEnabled = lockOn,
             appPinConfigured = !newAppHash.isNullOrBlank(),
             duressPinConfigured = !newDuressHash.isNullOrBlank(),
-            isOnboarding = false
+            isGeneratingKey = true
         )
-        generateFreshKeys(cleanAlias)
+        torCoordinator.applyNetworkConfig()
+        torCoordinator.ensureTorEngineRunning()
+        generateFreshKeys(cleanAlias, exitOnboardingWhenDone = true)
+    }
+
+    fun setLanguage(language: AppLanguage) {
+        _uiState.value = _uiState.value.copy(language = language)
+        identityRepo.saveUiPreferences(language.code, _uiState.value.themeMode.code)
+    }
+
+    fun setThemeMode(mode: AppThemeMode) {
+        _uiState.value = _uiState.value.copy(themeMode = mode)
+        identityRepo.saveUiPreferences(_uiState.value.language.code, mode.code)
+    }
+
+    fun resetRelayTest() {
+        _uiState.value = _uiState.value.copy(relayTestState = RelayTestState.Idle)
+    }
+
+    fun testRelayConnection(rawUrl: String) {
+        val cleanUrl = GhostKeyUtils.sanitizeRelayUrl(rawUrl)
+        if (cleanUrl.isBlank()) {
+            _uiState.value = _uiState.value.copy(relayTestState = RelayTestState.Failed("Relay URL is empty"))
+            return
+        }
+        _uiState.value = _uiState.value.copy(relayTestState = RelayTestState.Testing)
+        viewModelScope.launch {
+            val needTor = torCoordinator.requiresTor(_uiState.value.useTorSocks, cleanUrl)
+            if (needTor && ArtiTorManager.isAvailable && _uiState.value.artiState !is ArtiTorState.Connected) {
+                torCoordinator.ensureTorEngineRunning()
+                // Wait briefly for Tor circuit if testing an .onion address during onboarding
+                var waited = 0
+                while (_uiState.value.artiState !is ArtiTorState.Connected && waited < 15) {
+                    delay(1_000L)
+                    waited++
+                }
+            }
+            torClient.pingRelay(cleanUrl)
+                .onSuccess { latency ->
+                    _uiState.value = _uiState.value.copy(relayTestState = RelayTestState.Success(latency))
+                }
+                .onFailure { err ->
+                    _uiState.value = _uiState.value.copy(
+                        relayTestState = RelayTestState.Failed(err.message ?: "Unreachable")
+                    )
+                }
+        }
     }
 
     private fun observeForegroundServiceState() {
@@ -341,7 +438,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch { identityRepo.saveIdentity(snapshot, ephemeralMode = false) }
     }
 
-    fun generateFreshKeys(alias: String? = null) {
+    fun generateFreshKeys(alias: String? = null, exitOnboardingWhenDone: Boolean = false) {
         val resolvedAlias = if (!alias.isNullOrBlank()) GhostKeyUtils.sanitizeAlias(alias) else _uiState.value.userAlias
         _uiState.value = _uiState.value.copy(userAlias = resolvedAlias, isGeneratingKey = true)
         viewModelScope.launch {
@@ -352,6 +449,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 _uiState.value = _uiState.value.copy(
                     myPgpKeys = pair,
                     isGeneratingKey = false,
+                    isOnboarding = if (exitOnboardingWhenDone) false else _uiState.value.isOnboarding,
                     activeChatContact = null,
                     activeChatGroup = null
                 )
@@ -361,7 +459,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 val st = _uiState.value
                 torCoordinator.connectOrAwaitTor(pair, st.groups, st.offlineBleMeshEnabled, st.offlineWifiDirectEnabled)
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(isGeneratingKey = false)
+                _uiState.value = _uiState.value.copy(
+                    isGeneratingKey = false,
+                    isOnboarding = if (exitOnboardingWhenDone) false else _uiState.value.isOnboarding
+                )
                 toast("Key generation failed: ${e.message}", Toast.LENGTH_LONG)
             }
         }
@@ -411,8 +512,13 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     },
                     onGroupControlReceived = { ctrl, senderDrop -> handleIncomingGroupControl(ctrl, senderDrop) }
                 )
-                if (decrypted != null && !isForeground) {
-                    PushNotificationManager.postMessageNotification(appContext, decrypted.isAudio, decrypted.isMedia)
+                if (decrypted != null) {
+                    val activeId = _uiState.value.activeChatGroup?.id ?: _uiState.value.activeChatContact?.dropId
+                    if (isForeground && _uiState.value.navScreen == AppNavScreen.CHAT_VIEW && activeId == decrypted.chatId) {
+                        markChatRead(decrypted.chatId)
+                    } else if (!isForeground) {
+                        PushNotificationManager.postMessageNotification(appContext, decrypted.isAudio, decrypted.isMedia)
+                    }
                 }
             } catch (_: Exception) {
                 if (!isForeground) PushNotificationManager.postMessageNotification(appContext, false, false)
@@ -456,7 +562,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    fun sendMessageToActiveChat(text: String) = launchSendToActiveChat { t, k, a -> messagingService.sendText(t, text, k, a) }
+    fun sendMessageToActiveChat(text: String, replyToId: String? = null) =
+        launchSendToActiveChat { t, k, a -> messagingService.sendText(t, text, k, a, replyToId) }
     fun sendMediaToActiveChat(uri: Uri) = launchSendToActiveChat { t, k, a -> messagingService.sendMediaUri(t, uri, k, a) }
 
     fun startRecordingAudio() {
@@ -475,15 +582,97 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
     fun seekAudio(msg: ChatMessage, fraction: Float) = audioCoordinator.seekTo(msg.id, fraction)
 
-    fun navigateTo(screen: AppNavScreen) { _uiState.value = _uiState.value.copy(navScreen = screen) }
+    fun navigateTo(screen: AppNavScreen) {
+        val clearActive = screen != AppNavScreen.CHAT_VIEW
+        _uiState.value = _uiState.value.copy(
+            navScreen = screen,
+            activeChatContact = if (clearActive) null else _uiState.value.activeChatContact,
+            activeChatGroup = if (clearActive) null else _uiState.value.activeChatGroup
+        )
+    }
 
     fun selectChat(chatId: String) {
         val st = _uiState.value
+        markChatRead(chatId)
         _uiState.value = st.copy(
             activeChatContact = st.contacts.find { it.dropId == chatId },
             activeChatGroup = st.groups.find { it.id == chatId },
             navScreen = AppNavScreen.CHAT_VIEW
         )
+    }
+
+    fun markChatRead(chatId: String) {
+        lastReadByChat.update { it + (chatId to System.currentTimeMillis()) }
+    }
+
+    fun dismissKeyChangedWarning(dropId: String) {
+        val st = _uiState.value
+        val updated = st.contacts.map { if (it.dropId == dropId) it.copy(keyChangedWarning = false) else it }
+        _uiState.value = st.copy(
+            contacts = updated,
+            activeChatContact = st.activeChatContact?.takeIf { it.dropId == dropId }?.copy(keyChangedWarning = false)
+                ?: st.activeChatContact
+        )
+        persistIdentityAsync()
+    }
+
+    fun togglePinChats(chatIds: Set<String>) = updateChatFlags(chatIds) { curPinned, _, _ ->
+        val target = !curPinned
+        Triple(target, null, null)
+    }
+
+    fun toggleMuteChats(chatIds: Set<String>) = updateChatFlags(chatIds) { _, curMuted, _ ->
+        val target = !curMuted
+        Triple(null, target, null)
+    }
+
+    fun toggleArchiveChats(chatIds: Set<String>) = updateChatFlags(chatIds) { _, _, curArchived ->
+        val target = !curArchived
+        Triple(null, null, target)
+    }
+
+    private inline fun updateChatFlags(
+        chatIds: Set<String>,
+        compute: (anyPinned: Boolean, anyMuted: Boolean, anyArchived: Boolean) -> Triple<Boolean?, Boolean?, Boolean?>
+    ) {
+        if (chatIds.isEmpty()) return
+        val st = _uiState.value
+        val matchingContacts = st.contacts.filter { it.dropId in chatIds }
+        val matchingGroups = st.groups.filter { it.id in chatIds }
+        val allPinned = (matchingContacts.map { it.isPinned } + matchingGroups.map { it.isPinned }).all { it }
+        val allMuted = (matchingContacts.map { it.isMuted } + matchingGroups.map { it.isMuted }).all { it }
+        val allArchived = (matchingContacts.map { it.isArchived } + matchingGroups.map { it.isArchived }).all { it }
+        val (pin, mute, arch) = compute(allPinned, allMuted, allArchived)
+        val updatedContacts = st.contacts.map { c ->
+            if (c.dropId in chatIds) c.copy(
+                isPinned = pin ?: c.isPinned,
+                isMuted = mute ?: c.isMuted,
+                isArchived = arch ?: c.isArchived
+            ) else c
+        }
+        val updatedGroups = st.groups.map { g ->
+            if (g.id in chatIds) g.copy(
+                isPinned = pin ?: g.isPinned,
+                isMuted = mute ?: g.isMuted,
+                isArchived = arch ?: g.isArchived
+            ) else g
+        }
+        _uiState.value = st.copy(contacts = updatedContacts, groups = updatedGroups)
+        persistIdentityAsync()
+    }
+
+    fun clearChatsHistory(chatIds: Set<String>) {
+        chatIds.forEach { messagingService.clearChatMessages(it) }
+    }
+
+    fun deleteChats(chatIds: Set<String>) {
+        val st = _uiState.value
+        val groupIds = st.groups.filter { it.id in chatIds }.map { it.id }
+        val contactIds = st.contacts.filter { it.dropId in chatIds }.map { it.dropId }
+        groupIds.forEach { leaveAndDeleteGroup(it) }
+        contactIds.forEach { deleteContact(it) }
+        // Clear any leftover messages for unsaved chatIds
+        chatIds.filter { it !in groupIds && it !in contactIds }.forEach { messagingService.clearChatMessages(it) }
     }
 
     fun addOrOpenContact(contact: Contact) {

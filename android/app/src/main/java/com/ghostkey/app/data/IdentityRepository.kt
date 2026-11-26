@@ -29,7 +29,9 @@ internal data class AppPreferencesSnapshot(
     val duressPinHash: String?,
     val pinSaltHex: String?,
     val offlineBleMeshEnabled: Boolean = false,
-    val offlineWifiDirectEnabled: Boolean = false
+    val offlineWifiDirectEnabled: Boolean = false,
+    val languageCode: String = "en",
+    val themeMode: String = "light"
 )
 
 /**
@@ -65,7 +67,9 @@ internal class IdentityRepository(context: Context) {
         duressPinHash = prefs.getString("duress_pin_hash", null),
         pinSaltHex = prefs.getString("pin_salt_hex", null),
         offlineBleMeshEnabled = prefs.getBoolean("offline_ble_mesh_enabled", false),
-        offlineWifiDirectEnabled = prefs.getBoolean("offline_wifi_direct_enabled", false)
+        offlineWifiDirectEnabled = prefs.getBoolean("offline_wifi_direct_enabled", false),
+        languageCode = prefs.getString("ui_language", "en") ?: "en",
+        themeMode = prefs.getString("ui_theme_mode", "light") ?: "light"
     )
 
     fun hasStoredIdentity(): Boolean = secureStore.hasIdentity()
@@ -146,6 +150,13 @@ internal class IdentityRepository(context: Context) {
             .putBoolean("offline_ble_mesh_enabled", bleEnabled)
             .putBoolean("offline_wifi_direct_enabled", wifiDirectEnabled)
             .commit()
+    }
+
+    fun saveUiPreferences(languageCode: String, themeMode: String) {
+        prefs.edit()
+            .putString("ui_language", languageCode)
+            .putString("ui_theme_mode", themeMode)
+            .apply()
     }
 
     fun saveOnboardingCompletion(
