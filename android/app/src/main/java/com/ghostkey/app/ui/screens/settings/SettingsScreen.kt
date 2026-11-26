@@ -459,6 +459,7 @@ private fun KeypadPinSetupDialog(
     var pin by remember { mutableStateOf("") }
     var firstPin by remember { mutableStateOf<String?>(null) }
     var isError by remember { mutableStateOf(false) }
+    var isSubmitted by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -481,7 +482,7 @@ private fun KeypadPinSetupDialog(
                 InAppNumericKeypad(
                     keySize = 54.dp,
                     onDigit = { d ->
-                        if (pin.length < 6) {
+                        if (!isSubmitted && pin.length < 6) {
                             isError = false
                             val next = pin + d
                             pin = next
@@ -491,6 +492,7 @@ private fun KeypadPinSetupDialog(
                                     firstPin = next
                                     pin = ""
                                 } else if (first == next) {
+                                    isSubmitted = true
                                     onSavePin(next)
                                 } else {
                                     isError = true

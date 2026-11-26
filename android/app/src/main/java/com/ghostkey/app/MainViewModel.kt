@@ -291,7 +291,12 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     ) {
         val cleanAlias = GhostKeyUtils.sanitizeAlias(alias)
         val cleanRelay = GhostKeyUtils.sanitizeRelayUrl(relayUrl)
-        val (newAppHash, newDuressHash, newSalt) = lockManager.configureOnboardingPins(appPin, duressPin, ephemeralMode)
+        val (newAppHash, newDuressHash, newSalt) = runCatching {
+            lockManager.configureOnboardingPins(appPin, duressPin, ephemeralMode)
+        }.getOrElse { err ->
+            toast("PIN setup error: ${err.message ?: "failed"}", Toast.LENGTH_LONG)
+            Triple(null, null, null)
+        }
         val lockOn = !ephemeralMode && newAppHash != null
         identityRepo.saveOnboardingCompletion(cleanAlias, ephemeralMode, lockOn, newAppHash, newDuressHash, newSalt)
         if (!ephemeralMode && cleanRelay.isNotBlank()) {
@@ -789,15 +794,24 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     fun setAppPin(pin: String?) {
         val st = _uiState.value
-        _uiState.value = st.copy(lockEnabled = lockManager.setAppPin(pin, st.ephemeralMode), appPinConfigured = lockManager.hasAppPin)
-        persistIdentityAsync()
+        runCatching {
+            val locked = lockManager.setAppPin(pin, st.ephemeralMode)
+            _uiState.value = st.copy(lockEnabled = locked, appPinConfigured = lockManager.hasAppPin)
+            persistIdentityAsync()
+        }.onFailure { err ->
+            toast("Could not save PIN: ${err.message ?: "error"}", Toast.LENGTH_LONG)
+        }
     }
 
     fun setDuressPin(pin: String?) {
         val st = _uiState.value
-        lockManager.setDuressPin(pin, st.lockEnabled, st.ephemeralMode)
-        _uiState.value = st.copy(duressPinConfigured = lockManager.hasDuressPin)
-        persistIdentityAsync()
+        runCatching {
+            lockManager.setDuressPin(pin, st.lockEnabled, st.ephemeralMode)
+            _uiState.value = st.copy(duressPinConfigured = lockManager.hasDuressPin)
+            persistIdentityAsync()
+        }.onFailure { err ->
+            toast("Could not save Duress PIN: ${err.message ?: "error"}", Toast.LENGTH_LONG)
+        }
     }
 
     fun saveAllSettings(newUrl: String, newTor: Boolean, newKeepAlive: Boolean, newEphemeral: Boolean, newLock: Boolean, newAlias: String) {

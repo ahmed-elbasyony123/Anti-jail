@@ -10,6 +10,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 internal object GhostKeyUtils {
     private val ALIAS_CONTROL_CHARS = Regex("[\\r\\n\\t\\u202A-\\u202E\\u200E\\u200F<>]")
@@ -61,6 +63,56 @@ internal object GhostKeyUtils {
     fun sha256Hex(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
         return bytesToHex(digest)
+    }
+
+    /**
+     * RFC 2898 PBKDF2-HMAC-SHA256 using JCA [Mac] directly so BouncyCastle provider ordering
+     * or R8 class shrinking cannot cause SecretKeyFactory lookup failures on Android.
+     */
+    fun pbkdf2HmacSha256(
+        password: CharArray,
+        salt: ByteArray,
+        iterations: Int,
+        keyBytes: Int = 32
+    ): ByteArray {
+        val passBytes = String(password).toByteArray(Charsets.UTF_8)
+        val mac = Mac.getInstance("HmacSHA256")
+        return try {
+            mac.init(SecretKeySpec(passBytes, "HmacSHA256"))
+            val hLen = mac.macLength
+            val blocks = (keyBytes + hLen - 1) / hLen
+            val derived = ByteArray(blocks * hLen)
+            val blockInput = ByteArray(salt.size + 4)
+            System.arraycopy(salt, 0, blockInput, 0, salt.size)
+
+            var u = ByteArray(hLen)
+            val t = ByteArray(hLen)
+            var outOffset = 0
+            for (blockIndex in 1..blocks) {
+                blockInput[salt.size] = (blockIndex ushr 24).toByte()
+                blockInput[salt.size + 1] = (blockIndex ushr 16).toByte()
+                blockInput[salt.size + 2] = (blockIndex ushr 8).toByte()
+                blockInput[salt.size + 3] = blockIndex.toByte()
+
+                u = mac.doFinal(blockInput)
+                System.arraycopy(u, 0, t, 0, hLen)
+                for (iter in 1 until iterations) {
+                    u = mac.doFinal(u)
+                    for (j in 0 until hLen) {
+                        t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
+                    }
+                }
+                System.arraycopy(t, 0, derived, outOffset, hLen)
+                outOffset += hLen
+            }
+            derived.copyOf(keyBytes).also {
+                derived.fill(0)
+                t.fill(0)
+                u.fill(0)
+            }
+        } finally {
+            passBytes.fill(0)
+        }
     }
 
     /** Reads at most [maxBytes] from [input]; returns null if the stream exceeds the cap. */

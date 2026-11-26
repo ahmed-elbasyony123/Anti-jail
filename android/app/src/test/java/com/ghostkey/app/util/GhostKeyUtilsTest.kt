@@ -3,6 +3,8 @@ package com.ghostkey.app.util
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 class GhostKeyUtilsTest {
 
@@ -32,5 +34,15 @@ class GhostKeyUtilsTest {
         assertEquals("http://abc123.onion", GhostKeyUtils.sanitizeRelayUrl("abc123.onion/"))
         assertEquals("https://relay.example.com", GhostKeyUtils.sanitizeRelayUrl("relay.example.com/"))
         assertEquals(4, GhostKeyUtils.calculateInSampleSize(4000, 3000, 1024))
+    }
+
+    @Test
+    fun pbkdf2HmacSha256_matchesJcaSecretKeyFactory() {
+        val pin = "123456"
+        val salt = "0123456789abcdef".toByteArray(Charsets.UTF_8)
+        val spec = PBEKeySpec(pin.toCharArray(), salt, 10_000, 256)
+        val expected = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+        val actual = GhostKeyUtils.pbkdf2HmacSha256(pin.toCharArray(), salt, 10_000, 32)
+        assertArrayEquals(expected, actual)
     }
 }

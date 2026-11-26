@@ -12,7 +12,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ghostkey.app.crypto.StandalonePgpEngine
+import com.ghostkey.app.crypto.InPersonPairing
 import com.ghostkey.app.data.Contact
 import com.ghostkey.app.ui.AppIcons
 import com.ghostkey.app.ui.theme.GhostTheme
@@ -49,7 +49,7 @@ fun AddDirectChatDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    "Paste the peer's OpenPGP Public Key. Drop ID and fingerprint are verified locally.",
+                    "Paste the peer's OpenPGP Public Key or Contact Card JSON. Drop ID and fingerprint are verified locally.",
                     fontSize = 12.sp,
                     color = palette.textSecondary,
                     lineHeight = 16.sp
@@ -114,17 +114,18 @@ fun AddDirectChatDialog(
                             errorText = "Please paste a public key"
                             return@Button
                         }
-                        val info = StandalonePgpEngine.parsePeerKey(trimmed)
-                        val dropId = info.dropId ?: throw IllegalArgumentException("Key has no Drop-ID")
+                        val card = InPersonPairing.parseContactCard(trimmed)
+                            ?: throw IllegalArgumentException("Invalid OpenPGP public key or Contact Card")
+                        if (card.dropId.isBlank()) throw IllegalArgumentException("Key has no Drop-ID")
                         val cleanAlias = GhostKeyUtils.sanitizeAlias(alias)
-                        val finalAlias = cleanAlias.ifBlank { info.alias ?: "Peer ${info.fingerprint.take(6)}" }
+                        val finalAlias = cleanAlias.ifBlank { card.alias.ifBlank { "Peer ${card.fingerprint.take(6)}" } }
                         onAddContact(
                             Contact(
-                                id = dropId,
+                                id = card.dropId,
                                 alias = finalAlias,
-                                dropId = dropId,
-                                publicKeyArmored = trimmed,
-                                fingerprint = info.fingerprint
+                                dropId = card.dropId,
+                                publicKeyArmored = card.publicKeyArmored,
+                                fingerprint = card.fingerprint
                             )
                         )
                     } catch (e: Exception) {

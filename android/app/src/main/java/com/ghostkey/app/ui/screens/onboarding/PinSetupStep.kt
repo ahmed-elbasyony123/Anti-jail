@@ -36,11 +36,12 @@ internal fun PinSetupStep(
     var firstPin by remember { mutableStateOf<String?>(null) }
     var currentInput by remember { mutableStateOf("") }
     var isMismatchError by remember { mutableStateOf(false) }
+    var isSubmitted by remember { mutableStateOf(false) }
 
     val isConfirming = firstPin != null
 
     fun handleDigit(digit: String) {
-        if (currentInput.length >= ONBOARDING_PIN_LENGTH) return
+        if (isSubmitted || currentInput.length >= ONBOARDING_PIN_LENGTH) return
         isMismatchError = false
         val next = currentInput + digit
         currentInput = next
@@ -50,6 +51,7 @@ internal fun PinSetupStep(
                 firstPin = next
                 currentInput = ""
             } else if (chosen == next) {
+                isSubmitted = true
                 onPinConfirmed(next)
             } else {
                 isMismatchError = true

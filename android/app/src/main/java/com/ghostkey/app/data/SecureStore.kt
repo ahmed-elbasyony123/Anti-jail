@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import com.ghostkey.app.crypto.PgpKeyPairArmored
+import com.ghostkey.app.util.GhostKeyUtils
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -14,9 +15,7 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 data class PeerIdentity(
@@ -172,9 +171,12 @@ class SecureStore(private val context: Context) {
     }
 
     private fun deriveBackupKey(passphrase: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(passphrase.toCharArray(), salt, 100_000, 256)
-        val raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
-        spec.clearPassword()
+        val chars = passphrase.toCharArray()
+        val raw = try {
+            GhostKeyUtils.pbkdf2HmacSha256(chars, salt, 100_000, 32)
+        } finally {
+            chars.fill('\u0000')
+        }
         return SecretKeySpec(raw, "AES").also { raw.fill(0) }
     }
 

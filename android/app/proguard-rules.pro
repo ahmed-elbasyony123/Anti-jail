@@ -16,6 +16,7 @@
 -keep class org.bouncycastle.jcajce.provider.asymmetric.ElGamal** { *; }
 -keep class org.bouncycastle.jcajce.provider.asymmetric.elgamal.** { *; }
 -keep class org.bouncycastle.jcajce.provider.symmetric.AES** { *; }
+-keep class org.bouncycastle.jcajce.provider.symmetric.PBE** { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.SHA** { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.MD5** { *; }
 -keep class org.bouncycastle.jcajce.provider.digest.RIPEMD160** { *; }

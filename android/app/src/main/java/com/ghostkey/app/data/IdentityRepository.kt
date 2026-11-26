@@ -13,8 +13,6 @@ import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.Executors
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.PBEKeySpec
 
 internal data class AppPreferencesSnapshot(
     val relayUrl: String,
@@ -210,10 +208,12 @@ internal class IdentityRepository(context: Context) {
         } else {
             LEGACY_PIN_SALT.toByteArray(Charsets.UTF_8)
         }
-        val spec = PBEKeySpec(normalized.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_BITS)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val hash = factory.generateSecret(spec).encoded
-        spec.clearPassword()
+        val chars = normalized.toCharArray()
+        val hash = try {
+            GhostKeyUtils.pbkdf2HmacSha256(chars, salt, PBKDF2_ITERATIONS, PBKDF2_KEY_BITS / 8)
+        } finally {
+            chars.fill('\u0000')
+        }
         return GhostKeyUtils.bytesToHex(hash).also { hash.fill(0) }
     }
 

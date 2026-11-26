@@ -150,8 +150,6 @@ fun PairContactDialog(
     val palette = GhostTheme.colors
     val strings = GhostTheme.strings
     val context = LocalContext.current
-    var selectedTab by remember { mutableIntStateOf(0) }
-    var inputText by remember { mutableStateOf("") }
     var parsedCard by remember { mutableStateOf<ContactCard?>(null) }
     var customAlias by remember { mutableStateOf("") }
     var errorText by remember { mutableStateOf<String?>(null) }
@@ -178,7 +176,6 @@ fun PairContactDialog(
                     val bitmap = BitmapFactory.decodeStream(stream)
                     val text = bitmap?.let { InPersonPairing.decodeQrFromBitmap(it) }
                     if (text != null) {
-                        inputText = text
                         val card = InPersonPairing.parseContactCard(text)
                         if (card != null) {
                             parsedCard = card
@@ -224,167 +221,106 @@ fun PairContactDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (parsedCard == null) {
-                    TabRow(
-                        selectedTabIndex = selectedTab,
-                        containerColor = palette.surfaceVariant,
-                        contentColor = palette.accent,
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp))
-                    ) {
-                        Tab(
-                            selected = selectedTab == 0,
-                            onClick = { selectedTab = 0 },
-                            text = { Text("Camera", fontSize = 12.sp) },
-                            icon = { Icon(AppIcons.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                        )
-                        Tab(
-                            selected = selectedTab == 1,
-                            onClick = { selectedTab = 1 },
-                            text = { Text("Paste / Image", fontSize = 12.sp) },
-                            icon = { Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                        )
-                    }
+                    if (hasCameraPermission) {
+                        val lifecycleOwner = LocalLifecycleOwner.current
+                        val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+                        var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
-                    if (selectedTab == 0) {
-                        if (hasCameraPermission) {
-                            val lifecycleOwner = LocalLifecycleOwner.current
-                            val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-                            var boundProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-
-                            DisposableEffect(Unit) {
-                                onDispose {
-                                    runCatching { boundProvider?.unbindAll() }
-                                    analysisExecutor.shutdownNow()
-                                }
+                        DisposableEffect(Unit) {
+                            onDispose {
+                                runCatching { boundProvider?.unbindAll() }
+                                analysisExecutor.shutdownNow()
                             }
+                        }
 
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(250.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(Color.Black),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                AndroidView(
-                                    factory = { ctx ->
-                                        val previewView = PreviewView(ctx).apply {
-                                            layoutParams = ViewGroup.LayoutParams(
-                                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                                ViewGroup.LayoutParams.MATCH_PARENT
-                                            )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(250.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color.Black),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AndroidView(
+                                factory = { ctx ->
+                                    val previewView = PreviewView(ctx).apply {
+                                        layoutParams = ViewGroup.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT
+                                        )
+                                    }
+                                    val future = ProcessCameraProvider.getInstance(ctx)
+                                    future.addListener({
+                                        val cameraProvider = future.get()
+                                        boundProvider = cameraProvider
+                                        val preview = Preview.Builder().build().also {
+                                            it.setSurfaceProvider(previewView.surfaceProvider)
                                         }
-                                        val future = ProcessCameraProvider.getInstance(ctx)
-                                        future.addListener({
-                                            val cameraProvider = future.get()
-                                            boundProvider = cameraProvider
-                                            val preview = Preview.Builder().build().also {
-                                                it.setSurfaceProvider(previewView.surfaceProvider)
-                                            }
-                                            val analysis = ImageAnalysis.Builder()
-                                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                                .build()
-                                            analysis.setAnalyzer(analysisExecutor) { proxy ->
-                                                val scanned = InPersonPairing.decodeQrFromImageProxy(proxy)
-                                                proxy.close()
-                                                if (scanned != null && parsedCard == null) {
-                                                    val card = InPersonPairing.parseContactCard(scanned)
-                                                    if (card != null) {
-                                                        ContextCompat.getMainExecutor(ctx).execute {
-                                                            parsedCard = card
-                                                            customAlias = card.alias
-                                                            errorText = null
-                                                        }
+                                        val analysis = ImageAnalysis.Builder()
+                                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                            .build()
+                                        analysis.setAnalyzer(analysisExecutor) { proxy ->
+                                            val scanned = InPersonPairing.decodeQrFromImageProxy(proxy)
+                                            proxy.close()
+                                            if (scanned != null && parsedCard == null) {
+                                                val card = InPersonPairing.parseContactCard(scanned)
+                                                if (card != null) {
+                                                    ContextCompat.getMainExecutor(ctx).execute {
+                                                        parsedCard = card
+                                                        customAlias = card.alias
+                                                        errorText = null
                                                     }
                                                 }
                                             }
-                                            runCatching {
-                                                cameraProvider.unbindAll()
-                                                cameraProvider.bindToLifecycle(
-                                                    lifecycleOwner,
-                                                    CameraSelector.DEFAULT_BACK_CAMERA,
-                                                    preview,
-                                                    analysis
-                                                )
-                                            }
-                                        }, ContextCompat.getMainExecutor(ctx))
-                                        previewView
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .size(170.dp)
-                                        .border(2.dp, palette.connected, RoundedCornerShape(16.dp))
-                                )
-                            }
-                        } else {
-                            Column(
+                                        }
+                                        runCatching {
+                                            cameraProvider.unbindAll()
+                                            cameraProvider.bindToLifecycle(
+                                                lifecycleOwner,
+                                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                                preview,
+                                                analysis
+                                            )
+                                        }
+                                    }, ContextCompat.getMainExecutor(ctx))
+                                    previewView
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(palette.surfaceVariant, RoundedCornerShape(12.dp))
-                                    .padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(AppIcons.CameraAlt, contentDescription = null, tint = palette.accent, modifier = Modifier.size(34.dp))
-                                Text("Camera Permission Needed", color = palette.textPrimary, fontWeight = FontWeight.Bold)
-                                Button(
-                                    onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = palette.accent, contentColor = palette.accentText)
-                                ) { Text("Grant Camera") }
-                            }
+                                    .size(170.dp)
+                                    .border(2.dp, palette.connected, RoundedCornerShape(16.dp))
+                            )
                         }
                     } else {
-                        OutlinedTextField(
-                            value = inputText,
-                            onValueChange = {
-                                inputText = it
-                                errorText = null
-                                val card = InPersonPairing.parseContactCard(it)
-                                if (card != null) {
-                                    parsedCard = card
-                                    customAlias = card.alias
-                                }
-                            },
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(110.dp),
-                            placeholder = { Text("Paste JSON or PGP public key...", color = palette.textTertiary, fontSize = 12.sp) },
-                            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                        )
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    val item = GhostKeyUtils.readClipboardText(context)
-                                    if (!item.isNullOrBlank()) {
-                                        inputText = item
-                                        val card = InPersonPairing.parseContactCard(item)
-                                        if (card != null) {
-                                            parsedCard = card
-                                            customAlias = card.alias
-                                            errorText = null
-                                        } else errorText = "Invalid contact data"
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(AppIcons.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Paste", fontSize = 12.sp)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    MainActivity.isExternalPickerActive = true
-                                    imagePickerLauncher.launch("image/*")
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(AppIcons.Image, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Image", fontSize = 12.sp)
-                            }
+                                .background(palette.surfaceVariant, RoundedCornerShape(12.dp))
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(AppIcons.CameraAlt, contentDescription = null, tint = palette.accent, modifier = Modifier.size(34.dp))
+                            Text("Camera Permission Needed", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                            Button(
+                                onClick = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.accent, contentColor = palette.accentText)
+                            ) { Text("Grant Camera") }
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            MainActivity.isExternalPickerActive = true
+                            imagePickerLauncher.launch("image/*")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(AppIcons.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Scan QR from Image", fontSize = 13.sp)
                     }
 
                     if (errorText != null) {
