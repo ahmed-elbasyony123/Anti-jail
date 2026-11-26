@@ -253,7 +253,8 @@ fun MessageBubble(
                             text = message.previewText(""),
                             color = textColor,
                             fontSize = 15.sp,
-                            lineHeight = 20.sp
+                            lineHeight = 20.sp,
+                            style = TextStyle(textDirection = TextDirection.Content)
                         )
                     }
                 }
