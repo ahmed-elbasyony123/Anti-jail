@@ -1,0 +1,107 @@
+name: Deploy GhostKey Blind Relay
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'server/**'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-relay-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test-server:
+    name: Verify Relay & Web Console
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Syntax Checks & Test Suite
+        run: |
+          npm run check
+          npm test
+
+  deploy:
+    name: Deploy to Onion Relay Host
+    needs: test-server
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH Key & Known Hosts
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::error::Missing DEPLOY_HOST or DEPLOY_SSH_KEY repository secret."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -T 15 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Sync Server Files (Preserving Tor Hidden Service)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_USER" ]; then
+            echo "::error::Missing DEPLOY_USER repository secret."
+            exit 1
+          fi
+          rsync -az --delete \
+            --exclude 'hidden_service/' \
+            --exclude 'tor_data/' \
+            --exclude 'torrc' \
+            --exclude 'node_modules/' \
+            --exclude '*.log' \
+            --exclude '*.bak' \
+            -e "ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15" \
+            ./server/ "${DEPLOY_USER}@${DEPLOY_HOST}:~/server/"
+
+      - name: Install Prod Dependencies & Restart Relay Service
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s <<'EOF'
+            set -euo pipefail
+            cd "$HOME/server"
+            npm ci --omit=dev
+            sudo systemctl restart ghostkey-relay
+            sleep 2
+            sudo systemctl is-active --quiet ghostkey-relay
+            sudo systemctl is-active --quiet ghostkey-tor
+            curl -fsS http://127.0.0.1:8765/api/v2/ping >/dev/null
+            echo "Relay deployed and healthy."
+          EOF
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/known_hosts
