@@ -959,7 +959,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         if (isForeground) {
             toast("New contact request from ${req.alias}", Toast.LENGTH_SHORT)
         } else {
-            PushNotificationManager.postMessageNotification(appContext, isAudio = false, isMedia = false)
+            PushNotificationManager.postMessageNotification(appContext, isAudio = false, hasMedia = false)
         }
     }
 
