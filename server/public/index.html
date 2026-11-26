@@ -35,11 +35,13 @@
                 <span id="chats-section-title" class="card-title">Chats</span>
                 <button id="new-group-btn" class="btn small ghost" type="button">+ Group</button>
             </div>
+            <div id="contact-requests-banner" class="requests-banner hidden"></div>
             <div id="chat-list" class="chat-list"></div>
             <div id="peer-summary" class="peer-summary none">No peer key saved yet.</div>
             <textarea id="peer-key-input" class="key-box" rows="2" spellcheck="false" autocomplete="off" placeholder="Paste OpenPGP public key or Contact Card JSON..."></textarea>
             <div class="row">
                 <button id="save-peer-btn" class="btn small flex1" type="button">Save Contact</button>
+                <button id="quick-pair-btn" class="btn small ghost" type="button">Quick Pair (5m)</button>
             </div>
             <div id="peer-error" class="error-text hidden"></div>
         </section>
@@ -205,6 +207,51 @@
         <div class="row end">
             <button id="introduce-submit" class="btn small" type="button">Send Introduction</button>
         </div>
+    </div>
+</div>
+
+<!-- Quick Pair (5-Minute Link / Code) Modal -->
+<div id="pair-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head"><span id="pair-modal-title">Quick Pair (5-Minute Link)</span><button id="pair-close" class="link-btn" type="button">close</button></div>
+        <div class="tab-row">
+            <button id="pair-tab-create" class="btn small ghost tab-btn active" type="button">Share Link</button>
+            <button id="pair-tab-redeem" class="btn small ghost tab-btn" type="button">Enter Code</button>
+        </div>
+        <div id="pair-create-panel">
+            <p id="pair-create-hint" class="hint">Creates an E2EE one-time invite link &amp; code that expire in 5 minutes and self-destruct after one use.</p>
+            <div class="row"><button id="rv-generate-btn" class="btn small flex1" type="button">Generate 5m Link</button></div>
+            <div id="rv-result-box" class="hidden">
+                <div class="label">Short Code</div>
+                <div id="rv-code-display" class="mono-box center big">-</div>
+                <div class="label">Invite Link (#fragment stays offline)</div>
+                <input type="text" id="rv-link-display" class="text-input mono-box" readonly spellcheck="false" autocomplete="off">
+                <div id="rv-countdown" class="hint"></div>
+                <div class="row wrap">
+                    <button id="rv-copy-link-btn" class="btn small flex1" type="button">Copy Link</button>
+                    <button id="rv-copy-code-btn" class="btn small ghost flex1" type="button">Copy Code</button>
+                </div>
+            </div>
+        </div>
+        <div id="pair-redeem-panel" class="hidden">
+            <p id="pair-redeem-hint" class="hint">Enter the 10-character code or invite link from your peer.</p>
+            <input type="text" id="rv-input" class="text-input" placeholder="XXXXX-XXXXX or invite link..." autocomplete="off" spellcheck="false">
+            <div class="row end">
+                <button id="rv-redeem-btn" class="btn small" type="button">Connect</button>
+            </div>
+        </div>
+        <div id="pair-preview-panel" class="hidden">
+            <p id="pair-preview-hint" class="hint">Verified encrypted invite card. Do you want to accept this contact and start chatting?</p>
+            <div class="mono-box" id="pair-preview-meta"></div>
+            <div class="row wrap">
+                <button id="pair-preview-accept" class="btn small flex1" type="button">Accept &amp; Chat</button>
+                <button id="pair-preview-decline" class="btn small danger flex1" type="button">Decline</button>
+            </div>
+            <div class="row">
+                <a id="pair-open-app-link" class="btn small ghost flex1 center" href="#">Open in Android App</a>
+            </div>
+        </div>
+        <div id="pair-error" class="error-text hidden"></div>
     </div>
 </div>
 

@@ -216,8 +216,59 @@ class TorRelayClient(
                 }
             } catch (e: Exception) {
                 Result.failure(e)
-            } finally {
-                if (client !== httpClient) closeHttpClient(client)
+        } finally {
+            if (client !== httpClient) closeHttpClient(client)
+        }
+    }
+
+    /** POST /api/v2/rendezvous: creates an ephemeral E2EE pairing slot (default 5 min TTL). */
+    suspend fun createRendezvous(slotId: String, sealedBlob: String, ttlSeconds: Int = 300): Result<Long> =
+        withContext(Dispatchers.IO) {
+            if (serverBaseUrl.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("Relay URL is not set in Settings"))
+            }
+            try {
+                val body = JSONObject()
+                    .put("slotId", slotId)
+                    .put("sealedBlob", sealedBlob)
+                    .put("ttlSeconds", ttlSeconds)
+                    .toString()
+                val req = Request.Builder()
+                    .url("$serverBaseUrl/api/v2/rendezvous")
+                    .post(body.toRequestBody(jsonType))
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    val raw = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) throw RelayHttpException(resp.code)
+                    val expiresAt = runCatching { JSONObject(raw).optLong("expiresAt", System.currentTimeMillis() + ttlSeconds * 1000L) }
+                        .getOrDefault(System.currentTimeMillis() + ttlSeconds * 1000L)
+                    Result.success(expiresAt)
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /** GET /api/v2/rendezvous/:slotId: atomic burn-after-reading fetch of an encrypted pairing slot. */
+    suspend fun claimRendezvous(slotId: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            if (serverBaseUrl.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("Relay URL is not set in Settings"))
+            }
+            try {
+                val req = Request.Builder()
+                    .url("$serverBaseUrl/api/v2/rendezvous/$slotId")
+                    .get()
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) throw RelayHttpException(resp.code)
+                    val raw = resp.body?.string().orEmpty()
+                    val sealedBlob = JSONObject(raw).optString("sealedBlob", "")
+                    if (sealedBlob.isBlank()) throw IOException("Empty rendezvous payload")
+                    Result.success(sealedBlob)
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
             }
         }
 

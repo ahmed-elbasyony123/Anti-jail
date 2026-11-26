@@ -29,7 +29,8 @@ internal data class AppPreferencesSnapshot(
     val offlineBleMeshEnabled: Boolean = false,
     val offlineWifiDirectEnabled: Boolean = false,
     val languageCode: String = "en",
-    val themeMode: String = "light"
+    val themeMode: String = "light",
+    val allowContactRequests: Boolean = true
 )
 
 /**
@@ -67,7 +68,8 @@ internal class IdentityRepository(context: Context) {
         offlineBleMeshEnabled = prefs.getBoolean("offline_ble_mesh_enabled", false),
         offlineWifiDirectEnabled = prefs.getBoolean("offline_wifi_direct_enabled", false),
         languageCode = prefs.getString("ui_language", "en") ?: "en",
-        themeMode = prefs.getString("ui_theme_mode", "light") ?: "light"
+        themeMode = prefs.getString("ui_theme_mode", "light") ?: "light",
+        allowContactRequests = prefs.getBoolean("allow_contact_requests", true)
     )
 
     fun hasStoredIdentity(): Boolean = secureStore.hasIdentity()
@@ -155,6 +157,10 @@ internal class IdentityRepository(context: Context) {
             .putString("ui_language", languageCode)
             .putString("ui_theme_mode", themeMode)
             .apply()
+    }
+
+    fun saveAllowContactRequests(allowed: Boolean) {
+        prefs.edit().putBoolean("allow_contact_requests", allowed).apply()
     }
 
     fun saveOnboardingCompletion(

@@ -188,6 +188,45 @@ function createHttpHandler(store, wsHub) {
             return sendJson(res, 200, { success: true, removed });
         }
 
+        if (req.method === 'POST' && pathname === '/api/v2/rendezvous') {
+            const data = await readJsonBody(req, res);
+            if (!data) return;
+            const slotId = store.normId(data.slotId);
+            if (!slotId) return sendJson(res, 400, { error: 'Invalid slotId' });
+            if (typeof data.sealedBlob !== 'string' || !data.sealedBlob) {
+                return sendJson(res, 400, { error: 'sealedBlob must be a non-empty string' });
+            }
+            if (Buffer.byteLength(data.sealedBlob, 'utf8') > cfg.MAX_RENDEZVOUS_BYTES) {
+                return sendJson(res, 413, { error: 'sealedBlob exceeds size limit' });
+            }
+            const rawTtl = Number.isFinite(Number(data.ttlSeconds))
+                ? Number(data.ttlSeconds)
+                : cfg.RENDEZVOUS_DEFAULT_TTL_S;
+            const ttlSeconds = Math.max(
+                cfg.RENDEZVOUS_MIN_TTL_S,
+                Math.min(cfg.RENDEZVOUS_MAX_TTL_S, Math.floor(rawTtl))
+            );
+            const result = store.createRendezvous(slotId, data.sealedBlob, ttlSeconds * 1000);
+            if (!result.ok) return sendJson(res, result.status, { error: result.error });
+            return sendJson(res, 200, {
+                success: true,
+                slotId,
+                expiresAt: result.expiresAt,
+                ttlSeconds
+            });
+        }
+
+        const rvMatch = req.method === 'GET' && pathname.match(/^\/api\/v2\/rendezvous\/([0-9a-fA-F]{64})$/);
+        if (rvMatch) {
+            const slotId = rvMatch[1].toLowerCase();
+            const entry = store.claimRendezvous(slotId);
+            if (!entry) return sendJson(res, 404, { error: 'Rendezvous slot not found or expired' });
+            return sendJson(res, 200, {
+                sealedBlob: entry.sealedBlob,
+                createdAt: entry.createdAt
+            });
+        }
+
         return sendJson(res, 404, { error: 'Endpoint not found' });
     }
 

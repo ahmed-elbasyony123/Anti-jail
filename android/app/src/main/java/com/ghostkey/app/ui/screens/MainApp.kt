@@ -52,10 +52,14 @@ internal fun MainApp(
                 ChatsListScreen(
                     chats = summaries,
                     relayStatus = state.relayStatus,
+                    contactRequests = state.contactRequests,
                     onSelectChat = { summary -> viewModel.selectChat(summary.chatId) },
                     onNewDirectChat = { showAddDirectChatDialog = true },
+                    onQuickPairClick = { viewModel.openQuickPairDialog(0) },
                     onPairContactQr = { viewModel.setShowPairContactDialog(true) },
                     onNewGroupChat = { showCreateGroupDialog = true },
+                    onAcceptContactRequest = viewModel::acceptContactRequest,
+                    onDeclineContactRequest = viewModel::declineContactRequest,
                     onOpenSecurityDiagnostics = { viewModel.setShowSecurityDiagnostics(true) },
                     onTogglePinChats = viewModel::togglePinChats,
                     onToggleMuteChats = viewModel::toggleMuteChats,
@@ -136,12 +140,14 @@ internal fun MainApp(
                     duressPinConfigured = state.duressPinConfigured,
                     offlineBleMeshEnabled = state.offlineBleMeshEnabled,
                     offlineWifiDirectEnabled = state.offlineWifiDirectEnabled,
+                    allowContactRequests = state.allowContactRequests,
                     language = state.language,
                     themeMode = state.themeMode,
                     relayStatus = state.relayStatus,
                     relayErrorDetail = state.relayErrorDetail,
                     onLanguageChange = viewModel::setLanguage,
                     onThemeModeChange = viewModel::setThemeMode,
+                    onToggleAllowContactRequests = viewModel::setAllowContactRequests,
                     onSaveSettings = viewModel::saveAllSettings,
                     onAutoSave = viewModel::onAutoSaveSettings,
                     onSetAppPin = viewModel::setAppPin,
@@ -268,8 +274,22 @@ internal fun MainApp(
             onContactVerified = { contact ->
                 viewModel.setShowPairContactDialog(false)
                 viewModel.addOrOpenContact(contact)
+                viewModel.sendContactRequestTo(contact)
                 Toast.makeText(context, "Contact verified: ${contact.alias}", Toast.LENGTH_SHORT).show()
             }
+        )
+    }
+
+    if (state.quickPairState.isOpen) {
+        QuickPairDialog(
+            state = state.quickPairState,
+            myFingerprint = state.myPgpKeys?.fingerprint.orEmpty(),
+            onSelectTab = viewModel::selectQuickPairTab,
+            onGenerateInvite = viewModel::generateRendezvousInvite,
+            onRedeemInput = viewModel::redeemRendezvousInput,
+            onConfirmPreview = viewModel::confirmRendezvousPreview,
+            onCopyText = viewModel::copyToClipboard,
+            onDismiss = viewModel::closeQuickPairDialog
         )
     }
 

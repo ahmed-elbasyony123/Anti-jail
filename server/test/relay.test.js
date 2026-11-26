@@ -288,3 +288,44 @@ test('websocket: oversized frames (>32 MB) are refused', async () => {
         assert.equal((await s.req('GET', '/api/v2/ping')).status, 200, 'server survives');
     } finally { await s.stop(); }
 });
+
+test('rendezvous: create, atomic claim (burn-after-reading), conflict, validation, and limits', async () => {
+    const s = await start({ GK_MAX_RENDEZVOUS_SLOTS: '2', GK_MAX_RENDEZVOUS_BYTES: '64' });
+    try {
+        const slot1 = '1'.repeat(64);
+        const slot2 = '2'.repeat(64);
+        const slot3 = '3'.repeat(64);
+
+        const badId = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: 'bad', sealedBlob: 'abc' } });
+        assert.equal(badId.status, 400);
+
+        const tooBig = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: slot1, sealedBlob: 'x'.repeat(65) } });
+        assert.equal(tooBig.status, 413);
+
+        const created = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: slot1, sealedBlob: '{"v":1}', ttlSeconds: 300 } });
+        assert.equal(created.status, 200);
+        const createdJson = await created.json();
+        assert.equal(createdJson.success, true);
+        assert.equal(createdJson.ttlSeconds, 300);
+
+        const dup = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: slot1, sealedBlob: '{"v":2}' } });
+        assert.equal(dup.status, 409);
+
+        const c2 = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: slot2, sealedBlob: '{"v":2}' } });
+        assert.equal(c2.status, 200);
+
+        const cap = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: slot3, sealedBlob: '{"v":3}' } });
+        assert.equal(cap.status, 503);
+
+        const claimed = await s.req('GET', `/api/v2/rendezvous/${slot1}`);
+        assert.equal(claimed.status, 200);
+        assert.equal((await claimed.json()).sealedBlob, '{"v":1}');
+
+        const replay = await s.req('GET', `/api/v2/rendezvous/${slot1}`);
+        assert.equal(replay.status, 404);
+
+        // Slot freed after burn-after-reading allows creating slot3
+        const c3 = await s.req('POST', '/api/v2/rendezvous', { body: { slotId: slot3, sealedBlob: '{"v":3}' } });
+        assert.equal(c3.status, 200);
+    } finally { await s.stop(); }
+});

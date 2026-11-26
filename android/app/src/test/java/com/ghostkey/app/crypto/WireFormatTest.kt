@@ -125,4 +125,88 @@ class WireFormatTest {
         assertTrue(parsed!!.isClearChat)
         assertEquals("Alice", parsed.senderAlias)
     }
+
+    // ─── contact_request ──────────────────────────────────────────────────────
+
+    @Test
+    fun contactRequest_roundTripsAllFields() {
+        val alias = "Bob"
+        // dropId must be 64 lowercase hex chars (matches StandalonePgpEngine.isValidHex32 / HEX_64 regex)
+        val dropId = "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788aa"
+        val fp = "AABB CCDD EEFF 0011"
+        val key = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nFAKEKEYDATA\n-----END PGP PUBLIC KEY BLOCK-----"
+        val senderAlias = "Bob (sender)"
+        val msgId = "req-msg-001"
+
+        val raw = WireFormat.buildContactRequest(
+            alias = alias,
+            dropId = dropId,
+            fingerprint = fp,
+            publicKeyArmored = key,
+            senderAlias = senderAlias,
+            msgId = msgId
+        )
+
+        // Size must be 512-byte aligned
+        assertEquals(0, raw.size % 512)
+
+        val parsed = WireFormat.parse(raw)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.isContactRequest)
+        assertEquals(WireMessage.TYPE_CONTACT_REQUEST, parsed.type)
+
+        // alias and fingerprint stored cleaned/normalized
+        assertEquals(alias, parsed.requestAlias)
+        assertEquals(dropId.trim().lowercase(), parsed.requestDropId)
+        assertEquals(fp.trim().uppercase(), parsed.requestFingerprint)
+        assertEquals(key.trim(), parsed.requestPublicKeyArmored)
+
+        // senderAlias and msgId
+        assertEquals(msgId, parsed.msgId)
+    }
+
+    @Test
+    fun contactRequest_missingDropId_returnsNull() {
+        // empty dropId fails isValidHex32 (needs 64 lowercase hex chars)
+        val raw = WireFormat.buildContactRequest(
+            alias = "Eve",
+            dropId = "",           // empty → should fail parse
+            fingerprint = "AABBCCDD",
+            publicKeyArmored = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nX\n-----END PGP PUBLIC KEY BLOCK-----"
+        )
+        // dropId.trim().lowercase() will be "" → parser should reject
+        val parsed = WireFormat.parse(raw)
+        assertNull("empty dropId must be rejected", parsed)
+    }
+
+    @Test
+    fun contactRequest_missingKey_returnsNull() {
+        val raw = WireFormat.buildContactRequest(
+            alias = "Eve",
+            dropId = "aabbccddeeff00112233445566778899aabbccddeeff001122334455667788aa",
+            fingerprint = "AABBCCDD",
+            publicKeyArmored = ""   // empty key → reject
+        )
+        val parsed = WireFormat.parse(raw)
+        assertNull("empty publicKeyArmored must be rejected", parsed)
+    }
+
+    @Test
+    fun contactRequest_withAvatar_roundTrips() {
+        val avatarB64 = java.util.Base64.getEncoder().encodeToString(ByteArray(512) { 0xAB.toByte() })
+        val avatarHash = "deadbeef"
+        val raw = WireFormat.buildContactRequest(
+            alias = "Carol",
+            dropId = "1122334455660000aabbccddeeff001122334455667788990011223344556677",
+            fingerprint = "11223344",
+            publicKeyArmored = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nAVATAR\n-----END PGP PUBLIC KEY BLOCK-----",
+            avatarBase64 = avatarB64,
+            avatarHash = avatarHash
+        )
+        val parsed = WireFormat.parse(raw)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.isContactRequest)
+        assertEquals(avatarHash, parsed.avatarHash)
+        assertEquals(avatarB64, parsed.avatarBase64)
+    }
 }

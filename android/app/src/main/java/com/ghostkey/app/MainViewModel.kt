@@ -3,11 +3,14 @@ package com.ghostkey.app
 import android.app.Application
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghostkey.app.audio.AudioSessionCoordinator
 import com.ghostkey.app.audio.PlaybackState
+import com.ghostkey.app.crypto.InPersonPairing
 import com.ghostkey.app.crypto.PgpKeyPairArmored
+import com.ghostkey.app.crypto.RendezvousPairing
 import com.ghostkey.app.crypto.StandalonePgpEngine
 import com.ghostkey.app.crypto.WireMessage
 import com.ghostkey.app.data.*
@@ -54,11 +57,28 @@ sealed interface RelayTestState {
     data class Failed(val reason: String) : RelayTestState
 }
 
+@Immutable
+internal data class QuickPairUiState(
+    val isOpen: Boolean = false,
+    val activeTab: Int = 0,
+    val isBusy: Boolean = false,
+    val error: String? = null,
+    val generatedCode: String? = null,
+    val generatedWebLink: String? = null,
+    val generatedAppLink: String? = null,
+    val expiresAtMs: Long? = null,
+    val previewCode: String? = null,
+    val previewContact: Contact? = null
+)
+
 internal data class MainUiState(
     val navScreen: AppNavScreen = AppNavScreen.CHATS_LIST,
     val activeChatContact: Contact? = null,
     val activeChatGroup: GroupChat? = null,
     val contacts: List<Contact> = emptyList(),
+    val contactRequests: List<ContactRequest> = emptyList(),
+    val allowContactRequests: Boolean = true,
+    val quickPairState: QuickPairUiState = QuickPairUiState(),
     val groups: List<GroupChat> = emptyList(),
     val userAlias: String = "",
     val myAvatarBase64: String? = null,
@@ -113,6 +133,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     private val torCoordinator: TorConnectionCoordinator
 
     private var isForeground = false
+    private var pendingPairUri: String? = null
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -150,6 +171,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             duressPinConfigured = lockManager.hasDuressPin,
             offlineBleMeshEnabled = prefs.offlineBleMeshEnabled,
             offlineWifiDirectEnabled = prefs.offlineWifiDirectEnabled,
+            allowContactRequests = prefs.allowContactRequests,
             language = AppLanguage.fromCode(prefs.languageCode),
             themeMode = AppThemeMode.fromCode(prefs.themeMode)
         )
@@ -264,6 +286,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     fun onAppUnlocked() {
         _uiState.value = _uiState.value.copy(isLocked = false)
         if (_uiState.value.myPgpKeys == null) bootstrapIdentity()
+        else processPendingPairUriIfReady()
     }
 
     fun onDeviceLockUnavailable(): Boolean {
@@ -416,6 +439,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         torCoordinator.ensureTorEngineRunning()
         val st = _uiState.value
         torCoordinator.connectOrAwaitTor(stored.mine, stored.groups, st.offlineBleMeshEnabled, st.offlineWifiDirectEnabled)
+        processPendingPairUriIfReady()
     }
 
     private fun buildIdentitySnapshot(): StoredIdentity? {
@@ -463,6 +487,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                 }
                 val st = _uiState.value
                 torCoordinator.connectOrAwaitTor(pair, st.groups, st.offlineBleMeshEnabled, st.offlineWifiDirectEnabled)
+                processPendingPairUriIfReady()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isGeneratingKey = false,
@@ -518,7 +543,8 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                     onGroupControlReceived = { ctrl, senderDrop -> handleIncomingGroupControl(ctrl, senderDrop) },
                     onChatClearedByPeer = { _, peerAlias ->
                         toast("$peerAlias cleared this chat for both sides", Toast.LENGTH_LONG)
-                    }
+                    },
+                    onContactRequestReceived = ::handleIncomingContactRequest
                 )
                 if (decrypted != null) {
                     val activeId = _uiState.value.activeChatGroup?.id ?: _uiState.value.activeChatContact?.dropId
@@ -909,6 +935,220 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     fun setShowPairContactDialog(show: Boolean) { _uiState.value = _uiState.value.copy(showPairContactDialog = show) }
 
+    fun setAllowContactRequests(allowed: Boolean) {
+        _uiState.value = _uiState.value.copy(allowContactRequests = allowed)
+        identityRepo.saveAllowContactRequests(allowed)
+    }
+
+    private fun handleIncomingContactRequest(req: ContactRequest) {
+        val st = _uiState.value
+        if (!st.allowContactRequests) return
+        val existing = st.contacts.find { it.dropId == req.dropId }
+        if (existing != null) {
+            if (existing.fingerprint != req.fingerprint) {
+                val warned = st.contacts.map {
+                    if (it.dropId == req.dropId) it.copy(keyChangedWarning = true) else it
+                }
+                _uiState.value = st.copy(contacts = warned)
+                toast("Security warning: key mismatch in request from ${existing.alias}", Toast.LENGTH_LONG)
+            }
+            return
+        }
+        val nextRequests = st.contactRequests.filterNot { it.dropId == req.dropId } + req
+        _uiState.value = st.copy(contactRequests = nextRequests)
+        if (isForeground) {
+            toast("New contact request from ${req.alias}", Toast.LENGTH_SHORT)
+        } else {
+            PushNotificationManager.postMessageNotification(appContext, isAudio = false, isMedia = false)
+        }
+    }
+
+    fun acceptContactRequest(dropId: String) {
+        val st = _uiState.value
+        val req = st.contactRequests.find { it.dropId == dropId } ?: return
+        _uiState.value = st.copy(contactRequests = st.contactRequests.filterNot { it.dropId == dropId })
+        val contact = Contact(
+            id = req.dropId,
+            alias = req.alias,
+            dropId = req.dropId,
+            publicKeyArmored = req.publicKeyArmored,
+            fingerprint = req.fingerprint,
+            avatarBase64 = req.avatarBase64,
+            avatarHash = req.avatarHash
+        )
+        addOrOpenContact(contact)
+    }
+
+    fun declineContactRequest(dropId: String) {
+        _uiState.update { st -> st.copy(contactRequests = st.contactRequests.filterNot { it.dropId == dropId }) }
+    }
+
+    fun sendContactRequestTo(contact: Contact) {
+        val st = _uiState.value
+        val myKeys = st.myPgpKeys ?: return
+        viewModelScope.launch {
+            messagingService.sendContactRequest(contact, myKeys, st.userAlias, st.myAvatarBase64, st.myAvatarHash)
+        }
+    }
+
+    fun openQuickPairDialog(tab: Int = 0) {
+        _uiState.update { st ->
+            st.copy(
+                quickPairState = st.quickPairState.copy(
+                    isOpen = true,
+                    activeTab = tab,
+                    error = null
+                )
+            )
+        }
+    }
+
+    fun closeQuickPairDialog() {
+        _uiState.update { st ->
+            st.copy(quickPairState = QuickPairUiState())
+        }
+    }
+
+    fun selectQuickPairTab(tab: Int) {
+        _uiState.update { st ->
+            st.copy(quickPairState = st.quickPairState.copy(activeTab = tab, error = null))
+        }
+    }
+
+    fun generateRendezvousInvite() {
+        val st = _uiState.value
+        val myKeys = st.myPgpKeys ?: return toast("Keys not ready yet", Toast.LENGTH_SHORT)
+        if (st.relayServerUrl.isBlank()) {
+            _uiState.update { it.copy(quickPairState = it.quickPairState.copy(error = "Set your Relay URL in Settings first.")) }
+            return
+        }
+        _uiState.update { it.copy(quickPairState = it.quickPairState.copy(isBusy = true, error = null)) }
+        viewModelScope.launch {
+            val result = runCatching {
+                val code = RendezvousPairing.generateCode()
+                val cardJson = InPersonPairing.encodeContactCard(
+                    alias = st.userAlias.ifBlank { "Peer ${myKeys.fingerprint.take(6)}" },
+                    dropId = myKeys.dropId,
+                    fingerprint = myKeys.fingerprint,
+                    publicKeyArmored = myKeys.publicKeyArmored
+                )
+                val sealed = RendezvousPairing.sealContactCard(code, cardJson)
+                val expiresAt = torClient.createRendezvous(sealed.slotId, sealed.sealedBlob, 300).getOrThrow()
+                Triple(code, sealed, expiresAt)
+            }
+            result.onSuccess { (code, _, expiresAt) ->
+                _uiState.update { cur ->
+                    cur.copy(
+                        quickPairState = cur.quickPairState.copy(
+                            isBusy = false,
+                            error = null,
+                            generatedCode = code,
+                            generatedWebLink = RendezvousPairing.buildWebInviteLink(cur.relayServerUrl, code),
+                            generatedAppLink = RendezvousPairing.buildAppInviteLink(code),
+                            expiresAtMs = expiresAt
+                        )
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update { cur ->
+                    cur.copy(
+                        quickPairState = cur.quickPairState.copy(
+                            isBusy = false,
+                            error = err.message ?: "Failed to create invite link"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun redeemRendezvousInput(rawInput: String) {
+        val st = _uiState.value
+        val myKeys = st.myPgpKeys ?: return toast("Keys not ready yet", Toast.LENGTH_SHORT)
+        if (st.relayServerUrl.isBlank()) {
+            _uiState.update {
+                it.copy(quickPairState = it.quickPairState.copy(isOpen = true, activeTab = 1, error = "Set your Relay URL in Settings first."))
+            }
+            return
+        }
+        _uiState.update {
+            it.copy(quickPairState = it.quickPairState.copy(isOpen = true, activeTab = 1, isBusy = true, error = null))
+        }
+        viewModelScope.launch {
+            val result = runCatching {
+                val canonical = RendezvousPairing.extractCode(rawInput)
+                val formatted = RendezvousPairing.formatCode(canonical)
+                val slotId = RendezvousPairing.deriveSlotId(canonical)
+                val sealedBlob = torClient.claimRendezvous(slotId).getOrThrow()
+                val card = RendezvousPairing.openContactCard(canonical, sealedBlob)
+                require(card.dropId != myKeys.dropId) { "Cannot pair with your own identity" }
+                formatted to Contact(
+                    id = card.dropId,
+                    alias = card.alias,
+                    dropId = card.dropId,
+                    publicKeyArmored = card.publicKeyArmored,
+                    fingerprint = card.fingerprint
+                )
+            }
+            result.onSuccess { (formatted, contact) ->
+                _uiState.update { cur ->
+                    cur.copy(
+                        quickPairState = cur.quickPairState.copy(
+                            isOpen = true,
+                            isBusy = false,
+                            error = null,
+                            previewCode = formatted,
+                            previewContact = contact
+                        )
+                    )
+                }
+            }.onFailure { err ->
+                val friendly = when ((err as? RelayHttpException)?.code) {
+                    404 -> "Invite link/code not found, expired (5m), or already used."
+                    else -> err.message ?: "Failed to redeem invite"
+                }
+                _uiState.update { cur ->
+                    cur.copy(
+                        quickPairState = cur.quickPairState.copy(
+                            isOpen = true,
+                            activeTab = 1,
+                            isBusy = false,
+                            error = friendly
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun confirmRendezvousPreview(accepted: Boolean, customAlias: String) {
+        val preview = _uiState.value.quickPairState.previewContact
+        _uiState.update { it.copy(quickPairState = QuickPairUiState()) }
+        if (!accepted || preview == null) return
+        val resolved = preview.copy(alias = customAlias.trim().ifBlank { preview.alias })
+        addOrOpenContact(resolved)
+        sendContactRequestTo(resolved)
+        toast("Connected with ${resolved.alias}", Toast.LENGTH_SHORT)
+    }
+
+    fun handleIncomingPairLink(uriString: String) {
+        val st = _uiState.value
+        if (st.isOnboarding || st.isLocked || st.myPgpKeys == null) {
+            pendingPairUri = uriString
+            return
+        }
+        redeemRendezvousInput(uriString)
+    }
+
+    private fun processPendingPairUriIfReady() {
+        val pending = pendingPairUri ?: return
+        val st = _uiState.value
+        if (!st.isOnboarding && !st.isLocked && st.myPgpKeys != null) {
+            pendingPairUri = null
+            redeemRendezvousInput(pending)
+        }
+    }
+
     fun setShowSecurityDiagnostics(show: Boolean) {
         val snap = transport.snapshot.value
         _uiState.value = _uiState.value.copy(
@@ -930,6 +1170,7 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
         audioCoordinator.wipe()
         lockManager.clearClipboardAndSecrets()
         TorForegroundService.stop(appContext)
+        pendingPairUri = null
         _uiState.value = MainUiState()
     }
 

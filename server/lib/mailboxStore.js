@@ -10,6 +10,7 @@ class MailboxStore {
         this.totalBytes = 0;
         this.authFailures = new Map();
         this.activeSubscriptions = new Map();
+        this.rendezvous = new Map();
         this.gcTimer = setInterval(() => this.runGc(), cfg.GC_INTERVAL_MS);
     }
 
@@ -168,8 +169,40 @@ class MailboxStore {
         return { ok: true, record };
     }
 
+    createRendezvous(slotId, sealedBlob, ttlMs) {
+        const now = Date.now();
+        this.purgeExpiredRendezvous(now);
+        const existing = this.rendezvous.get(slotId);
+        if (existing && now < existing.expiresAt) {
+            return { ok: false, status: 409, error: 'Rendezvous slot already exists' };
+        }
+        if (existing) this.rendezvous.delete(slotId);
+        if (this.rendezvous.size >= cfg.MAX_RENDEZVOUS_SLOTS) {
+            return { ok: false, status: 503, error: 'Server busy: rendezvous capacity reached' };
+        }
+        const expiresAt = now + ttlMs;
+        this.rendezvous.set(slotId, { sealedBlob, createdAt: now, expiresAt });
+        return { ok: true, expiresAt };
+    }
+
+    claimRendezvous(slotId) {
+        const now = Date.now();
+        const entry = this.rendezvous.get(slotId);
+        if (!entry) return null;
+        this.rendezvous.delete(slotId);
+        if (now >= entry.expiresAt) return null;
+        return entry;
+    }
+
+    purgeExpiredRendezvous(now) {
+        for (const [slotId, entry] of this.rendezvous.entries()) {
+            if (now >= entry.expiresAt) this.rendezvous.delete(slotId);
+        }
+    }
+
     runGc() {
         const now = Date.now();
+        this.purgeExpiredRendezvous(now);
         for (const [dropId, drop] of this.drops.entries()) {
             this.purgeExpired(drop, now);
             if (drop.queue.length > 0 || this.activeSubscriptions.has(dropId)) continue;

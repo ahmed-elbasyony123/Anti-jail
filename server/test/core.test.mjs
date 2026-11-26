@@ -236,3 +236,40 @@ test('group AES-256-GCM messages, invites, Contact Card JSON, replyTo & intro ro
     assert.equal(parsedClr.type, 'clear_chat');
     assert.equal(parsedClr.senderAlias, 'Alice');
 });
+
+test('rendezvous seal/open, link extraction, and signed contact_request round-trip', async () => {
+    const alice = await core.generateIdentity();
+    const bob = await core.generateIdentity();
+
+    const code = core.generateRendezvousCode();
+    assert.match(code, /^[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}$/);
+    assert.equal(core.extractRendezvousCode(`https://example.onion/#pair=${code}`), code.replace('-', ''));
+    assert.equal(core.extractRendezvousCode(`ghostkey://pair?c=${code.toLowerCase()}`), code.replace('-', ''));
+
+    const card = core.encodeContactCard({
+        alias: 'Alice',
+        dropId: alice.dropId,
+        fingerprint: alice.fingerprint,
+        publicKeyArmored: alice.publicKeyArmored
+    });
+    const sealed = await core.sealRendezvousCard(code, card);
+    assert.match(sealed.slotId, /^[0-9a-f]{64}$/);
+    const opened = await core.openRendezvousCard(code.toLowerCase(), sealed.sealedBlob);
+    assert.equal(opened.dropId, alice.dropId);
+    assert.equal(opened.fingerprint, alice.fingerprint);
+    assert.equal(opened.alias, 'Alice');
+
+    await assert.rejects(core.openRendezvousCard(core.generateRendezvousCode(), sealed.sealedBlob));
+
+    const reqBytes = core.buildContactRequest({
+        alias: 'Bob',
+        dropId: bob.dropId,
+        fingerprint: bob.fingerprint,
+        publicKeyArmored: bob.publicKeyArmored
+    });
+    const parsedReq = core.parseWire(reqBytes);
+    assert.equal(parsedReq.type, 'contact_request');
+    assert.equal(parsedReq.dropId, bob.dropId);
+    assert.equal(parsedReq.fp, bob.fingerprint);
+    assert.equal(parsedReq.alias, 'Bob');
+});

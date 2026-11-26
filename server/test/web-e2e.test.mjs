@@ -221,3 +221,46 @@ test('clear chat for both sides wipes direct conversation on sender and peer', a
     await waitFor(() => alice.bubbles().length === 0, 5000, 'alice cleared locally');
     await waitFor(() => bob.bubbles().length === 0, 8000, 'bob cleared remotely via signed clear_chat');
 });
+
+test('5-minute rendezvous link & code pairing sends signed contact_request with Accept/Decline banner', async () => {
+    const sender = makeClient('rv-sender');
+    const receiver = makeClient('rv-receiver');
+    await sender.app.ready;
+    await receiver.app.ready;
+    await waitFor(() => sender.status() === 'CONNECTED' && receiver.status() === 'CONNECTED', 8000, 'both connected');
+
+    sender.$('my-alias-input').value = 'SenderAlice';
+    sender.$('my-alias-input').dispatchEvent(new sender.win.Event('input', { bubbles: true }));
+    receiver.$('my-alias-input').value = 'ReceiverBob';
+    receiver.$('my-alias-input').dispatchEvent(new receiver.win.Event('input', { bubbles: true }));
+
+    sender.$('quick-pair-btn').click();
+    sender.$('rv-generate-btn').click();
+    await waitFor(() => !sender.$('rv-result-box').classList.contains('hidden'), 5000, 'rv link generated');
+    const inviteLink = sender.$('rv-link-display').value;
+    assert.match(inviteLink, /#pair=[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}$/);
+
+    // Simulate opening the #pair= link via hashchange on receiver
+    receiver.win.location.hash = inviteLink.slice(inviteLink.indexOf('#'));
+    receiver.win.dispatchEvent(new receiver.win.HashChangeEvent('hashchange'));
+    await waitFor(() => !receiver.$('pair-preview-panel').classList.contains('hidden'), 5000, 'receiver preview shown');
+    assert.match(receiver.$('pair-preview-meta').textContent, /SenderAlice/);
+
+    // Receiver accepts preview -> saves SenderAlice and sends signed contact_request
+    receiver.$('pair-preview-accept').click();
+    await waitFor(() => receiver.app.getStateForTests().contacts.length === 1, 5000, 'receiver saved sender');
+
+    // Sender sees Accept / Decline banner
+    await waitFor(() => !sender.$('contact-requests-banner').classList.contains('hidden'), 8000, 'sender sees contact request banner');
+    assert.match(sender.$('contact-requests-banner').textContent, /ReceiverBob/);
+
+    // Sender clicks Accept -> both sides can message with verified signatures
+    sender.$('contact-requests-banner').querySelector('.req-accept-btn').click();
+    await waitFor(() => sender.app.getStateForTests().contacts.length === 1, 5000, 'sender accepted receiver');
+    assert.equal(sender.$('contact-requests-banner').classList.contains('hidden'), true);
+
+    await sender.send('paired via 5m link!');
+    await waitFor(() => receiver.bubbles().some((b) => b.textContent.includes('paired via 5m link!')), 8000, 'receiver receives message');
+    const b = receiver.bubbles().find((x) => x.textContent.includes('paired via 5m link!'));
+    assert.match(b.querySelector('.sig-ok').textContent, /VERIFIED SIGNATURE/);
+});

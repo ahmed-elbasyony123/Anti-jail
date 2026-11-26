@@ -28,6 +28,9 @@ export function createCore(openpgp, options = {}) {
     const utf8 = new TextEncoder();
     const utf8d = new TextDecoder('utf-8');
     const AAD_BACKUP = utf8.encode('ghostkey-backup-v1');
+    const AAD_RENDEZVOUS = utf8.encode('ghostkey-rendezvous-v1');
+    const RENDEZVOUS_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const RENDEZVOUS_CODE_LEN = 10;
 
     // ---------------------------------------------------------------- bytes / text helpers
 
@@ -567,6 +570,85 @@ export function createCore(openpgp, options = {}) {
         };
     }
 
+    // ---------------------------------------------------------------- rendezvous (5-min burn-after-reading pairing)
+
+    function generateRendezvousCode() {
+        const bytes = randomBytes(RENDEZVOUS_CODE_LEN);
+        let raw = '';
+        for (let i = 0; i < RENDEZVOUS_CODE_LEN; i++) {
+            raw += RENDEZVOUS_ALPHABET[bytes[i] & 31];
+        }
+        return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+    }
+
+    function normalizeRendezvousCode(rawInput) {
+        const cleaned = String(rawInput || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+        if (cleaned.length !== RENDEZVOUS_CODE_LEN) {
+            throw new Error(`Invite code must be ${RENDEZVOUS_CODE_LEN} characters`);
+        }
+        for (let i = 0; i < cleaned.length; i++) {
+            if (!RENDEZVOUS_ALPHABET.includes(cleaned[i])) {
+                throw new Error(`Invalid character "${cleaned[i]}" in invite code`);
+            }
+        }
+        return cleaned;
+    }
+
+    function extractRendezvousCode(rawInput) {
+        const text = String(rawInput || '').trim();
+        if (!text) throw new Error('Enter a pairing code or invite link');
+        const hashMatch = /(?:^|[#&?])(?:pair|c)=([^&#\s]+)/i.exec(text);
+        if (hashMatch && hashMatch[1]) {
+            return normalizeRendezvousCode(decodeURIComponent(hashMatch[1]));
+        }
+        if (text.includes('#')) {
+            const frag = text.slice(text.indexOf('#') + 1).replace(/^pair=/i, '');
+            if (frag) return normalizeRendezvousCode(decodeURIComponent(frag));
+        }
+        return normalizeRendezvousCode(text);
+    }
+
+    async function deriveRendezvousSlotId(codeInput) {
+        const canonical = normalizeRendezvousCode(codeInput);
+        return bytesToHex(await sha256(utf8.encode(`gk-rv-id-v1:${canonical}`)));
+    }
+
+    async function sealRendezvousCard(codeInput, cardInput) {
+        const canonical = normalizeRendezvousCode(codeInput);
+        const slotId = await deriveRendezvousSlotId(canonical);
+        const salt = randomBytes(16);
+        const iv = randomBytes(12);
+        const keyBytes = await pbkdf2HmacSha256(utf8.encode(`gk-rv-enc-v1:${canonical}`), salt, BACKUP_PBKDF2_ITERATIONS, 32);
+        const plainStr = typeof cardInput === 'string' ? cardInput : encodeContactCard(cardInput);
+        const ctPlusTag = await aes256GcmEncryptRaw(keyBytes, iv, utf8.encode(plainStr), AAD_RENDEZVOUS);
+        return {
+            slotId,
+            sealedBlob: JSON.stringify({
+                v: 1,
+                salt: bytesToBase64(salt),
+                iv: bytesToBase64(iv),
+                ct: bytesToBase64(ctPlusTag)
+            })
+        };
+    }
+
+    async function openRendezvousCard(codeInput, sealedBlobStr) {
+        const canonical = normalizeRendezvousCode(codeInput);
+        let wrapper;
+        try { wrapper = JSON.parse(String(sealedBlobStr || '').trim()); } catch (_) {
+            throw new Error('Malformed rendezvous payload');
+        }
+        if (!wrapper || wrapper.v !== 1 || !wrapper.salt || !wrapper.iv || !wrapper.ct) {
+            throw new Error('Unsupported rendezvous payload version');
+        }
+        const salt = base64ToBytes(wrapper.salt);
+        const iv = base64ToBytes(wrapper.iv);
+        const ct = base64ToBytes(wrapper.ct);
+        const keyBytes = await pbkdf2HmacSha256(utf8.encode(`gk-rv-enc-v1:${canonical}`), salt, BACKUP_PBKDF2_ITERATIONS, 32);
+        const plainBytes = await aes256GcmDecryptRaw(keyBytes, iv, ct, AAD_RENDEZVOUS);
+        return parsePeerInput(utf8d.decode(plainBytes));
+    }
+
     // ---------------------------------------------------------------- wire format v2
 
     function withPad(obj) {
@@ -645,6 +727,19 @@ export function createCore(openpgp, options = {}) {
 
     function buildClearChat({ senderAlias, msgId } = {}) {
         return buildEnvelope('clear_chat', { senderAlias, msgId }, {});
+    }
+
+    function buildContactRequest({ alias, dropId, fingerprint, publicKeyArmored, avatarBase64, avatarHash, senderAlias, msgId }) {
+        const cleanAlias = sanitizeAlias(alias || senderAlias) || `Peer ${String(fingerprint || '').slice(0, 6)}`;
+        const extra = {
+            alias: cleanAlias,
+            dropId: String(dropId || '').trim().toLowerCase(),
+            fp: String(fingerprint || '').trim().toUpperCase(),
+            key: String(publicKeyArmored || '').trim()
+        };
+        if (avatarHash && String(avatarHash).trim()) extra.avatarHash = String(avatarHash).trim().toLowerCase();
+        if (avatarBase64 && String(avatarBase64).trim()) extra.avatarData = String(avatarBase64).trim();
+        return buildEnvelope('contact_request', { senderAlias: sanitizeAlias(senderAlias) || cleanAlias, msgId }, extra);
     }
 
     function optSafeString(obj, key) {
@@ -759,6 +854,32 @@ export function createCore(openpgp, options = {}) {
             }
             if (obj.type === 'clear_chat') {
                 return { type: 'clear_chat', ...common };
+            }
+            if (obj.type === 'contact_request') {
+                const reqDropId = optSafeString(obj, 'dropId')?.toLowerCase();
+                const fp = optSafeString(obj, 'fp')?.toUpperCase();
+                const key = optSafeString(obj, 'key');
+                if (!reqDropId || !isValidHex32(reqDropId) || !fp || !key ||
+                    !key.includes('-----BEGIN PGP PUBLIC KEY BLOCK-----')) {
+                    return null;
+                }
+                const avatarHash = optSafeString(obj, 'avatarHash')?.toLowerCase() || null;
+                const avatarBase64 = optSafeString(obj, 'avatarData');
+                if (avatarBase64) {
+                    let decoded;
+                    try { decoded = base64ToBytes(avatarBase64); } catch (_) { return null; }
+                    if (decoded.length > MAX_AVATAR_DECODED_BYTES) return null;
+                }
+                return {
+                    type: 'contact_request',
+                    alias: sanitizeAlias(optSafeString(obj, 'alias') || senderAlias || 'Peer') || 'Peer',
+                    dropId: reqDropId,
+                    fp,
+                    key,
+                    avatarHash,
+                    avatarBase64,
+                    ...common
+                };
             }
             return null;
         } catch (e) {
@@ -997,6 +1118,12 @@ export function createCore(openpgp, options = {}) {
         parsePeerKey,
         parsePeerInput,
         encodeContactCard,
+        generateRendezvousCode,
+        normalizeRendezvousCode,
+        extractRendezvousCode,
+        deriveRendezvousSlotId,
+        sealRendezvousCard,
+        openRendezvousCard,
         buildText,
         buildMedia,
         buildGroupInvite,
@@ -1004,6 +1131,7 @@ export function createCore(openpgp, options = {}) {
         buildProfileUpdate,
         buildGroupControl,
         buildClearChat,
+        buildContactRequest,
         parseWire,
         parseWireAsync,
         encryptSigned,

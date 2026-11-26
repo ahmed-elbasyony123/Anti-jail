@@ -32,6 +32,7 @@ export function startApp(env) {
         myAvatarHash: null,
         peer: null,                 // backward-compat pointer to active direct contact (or first contact)
         contacts: [],               // [{ dropId, alias, publicKeyArmored, fingerprint, addedAt, keyChangedWarning, avatarBase64, avatarHash }]
+        contactRequests: [],        // [{ dropId, alias, fingerprint, publicKeyArmored, avatarBase64, avatarHash, receivedAt }]
         groups: [],                 // [{ id, name, groupDropId, groupReadToken, sharedKeyBase64, members, createdAt, isAdmin }]
         activeChat: null,           // { type: 'direct' | 'group', id: string } | null
         messagesByChat: new Map(),  // chatId -> msg[]
@@ -40,6 +41,9 @@ export function startApp(env) {
         seenNonces: new Set(),
         attachment: null,
         replyToMsg: null,
+        pendingPairInvite: null,
+        rvExpiresAt: 0,
+        rvCountdownTimer: null,
         ttlSeconds: 0,
         theme: 'light',
         lang: 'en',
@@ -93,7 +97,17 @@ export function startApp(env) {
         if ($('chats-section-title')) $('chats-section-title').textContent = s.chatsTitle;
         if ($('new-group-btn')) $('new-group-btn').textContent = s.newGroupBtn;
         if ($('save-peer-btn')) $('save-peer-btn').textContent = s.savePeerBtn;
+        if ($('quick-pair-btn')) $('quick-pair-btn').textContent = s.quickPairBtn;
         if ($('peer-key-input')) $('peer-key-input').placeholder = s.addPeerPlaceholder;
+        if ($('pair-modal-title')) $('pair-modal-title').textContent = s.pairModalTitle;
+        if ($('pair-tab-create')) $('pair-tab-create').textContent = s.pairTabCreate;
+        if ($('pair-tab-redeem')) $('pair-tab-redeem').textContent = s.pairTabRedeem;
+        if ($('pair-create-hint')) $('pair-create-hint').textContent = s.pairCreateHint;
+        if ($('rv-generate-btn')) $('rv-generate-btn').textContent = s.pairGenerateBtn;
+        if ($('pair-redeem-hint')) $('pair-redeem-hint').textContent = s.pairRedeemHint;
+        if ($('rv-redeem-btn')) $('rv-redeem-btn').textContent = s.pairRedeemBtn;
+        if ($('rv-input')) $('rv-input').placeholder = s.pairInputPlaceholder;
+        renderContactRequests();
         if ($('identity-section-title')) $('identity-section-title').textContent = s.myIdentity;
         if ($('my-alias-input')) $('my-alias-input').placeholder = s.aliasPlaceholder;
         if ($('copy-key-btn')) $('copy-key-btn').textContent = s.copyKey;
@@ -279,6 +293,90 @@ export function startApp(env) {
         $('my-pubkey').value = id ? id.publicKeyArmored : '';
         if ($('my-alias-input')) $('my-alias-input').value = state.userAlias || '';
         renderAvatarNode($('my-avatar-preview'), state.userAlias || 'GK', state.myAvatarBase64);
+    }
+
+    function acceptContactRequest(dropId) {
+        const idx = state.contactRequests.findIndex((r) => r.dropId === dropId);
+        if (idx < 0) return;
+        const [req] = state.contactRequests.splice(idx, 1);
+        const keyChanged = registerContact({
+            dropId: req.dropId,
+            alias: req.alias,
+            publicKeyArmored: req.publicKeyArmored,
+            fingerprint: req.fingerprint
+        });
+        const saved = state.contacts.find((c) => c.dropId === req.dropId);
+        if (saved && req.avatarBase64 && isValidBase64(req.avatarBase64)) {
+            saved.avatarBase64 = req.avatarBase64;
+            saved.avatarHash = req.avatarHash || null;
+        }
+        renderContactRequests();
+        selectChat('direct', req.dropId);
+        if (state.identity && (state.userAlias || state.myAvatarBase64)) {
+            const profileBytes = core.buildProfileUpdate({
+                profileAlias: state.userAlias || undefined,
+                avatarBase64: state.myAvatarBase64 || undefined,
+                avatarHash: state.myAvatarHash || undefined,
+                senderAlias: state.userAlias || undefined
+            });
+            queueSend(() => encryptAndPostDirect(saved, profileBytes)).catch(() => {});
+        }
+        log(`[PAIR] Accepted contact request from ${req.alias}${keyChanged ? ' (key changed!)' : ''}.`, keyChanged ? 'warn' : 'success');
+    }
+
+    function declineContactRequest(dropId) {
+        const idx = state.contactRequests.findIndex((r) => r.dropId === dropId);
+        if (idx < 0) return;
+        const [removed] = state.contactRequests.splice(idx, 1);
+        renderContactRequests();
+        log(`[PAIR] Declined contact request from ${removed.alias}.`, 'warn');
+    }
+
+    function renderContactRequests() {
+        const box = $('contact-requests-banner');
+        if (!box) return;
+        box.textContent = '';
+        if (!state.contactRequests || state.contactRequests.length === 0) {
+            box.classList.add('hidden');
+            return;
+        }
+        const s = getStrings(state.lang);
+        box.classList.remove('hidden');
+        for (const req of state.contactRequests) {
+            const card = doc.createElement('div');
+            card.className = 'request-card';
+
+            const meta = doc.createElement('div');
+            meta.className = 'request-meta';
+            const name = doc.createElement('span');
+            name.className = 'request-name';
+            name.textContent = `${s.requestsHeader}: ${req.alias}`;
+            const fp = doc.createElement('span');
+            fp.className = 'request-fp';
+            fp.textContent = groupFingerprint(req.fingerprint.slice(0, 12));
+            meta.appendChild(name);
+            meta.appendChild(fp);
+
+            const row = doc.createElement('div');
+            row.className = 'row compact';
+            const acceptBtn = doc.createElement('button');
+            acceptBtn.type = 'button';
+            acceptBtn.className = 'btn small flex1 req-accept-btn';
+            acceptBtn.textContent = s.acceptBtn;
+            acceptBtn.addEventListener('click', () => acceptContactRequest(req.dropId));
+
+            const declineBtn = doc.createElement('button');
+            declineBtn.type = 'button';
+            declineBtn.className = 'btn small ghost flex1 req-decline-btn';
+            declineBtn.textContent = s.declineBtn;
+            declineBtn.addEventListener('click', () => declineContactRequest(req.dropId));
+
+            row.appendChild(acceptBtn);
+            row.appendChild(declineBtn);
+            card.appendChild(meta);
+            card.appendChild(row);
+            box.appendChild(card);
+        }
     }
 
     function renderChatList() {
@@ -517,6 +615,62 @@ export function startApp(env) {
 
             const payload = await core.parseWireAsync(plainBytes);
             if (state.identity !== identity) return;
+
+            if (!group && payload && payload.type === 'contact_request') {
+                let verifiedPeer = null;
+                try {
+                    const embedded = await core.parsePeerKey(payload.key);
+                    if (embedded.dropId === payload.dropId && embedded.fingerprint === payload.fp) {
+                        const reqCheck = await core.decryptVerified(record.ciphertext, identity.privateKeyArmored, [embedded.publicKeyArmored]);
+                        if (reqCheck.signatureStatus === 'VERIFIED' && reqCheck.signerFingerprint === embedded.fingerprint) {
+                            verifiedPeer = embedded;
+                        }
+                    }
+                } catch (_) {
+                    verifiedPeer = null;
+                }
+                if (state.identity !== identity) return;
+                state.seen.set(record.id, 'done');
+                if (!verifiedPeer || verifiedPeer.dropId === identity.dropId) {
+                    log('[SECURITY] Rejected invalid or forged contact request.', 'warn');
+                    ackMessages([record.id], mailboxDropId);
+                    return;
+                }
+                if (payload.nonce) {
+                    if (state.seenNonces.has(payload.nonce)) {
+                        ackMessages([record.id], mailboxDropId);
+                        return;
+                    }
+                    state.seenNonces.add(payload.nonce);
+                }
+                const existing = state.contacts.find((c) => c.dropId === verifiedPeer.dropId);
+                if (existing) {
+                    if (existing.fingerprint !== verifiedPeer.fingerprint) {
+                        log(`[SECURITY] Rejected contact request for ${existing.alias}: fingerprint mismatch!`, 'warn');
+                    } else {
+                        log(`[PAIR] ${existing.alias} is already in your contacts.`, 'info');
+                    }
+                    ackMessages([record.id], mailboxDropId);
+                    return;
+                }
+                const reqEntry = {
+                    dropId: verifiedPeer.dropId,
+                    alias: payload.alias || `Peer ${verifiedPeer.fingerprint.slice(0, 6)}`,
+                    fingerprint: verifiedPeer.fingerprint,
+                    publicKeyArmored: verifiedPeer.publicKeyArmored,
+                    avatarBase64: payload.avatarBase64 || null,
+                    avatarHash: payload.avatarHash || null,
+                    receivedAt: Date.now()
+                };
+                const prevReqIdx = state.contactRequests.findIndex((r) => r.dropId === reqEntry.dropId);
+                if (prevReqIdx >= 0) state.contactRequests[prevReqIdx] = reqEntry;
+                else state.contactRequests.push(reqEntry);
+                renderContactRequests();
+                notifyIncoming(payload);
+                log(`[PAIR] New verified contact request from ${reqEntry.alias} (${reqEntry.fingerprint.slice(0, 8)}...).`, 'success');
+                ackMessages([record.id], mailboxDropId);
+                return;
+            }
 
             if (payload && payload.nonce) {
                 if (state.seenNonces.has(payload.nonce)) {
@@ -1288,7 +1442,156 @@ export function startApp(env) {
         } else {
             digits.textContent = await core.safetyCode(state.identity.fingerprint, peer.fingerprint);
         }
-        $('safety-modal').classList.remove('hidden');
+        if ($('safety-modal')) $('safety-modal').classList.remove('hidden');
+    }
+
+    // ------------------------------------------------------------------ rendezvous pairing (5-min link / code)
+
+    function clearRendezvousTimer() {
+        if (state.rvCountdownTimer) {
+            win.clearInterval(state.rvCountdownTimer);
+            state.rvCountdownTimer = null;
+        }
+        state.rvExpiresAt = 0;
+    }
+
+    function showPairError(msg) {
+        const box = $('pair-error');
+        if (!box) return;
+        box.textContent = msg || '';
+        box.classList.toggle('hidden', !msg);
+    }
+
+    function switchPairMode(mode) {
+        showPairError('');
+        $('pair-tab-create')?.classList.toggle('active', mode === 'create');
+        $('pair-tab-redeem')?.classList.toggle('active', mode === 'redeem');
+        $('pair-create-panel')?.classList.toggle('hidden', mode !== 'create');
+        $('pair-redeem-panel')?.classList.toggle('hidden', mode !== 'redeem');
+        $('pair-preview-panel')?.classList.toggle('hidden', mode !== 'preview');
+    }
+
+    function openPairModal(mode = 'create') {
+        switchPairMode(mode);
+        $('pair-modal')?.classList.remove('hidden');
+    }
+
+    async function sendSignedContactRequest(contact) {
+        if (!state.identity || !contact) return;
+        const bytes = core.buildContactRequest({
+            alias: state.userAlias || `Peer ${state.identity.fingerprint.slice(0, 6)}`,
+            dropId: state.identity.dropId,
+            fingerprint: state.identity.fingerprint,
+            publicKeyArmored: state.identity.publicKeyArmored,
+            avatarBase64: state.myAvatarBase64 || undefined,
+            avatarHash: state.myAvatarHash || undefined,
+            senderAlias: state.userAlias || undefined
+        });
+        await queueSend(() => encryptAndPostDirect(contact, bytes));
+    }
+
+    async function generateRendezvousInvite() {
+        showPairError('');
+        if (!state.identity) { showPairError('Generate an identity first.'); return; }
+        try {
+            const code = core.generateRendezvousCode();
+            const card = core.encodeContactCard({
+                alias: state.userAlias || `Peer ${state.identity.fingerprint.slice(0, 6)}`,
+                dropId: state.identity.dropId,
+                fingerprint: state.identity.fingerprint,
+                publicKeyArmored: state.identity.publicKeyArmored
+            });
+            const { slotId, sealedBlob } = await core.sealRendezvousCard(code, card);
+            const r = await api('POST', '/api/v2/rendezvous', {
+                body: { slotId, sealedBlob, ttlSeconds: 300 }
+            });
+            if (!r.ok) throw new Error(r.json?.error || `HTTP ${r.status}`);
+
+            const link = `${origin}/#pair=${code}`;
+            if ($('rv-code-display')) $('rv-code-display').textContent = code;
+            if ($('rv-link-display')) $('rv-link-display').value = link;
+            $('rv-result-box')?.classList.remove('hidden');
+
+            clearRendezvousTimer();
+            state.rvExpiresAt = r.json?.expiresAt || (Date.now() + 300 * 1000);
+            const updateCountdown = () => {
+                const rem = Math.max(0, Math.ceil((state.rvExpiresAt - Date.now()) / 1000));
+                const mins = Math.floor(rem / 60);
+                const secs = String(rem % 60).padStart(2, '0');
+                if ($('rv-countdown')) {
+                    $('rv-countdown').textContent = rem > 0
+                        ? `Expires in ${mins}:${secs} · One-time use`
+                        : 'Code expired. Generate a new one.';
+                }
+                if (rem <= 0) clearRendezvousTimer();
+            };
+            updateCountdown();
+            state.rvCountdownTimer = win.setInterval(updateCountdown, 1000);
+            log(`[PAIR] Generated 5-minute rendezvous link (${code}).`, 'success');
+        } catch (e) {
+            showPairError(e.message);
+        }
+    }
+
+    async function redeemRendezvousInput(rawInput) {
+        showPairError('');
+        if (!state.identity) { showPairError('Identity not ready yet.'); return; }
+        try {
+            const canonical = core.extractRendezvousCode(rawInput);
+            const formatted = `${canonical.slice(0, 5)}-${canonical.slice(5)}`;
+            const slotId = await core.deriveRendezvousSlotId(canonical);
+            const r = await api('GET', `/api/v2/rendezvous/${slotId}`);
+            if (!r.ok || !r.json?.sealedBlob) {
+                throw new Error(r.json?.error || 'Invite link/code not found, expired, or already used.');
+            }
+            const peerInfo = await core.openRendezvousCard(canonical, r.json.sealedBlob);
+            if (peerInfo.dropId === state.identity.dropId) {
+                throw new Error('Cannot pair with your own identity.');
+            }
+            state.pendingPairInvite = { code: formatted, peerInfo };
+            if ($('pair-preview-meta')) {
+                $('pair-preview-meta').textContent = `${peerInfo.alias}\nFP: ${groupFingerprint(peerInfo.fingerprint)}\nDrop-ID: ${peerInfo.dropId.slice(0, 16)}...`;
+            }
+            if ($('pair-open-app-link')) {
+                $('pair-open-app-link').href = `ghostkey://pair?c=${encodeURIComponent(formatted)}`;
+            }
+            switchPairMode('preview');
+            $('pair-modal')?.classList.remove('hidden');
+        } catch (e) {
+            showPairError(e.message);
+        }
+    }
+
+    async function confirmPairPreview(accepted) {
+        const pending = state.pendingPairInvite;
+        state.pendingPairInvite = null;
+        if (!accepted || !pending) {
+            $('pair-modal')?.classList.add('hidden');
+            return;
+        }
+        const info = pending.peerInfo;
+        const keyChanged = registerContact(info);
+        selectChat('direct', info.dropId);
+        $('pair-modal')?.classList.add('hidden');
+        if ($('rv-input')) $('rv-input').value = '';
+        const saved = state.contacts.find((c) => c.dropId === info.dropId);
+        if (saved) await sendSignedContactRequest(saved);
+        log(`[PAIR] Paired with ${info.alias} and sent signed contact request${keyChanged ? ' (key changed!)' : ''}.`, keyChanged ? 'warn' : 'success');
+    }
+
+    function checkUrlPairHash() {
+        const hash = win.location?.hash || '';
+        if (!hash || !hash.includes('pair=')) return;
+        const match = /pair=([0-9A-Za-z-]+)/i.exec(hash);
+        try {
+            if (win.history?.replaceState) {
+                win.history.replaceState(null, '', (win.location.pathname || '/') + (win.location.search || ''));
+            }
+        } catch (_) {}
+        if (match && match[1]) {
+            openPairModal('redeem');
+            redeemRendezvousInput(match[1]);
+        }
     }
 
     async function copyTextFeedback(btnId, text, defaultLabel) {
@@ -1310,6 +1613,7 @@ export function startApp(env) {
         state.myAvatarHash = null;
         state.peer = null;
         state.contacts = [];
+        state.contactRequests = [];
         state.groups = [];
         state.activeChat = null;
         state.messagesByChat.clear();
@@ -1318,12 +1622,17 @@ export function startApp(env) {
         state.seenNonces.clear();
         state.attachment = null;
         state.replyToMsg = null;
+        state.pendingPairInvite = null;
+        clearRendezvousTimer();
         state.authFailed = false;
         revokeBlobUrls();
         if ($('peer-key-input')) $('peer-key-input').value = '';
         if ($('logs-container')) $('logs-container').textContent = '';
+        $('pair-modal')?.classList.add('hidden');
+        $('rv-result-box')?.classList.add('hidden');
         clearAttachment();
         renderReplyBar();
+        renderContactRequests();
         showPeerError('');
         renderIdentity();
         renderPeerAndHeader();
@@ -1419,6 +1728,16 @@ export function startApp(env) {
     on('cancel-rec-btn', 'click', cancelRecording);
     on('stop-send-rec-btn', 'click', stopAndSendRecording);
     on('save-peer-btn', 'click', savePeerKey);
+    on('quick-pair-btn', 'click', () => openPairModal('create'));
+    on('pair-close', 'click', () => { state.pendingPairInvite = null; $('pair-modal')?.classList.add('hidden'); });
+    on('pair-tab-create', 'click', () => switchPairMode('create'));
+    on('pair-tab-redeem', 'click', () => switchPairMode('redeem'));
+    on('rv-generate-btn', 'click', generateRendezvousInvite);
+    on('rv-copy-link-btn', 'click', () => copyTextFeedback('rv-copy-link-btn', $('rv-link-display')?.value || '', 'Copy Link'));
+    on('rv-copy-code-btn', 'click', () => copyTextFeedback('rv-copy-code-btn', $('rv-code-display')?.textContent || '', 'Copy Code'));
+    on('rv-redeem-btn', 'click', () => redeemRendezvousInput($('rv-input')?.value || ''));
+    on('pair-preview-accept', 'click', () => confirmPairPreview(true));
+    on('pair-preview-decline', 'click', () => confirmPairPreview(false));
     on('copy-key-btn', 'click', () => state.identity && copyTextFeedback('copy-key-btn', state.identity.publicKeyArmored, getStrings(state.lang).copyKey));
     on('copy-card-btn', 'click', () => {
         if (!state.identity) return;
@@ -1485,6 +1804,7 @@ export function startApp(env) {
     if (win.addEventListener) {
         win.addEventListener('blur', () => setPrivacyVeil(true), { signal: listeners.signal });
         win.addEventListener('focus', () => setPrivacyVeil(false), { signal: listeners.signal });
+        win.addEventListener('hashchange', checkUrlPairHash, { signal: listeners.signal });
     }
     if (doc.addEventListener) {
         doc.addEventListener('keydown', (e) => {
@@ -1532,7 +1852,7 @@ export function startApp(env) {
     renderPeerAndHeader();
     updateNotifBtn();
     setStatus('OFFLINE');
-    const ready = newIdentity();
+    const ready = newIdentity().then(() => { checkUrlPairHash(); });
 
     return {
         ready,
@@ -1540,6 +1860,7 @@ export function startApp(env) {
         dispose() {
             state.disposed = true;
             listeners.abort();
+            clearRendezvousTimer();
             if (state.reconnectTimer) win.clearTimeout(state.reconnectTimer);
             if (reaperInterval) win.clearInterval(reaperInterval);
             if (titleBlinkTimer) win.clearInterval(titleBlinkTimer);

@@ -74,7 +74,19 @@ export const STRINGS = {
         shieldOff: 'Shield: Off',
         shieldTitle: 'GhostKey Privacy Shield',
         shieldDesc: 'Content hidden while unfocused to guard against task-switcher previews. Web browsers cannot enforce OS-level FLAG_SECURE screenshot blocking; use Android for strict screenshot blocking.',
-        clearBothBtn: 'Clear Both'
+        clearBothBtn: 'Clear Both',
+        quickPairBtn: 'Quick Pair (5m)',
+        pairModalTitle: 'Quick Pair (5-Minute Code)',
+        pairTabCreate: 'Share Code',
+        pairTabRedeem: 'Enter Code',
+        pairCreateHint: 'Creates an E2EE one-time invite code on the relay that expires in 5 minutes and self-destructs after one use.',
+        pairGenerateBtn: 'Generate 5m Code',
+        pairRedeemHint: 'Enter the 10-character code from your peer to exchange keys automatically.',
+        pairRedeemBtn: 'Connect',
+        pairInputPlaceholder: 'XXXXX-XXXXX',
+        requestsHeader: 'Contact Requests',
+        acceptBtn: 'Accept',
+        declineBtn: 'Decline'
     },
     ar: {
         dir: 'rtl',
@@ -149,7 +161,19 @@ export const STRINGS = {
         shieldOff: 'الحماية: متوقفة',
         shieldTitle: 'درع الخصوصية (GhostKey)',
         shieldDesc: 'تم إخفاء المحتوى لأن النافذة غير نشطة لمنع ظهور المعاينة في شريط المهام. تنبيه: المتصفح لا يملك صلاحية حظر لقطات الشاشة على مستوى النظام مثل تطبيق أندرويد (FLAG_SECURE).',
-        clearBothBtn: 'مسح للطرفين'
+        clearBothBtn: 'مسح للطرفين',
+        quickPairBtn: 'ربط سريع (5د)',
+        pairModalTitle: 'ربط سريع (رابط أو كود 5 دقائق)',
+        pairTabCreate: 'إنشاء رابط / كود',
+        pairTabRedeem: 'إدخال كود / رابط',
+        pairCreateHint: 'ينشئ رابطاً وكوداً مشفّرَين صالحين لمرة واحدة ولمدة 5 دقائق فقط، دون كشف مفتاحك للخادم.',
+        pairGenerateBtn: 'إنشاء رابط 5 دقائق',
+        pairRedeemHint: 'الصق كود الـ 10 أحرف أو رابط الدعوة لتبادل المفاتيح بأمان.',
+        pairRedeemBtn: 'اتصال ومعاينة',
+        pairInputPlaceholder: 'XXXXX-XXXXX أو رابط الدعوة...',
+        requestsHeader: 'طلبات إضافة جديدة',
+        acceptBtn: 'قبول',
+        declineBtn: 'رفض'
     }
 };
 

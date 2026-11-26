@@ -56,12 +56,14 @@ fun SettingsScreen(
     duressPinConfigured: Boolean,
     offlineBleMeshEnabled: Boolean,
     offlineWifiDirectEnabled: Boolean,
+    allowContactRequests: Boolean = true,
     language: AppLanguage,
     themeMode: AppThemeMode,
     relayStatus: RelayStatus,
     relayErrorDetail: String?,
     onLanguageChange: (AppLanguage) -> Unit,
     onThemeModeChange: (AppThemeMode) -> Unit,
+    onToggleAllowContactRequests: (Boolean) -> Unit = {},
     onSaveSettings: (
         relayUrl: String,
         useTorSocks: Boolean,
@@ -287,6 +289,15 @@ fun SettingsScreen(
                     commitSettings(showToast = false)
                 },
                 iconTint = palette.connected
+            )
+            SettingsDivider()
+            SettingsToggleRow(
+                icon = AppIcons.Handshake,
+                title = strings.allowContactRequestsTitle,
+                subtitle = strings.allowContactRequestsSubtitle,
+                checked = allowContactRequests,
+                onCheckedChange = onToggleAllowContactRequests,
+                iconTint = palette.accent
             )
             SettingsDivider()
             SettingsToggleRow(

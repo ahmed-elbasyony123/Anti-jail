@@ -3,6 +3,7 @@ package com.ghostkey.app
 import android.Manifest
 import android.app.KeyguardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -61,6 +62,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        handleIncomingIntent(intent)
+
         setContent {
             val state by viewModel.uiState.collectAsState()
             GhostKeyTheme(
@@ -104,6 +107,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val uri = intent.data?.toString()?.trim() ?: return
+        if (uri.startsWith("ghostkey://", ignoreCase = true) || uri.contains("pair=", ignoreCase = true)) {
+            viewModel.handleIncomingPairLink(uri)
         }
     }
 

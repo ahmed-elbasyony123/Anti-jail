@@ -127,6 +127,16 @@ sealed interface MessageContent {
     data object ClearChat : MessageContent
 
     @Immutable
+    data class ContactRequest(
+        val alias: String,
+        val dropId: String,
+        val fingerprint: String,
+        val publicKeyArmored: String,
+        val avatarHash: String? = null,
+        val avatarBase64: String? = null
+    ) : MessageContent
+
+    @Immutable
     data class ProfileUpdate(
         val alias: String? = null,
         val avatarHash: String? = null,

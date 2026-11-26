@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.data.ChatSummary
+import com.ghostkey.app.data.ContactRequest
 import com.ghostkey.app.net.RelayStatus
 import com.ghostkey.app.ui.AppIcons
 import com.ghostkey.app.ui.components.AvatarView
@@ -53,10 +54,14 @@ private enum class ChatFilterTab { ALL, PRIVATE, GROUPS }
 fun ChatsListScreen(
     chats: List<ChatSummary>,
     relayStatus: RelayStatus,
+    contactRequests: List<ContactRequest> = emptyList(),
     onSelectChat: (ChatSummary) -> Unit,
     onNewDirectChat: () -> Unit,
+    onQuickPairClick: () -> Unit = {},
     onPairContactQr: () -> Unit,
     onNewGroupChat: () -> Unit,
+    onAcceptContactRequest: (String) -> Unit = {},
+    onDeclineContactRequest: (String) -> Unit = {},
     onOpenSecurityDiagnostics: () -> Unit,
     onTogglePinChats: (Set<String>) -> Unit,
     onToggleMuteChats: (Set<String>) -> Unit,
@@ -143,6 +148,14 @@ fun ChatsListScreen(
                             onClick = {
                                 showFabMenu = false
                                 onNewDirectChat()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.quickPairAction, color = palette.textPrimary) },
+                            leadingIcon = { Icon(AppIcons.Handshake, contentDescription = null, tint = palette.accent) },
+                            onClick = {
+                                showFabMenu = false
+                                onQuickPairClick()
                             }
                         )
                         DropdownMenuItem(
@@ -285,6 +298,14 @@ fun ChatsListScreen(
                     )
                 }
                 HorizontalDivider(color = palette.divider, modifier = Modifier.padding(start = 68.dp))
+            }
+
+            if (contactRequests.isNotEmpty() && !inSelectionMode && !viewingArchived) {
+                ContactRequestsBanner(
+                    requests = contactRequests,
+                    onAccept = onAcceptContactRequest,
+                    onDecline = onDeclineContactRequest
+                )
             }
 
             if (visibleChats.isEmpty() && !viewingArchived) {
@@ -555,6 +576,75 @@ private fun ChatSummaryRow(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContactRequestsBanner(
+    requests: List<ContactRequest>,
+    onAccept: (String) -> Unit,
+    onDecline: (String) -> Unit
+) {
+    val palette = GhostTheme.colors
+    val strings = GhostTheme.strings
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        requests.forEach { req ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(palette.surface)
+                    .border(1.dp, palette.accent.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(AppIcons.VerifiedUser, contentDescription = null, tint = palette.connected, modifier = Modifier.size(18.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${strings.contactRequestsHeader}: ${req.alias}",
+                            color = palette.textPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = req.fingerprint.chunked(4).take(4).joinToString(" ") + "...",
+                            color = palette.textSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { onDecline(req.dropId) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(strings.declineRequestBtn, color = palette.error, fontSize = 13.sp)
+                    }
+                    Button(
+                        onClick = { onAccept(req.dropId) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.connected, contentColor = Color.White)
+                    ) {
+                        Text(strings.acceptRequestBtn, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }

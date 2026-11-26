@@ -180,7 +180,8 @@ internal class MessagingService(
         onGroupInviteReceived: (GroupChat) -> Unit = {},
         onProfileUpdated: (senderDropId: String, alias: String?, avatarBase64: String?, avatarHash: String?) -> Unit = { _, _, _, _ -> },
         onGroupControlReceived: (MessageContent.GroupControl, senderDropId: String?) -> Unit = { _, _ -> },
-        onChatClearedByPeer: (senderDropId: String, alias: String) -> Unit = { _, _ -> }
+        onChatClearedByPeer: (senderDropId: String, alias: String) -> Unit = { _, _ -> },
+        onContactRequestReceived: (ContactRequest) -> Unit = {}
     ): ChatMessage? = withContext(Dispatchers.Default) {
         val env = decryptEnvelope(msg, dropId, myKeys, contacts, groups)
         val wire = WireFormat.parse(env.plainBytes)
@@ -189,6 +190,45 @@ internal class MessagingService(
         if (!isNewNonce || !isNewMsgId) {
             if (fromRelay) transport.torClient.ack(listOf(msg.id), dropId = env.group?.groupDropId ?: dropId)
             _messages.update { list -> list.filterNot { it.id == msg.id } }
+            return@withContext null
+        }
+
+        if (wire != null && wire.isContactRequest && env.group == null) {
+            val rawKey = wire.requestPublicKeyArmored
+            val embedded = rawKey?.let { runCatching { StandalonePgpEngine.parsePeerKey(it) }.getOrNull() }
+            val sigVerified = if (embedded != null &&
+                embedded.dropId == wire.requestDropId &&
+                embedded.fingerprint == wire.requestFingerprint &&
+                embedded.dropId != myKeys.dropId
+            ) {
+                val check = runCatching {
+                    StandalonePgpEngine.decryptMulti(
+                        msg.ciphertext,
+                        myKeys.privateKeyArmored,
+                        listOf(embedded.publicKeyArmored)
+                    )
+                }.getOrNull()
+                check?.signatureStatus == SignatureStatus.VERIFIED &&
+                    check.signerFingerprint == embedded.fingerprint
+            } else {
+                false
+            }
+            if (sigVerified && embedded != null) {
+                onContactRequestReceived(
+                    ContactRequest(
+                        dropId = embedded.dropId,
+                        alias = wire.requestAlias ?: "Peer ${embedded.fingerprint.take(6)}",
+                        fingerprint = embedded.fingerprint,
+                        publicKeyArmored = embedded.publicKeyArmored,
+                        avatarBase64 = wire.avatarBase64,
+                        avatarHash = wire.avatarHash
+                    )
+                )
+            }
+            _messages.update { list -> list.filterNot { it.id == msg.id } }
+            if (fromRelay) {
+                transport.torClient.ack(listOf(msg.id), dropId = dropId)
+            }
             return@withContext null
         }
 
@@ -309,6 +349,14 @@ internal class MessagingService(
                 newSharedKey = wire.groupControlNewKey
             )
             wire.isClearChat -> MessageContent.ClearChat
+            wire.isContactRequest -> MessageContent.ContactRequest(
+                alias = wire.requestAlias ?: "Peer",
+                dropId = wire.requestDropId ?: "",
+                fingerprint = wire.requestFingerprint ?: "",
+                publicKeyArmored = wire.requestPublicKeyArmored ?: "",
+                avatarHash = wire.avatarHash,
+                avatarBase64 = wire.avatarBase64
+            )
             wire.isMedia -> {
                 val mimeType = wire.mimeType ?: "application/octet-stream"
                 val filename = wire.filename ?: "attachment"
@@ -519,6 +567,28 @@ internal class MessagingService(
                 runCatching { encryptAndSendDirect(member.dropId, member.publicKeyArmored, invitePayload, myKeys) }
             }
         }
+
+    suspend fun sendContactRequest(
+        peer: Contact,
+        myKeys: PgpKeyPairArmored,
+        userAlias: String,
+        avatarBase64: String?,
+        avatarHash: String?
+    ): Result<DeliveryState> = withContext(Dispatchers.Default) {
+        val payload = WireFormat.buildContactRequest(
+            alias = userAlias.ifBlank { "Peer ${myKeys.fingerprint.take(6)}" },
+            dropId = myKeys.dropId,
+            fingerprint = myKeys.fingerprint,
+            publicKeyArmored = myKeys.publicKeyArmored,
+            avatarBase64 = avatarBase64,
+            avatarHash = avatarHash,
+            senderAlias = userAlias.ifBlank { null }
+        )
+        runCatching {
+            val (_, delivery) = encryptAndSendDirect(peer.dropId, peer.publicKeyArmored, payload, myKeys)
+            delivery.getOrThrow()
+        }
+    }
 
     private suspend fun encryptAndSendDirect(
         recipientDropId: String,

@@ -32,7 +32,11 @@ class WireMessage(
     val avatarBase64: String? = null,
     val groupControlAction: String? = null,
     val groupControlTargetDropId: String? = null,
-    val groupControlNewKey: String? = null
+    val groupControlNewKey: String? = null,
+    val requestAlias: String? = null,
+    val requestDropId: String? = null,
+    val requestFingerprint: String? = null,
+    val requestPublicKeyArmored: String? = null
 ) {
     val isMedia: Boolean get() = type == TYPE_MEDIA
     val isGroupInvite: Boolean get() = type == TYPE_GROUP_INVITE
@@ -40,6 +44,7 @@ class WireMessage(
     val isProfileUpdate: Boolean get() = type == TYPE_PROFILE_UPDATE
     val isGroupControl: Boolean get() = type == TYPE_GROUP_CONTROL
     val isClearChat: Boolean get() = type == TYPE_CLEAR_CHAT
+    val isContactRequest: Boolean get() = type == TYPE_CONTACT_REQUEST
 
     companion object {
         const val TYPE_TEXT = "text"
@@ -49,6 +54,7 @@ class WireMessage(
         const val TYPE_PROFILE_UPDATE = "profile_update"
         const val TYPE_GROUP_CONTROL = "group_control"
         const val TYPE_CLEAR_CHAT = "clear_chat"
+        const val TYPE_CONTACT_REQUEST = "contact_request"
 
         const val GROUP_ACTION_LEAVE = "leave"
         const val GROUP_ACTION_KEY_ROTATE = "key_rotate"
@@ -184,6 +190,29 @@ object WireFormat {
         senderAlias: String? = null,
         msgId: String? = null
     ): ByteArray = buildEnvelope(WireMessage.TYPE_CLEAR_CHAT, senderAlias, msgId = msgId) {}
+
+    fun buildContactRequest(
+        alias: String,
+        dropId: String,
+        fingerprint: String,
+        publicKeyArmored: String,
+        avatarBase64: String? = null,
+        avatarHash: String? = null,
+        senderAlias: String? = null,
+        msgId: String? = null
+    ): ByteArray {
+        val cleanAlias = GhostKeyUtils.sanitizeAlias(alias.ifBlank { senderAlias ?: "" })
+            .ifBlank { "Peer ${fingerprint.take(6)}" }
+        val resolvedSenderAlias = senderAlias?.let { GhostKeyUtils.sanitizeAlias(it) }?.ifBlank { null } ?: cleanAlias
+        return buildEnvelope(WireMessage.TYPE_CONTACT_REQUEST, resolvedSenderAlias, msgId = msgId) {
+            put("alias", cleanAlias)
+            put("dropId", dropId.trim().lowercase())
+            put("fp", fingerprint.trim().uppercase())
+            put("key", publicKeyArmored.trim())
+            if (!avatarHash.isNullOrBlank()) put("avatarHash", avatarHash.trim().lowercase())
+            if (!avatarBase64.isNullOrBlank()) put("avatarData", avatarBase64.trim())
+        }
+    }
 
     private fun withPad(obj: JSONObject): ByteArray {
         obj.put("pad", "")
@@ -356,6 +385,37 @@ object WireFormat {
                     msgId = msgId,
                     senderAlias = senderAlias
                 )
+                WireMessage.TYPE_CONTACT_REQUEST -> {
+                    val reqDropId = optSafeString(obj, "dropId")?.lowercase()
+                    val fp = optSafeString(obj, "fp")?.uppercase()
+                    val key = optSafeString(obj, "key")
+                    if (reqDropId == null || !StandalonePgpEngine.isValidHex32(reqDropId) ||
+                        fp == null || key == null || !key.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----")
+                    ) {
+                        return null
+                    }
+                    val avatarHash = optSafeString(obj, "avatarHash")?.lowercase()
+                    val avatarData = optSafeString(obj, "avatarData")
+                    if (avatarData != null) {
+                        val decoded = runCatching { Base64.getDecoder().decode(avatarData) }.getOrNull() ?: return null
+                        if (decoded.size > MAX_AVATAR_DECODED_BYTES) return null
+                    }
+                    val cleanAlias = GhostKeyUtils.sanitizeAlias(optSafeString(obj, "alias") ?: senderAlias ?: "Peer")
+                        .ifBlank { "Peer" }
+                    WireMessage(
+                        type = type,
+                        timestamp = ts,
+                        nonce = nonce,
+                        msgId = msgId,
+                        senderAlias = senderAlias,
+                        avatarHash = avatarHash,
+                        avatarBase64 = avatarData,
+                        requestAlias = cleanAlias,
+                        requestDropId = reqDropId,
+                        requestFingerprint = fp,
+                        requestPublicKeyArmored = key
+                    )
+                }
                 else -> null
             }
         } catch (_: Exception) {

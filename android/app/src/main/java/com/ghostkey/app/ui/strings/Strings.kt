@@ -159,7 +159,26 @@ data class AppStrings(
     val lockScreenHeader: String,
     val lockScreenSubtitle: String,
     val invalidPinError: String,
-    val deviceLockFallback: String
+    val deviceLockFallback: String,
+
+    // Quick Pair (5m Rendezvous) & Contact Requests
+    val quickPairAction: String,
+    val quickPairTitle: String,
+    val quickPairTabCreate: String,
+    val quickPairTabRedeem: String,
+    val quickPairGenerateBtn: String,
+    val quickPairRedeemBtn: String,
+    val quickPairCopyLink: String,
+    val quickPairCopyCode: String,
+    val quickPairShareBtn: String,
+    val quickPairPreviewTitle: String,
+    val quickPairAcceptBtn: String,
+    val quickPairDeclineBtn: String,
+    val contactRequestsHeader: String,
+    val acceptRequestBtn: String,
+    val declineRequestBtn: String,
+    val allowContactRequestsTitle: String,
+    val allowContactRequestsSubtitle: String
 )
 
 val EnStrings = AppStrings(
@@ -309,7 +328,25 @@ val EnStrings = AppStrings(
     lockScreenHeader = "GHOSTKEY LOCKED",
     lockScreenSubtitle = "Enter your PIN to unlock your session",
     invalidPinError = "Incorrect PIN. Try again.",
-    deviceLockFallback = "Use Device Lock"
+    deviceLockFallback = "Use Device Lock",
+
+    quickPairAction = "Quick Pair (5m Link)",
+    quickPairTitle = "Quick Pair (5-Minute Link)",
+    quickPairTabCreate = "Share Link",
+    quickPairTabRedeem = "Enter Code",
+    quickPairGenerateBtn = "Generate 5m Link & Code",
+    quickPairRedeemBtn = "Connect & Preview",
+    quickPairCopyLink = "Copy Link",
+    quickPairCopyCode = "Copy Code",
+    quickPairShareBtn = "Share Invite Link",
+    quickPairPreviewTitle = "Verified Invite",
+    quickPairAcceptBtn = "Accept & Chat",
+    quickPairDeclineBtn = "Decline",
+    contactRequestsHeader = "Contact Request",
+    acceptRequestBtn = "Accept",
+    declineRequestBtn = "Decline",
+    allowContactRequestsTitle = "Allow Contact Requests",
+    allowContactRequestsSubtitle = "Show Accept/Decline banner for verified quick-pair requests"
 )
 
 val ArStrings = AppStrings(
@@ -459,5 +496,23 @@ val ArStrings = AppStrings(
     lockScreenHeader = "التطبيق مقفول",
     lockScreenSubtitle = "أدخل رمز القفل لفتح جلستك المشفرة",
     invalidPinError = "الرمز غير صحيح. حاول مرة أخرى.",
-    deviceLockFallback = "استخدام قفل الجهاز"
+    deviceLockFallback = "استخدام قفل الجهاز",
+
+    quickPairAction = "ربط سريع (رابط 5د)",
+    quickPairTitle = "ربط سريع (رابط / كود 5 دقائق)",
+    quickPairTabCreate = "إنشاء رابط",
+    quickPairTabRedeem = "إدخال كود / رابط",
+    quickPairGenerateBtn = "إنشاء رابط وكود (5 دقائق)",
+    quickPairRedeemBtn = "فحص ومعاينة",
+    quickPairCopyLink = "نسخ الرابط",
+    quickPairCopyCode = "نسخ الكود",
+    quickPairShareBtn = "مشاركة الرابط",
+    quickPairPreviewTitle = "دعوة تواصل موثقة",
+    quickPairAcceptBtn = "قبول وبدء الشات",
+    quickPairDeclineBtn = "رفض",
+    contactRequestsHeader = "طلب إضافة",
+    acceptRequestBtn = "قبول",
+    declineRequestBtn = "رفض",
+    allowContactRequestsTitle = "استقبال طلبات الإضافة",
+    allowContactRequestsSubtitle = "إظهار بانر قبول/رفض للطلبات الموثقة بالربط السريع"
 )
