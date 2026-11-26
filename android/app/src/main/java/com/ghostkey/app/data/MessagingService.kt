@@ -214,9 +214,10 @@ internal class MessagingService(
                 false
             }
             if (sigVerified && embedded != null) {
+                val embeddedDropId = embedded.dropId ?: return@withContext null
                 onContactRequestReceived(
                     ContactRequest(
-                        dropId = embedded.dropId,
+                        dropId = embeddedDropId,
                         alias = wire.requestAlias ?: "Peer ${embedded.fingerprint.take(6)}",
                         fingerprint = embedded.fingerprint,
                         publicKeyArmored = embedded.publicKeyArmored,

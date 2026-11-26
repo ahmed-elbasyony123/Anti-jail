@@ -22,6 +22,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghostkey.app.audio.PlaybackState
@@ -253,7 +255,8 @@ fun MessageBubble(
                             text = message.previewText(""),
                             color = textColor,
                             fontSize = 15.sp,
-                            lineHeight = 20.sp
+                            lineHeight = 20.sp,
+                            style = TextStyle(textDirection = TextDirection.Content)
                         )
                     }
                 }
