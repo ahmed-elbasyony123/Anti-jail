@@ -105,3 +105,35 @@ test('armor view is plain text', () => {
     assert.equal(n.querySelector('script'), null);
     assert.equal(n.querySelector('pre.armor').textContent, '<script>alert(1)</script>');
 });
+
+test('reply quotes, group invites, and introductions render without active markup', () => {
+    const quoted = {
+        id: 'orig-1',
+        isOutgoing: false,
+        payload: { msgId: 'orig-1', senderAlias: '<img src=x onerror=alert(1)>', type: 'text', text: '<b>quoted</b>' }
+    };
+    const replyNode = renderBubble(doc, {
+        ...base,
+        payload: { type: 'text', text: 'reply text', replyTo: 'orig-1' }
+    }, { ...ctx, findMessageByWireId: (id) => (id === 'orig-1' ? quoted : null) });
+    assertNoActiveContent(replyNode);
+    assert.equal(replyNode.querySelector('.reply-quote-author').textContent, '<img src=x onerror=alert(1)>');
+    assert.equal(replyNode.querySelector('.reply-quote-text').textContent, '<b>quoted</b>');
+
+    const invNode = renderBubble(doc, {
+        ...base,
+        payload: { type: 'group_invite', groupName: '<script>x</script>', groupDropId: 'a'.repeat(64) }
+    }, { ...ctx, hasGroup: () => false, onJoinGroupInvite: () => {} });
+    assertNoActiveContent(invNode);
+    assert.ok(invNode.textContent.includes('<script>x</script>'));
+
+    const unsupportedNode = renderBubble(doc, {
+        ...base,
+        payload: null,
+        unsupportedWire: true,
+        fallbackText: '{"v":99,"type":"future_secret","text":"leak"}'
+    }, ctx);
+    assertNoActiveContent(unsupportedNode);
+    assert.match(unsupportedNode.textContent, /not supported on this version/i);
+    assert.ok(!unsupportedNode.textContent.includes('future_secret'));
+});

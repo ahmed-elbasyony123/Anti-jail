@@ -108,4 +108,21 @@ class WireFormatTest {
         assertFalse(parsed!!.filename!!.contains(".."))
         assertFalse(parsed.filename!!.contains("/"))
     }
+
+    @Test
+    fun isStructuredEnvelope_detectsUnsupportedVersionsAndLeavesPlainText() {
+        assertTrue(WireFormat.isStructuredEnvelope("""{"v":99,"type":"ephemeral_v2","text":"secret"}""".toByteArray()))
+        assertTrue(WireFormat.isStructuredEnvelope("""{"type":"future_feature"}""".toByteArray()))
+        assertFalse(WireFormat.isStructuredEnvelope("plain legacy text message".toByteArray()))
+        assertFalse(WireFormat.isStructuredEnvelope("""{"hello":"world"}""".toByteArray()))
+    }
+
+    @Test
+    fun clearChatEnvelope_roundTripsCleanly() {
+        val raw = WireFormat.buildClearChat(senderAlias = "Alice")
+        val parsed = WireFormat.parse(raw)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.isClearChat)
+        assertEquals("Alice", parsed.senderAlias)
+    }
 }

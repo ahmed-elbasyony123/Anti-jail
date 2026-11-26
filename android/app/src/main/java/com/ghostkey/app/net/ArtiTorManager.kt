@@ -110,8 +110,8 @@ object ArtiTorManager {
                         _state.value = ArtiTorState.Starting(progress, socksPort = port)
                     }
                 }
-                delay(300)
-                elapsedMs += 300
+                delay(150)
+                elapsedMs += 150
                 // Strict 60s timeout: Require 100% bootstrap; do not declare connected on partial bootstrap
                 if (elapsedMs >= 60_000L) {
                     android.util.Log.e("GhostKey-Arti", "Tor bootstrap timed out at $progress% after 60s")

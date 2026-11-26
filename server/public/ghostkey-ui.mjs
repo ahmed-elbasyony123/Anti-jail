@@ -1,14 +1,11 @@
-// Safe rendering of chat messages for the web console.
+// Safe rendering of chat messages, cards, and media for the GhostKey web console.
 //
-// Everything that comes from the other side (text, file names, MIME types, file data) is
+// Everything that comes from the other side (text, aliases, file names, MIME types, file data) is
 // untrusted. Rules enforced here:
-//   - no innerHTML / insertAdjacentHTML with message data: elements are built with the DOM API
-//     and textContent only
-//   - inline <img> only for data:image/(png|jpeg|webp|gif);base64,<valid base64>; SVG is never
-//     rendered inline
-//   - audio and file attachments are exposed through Blob URLs, never as raw data: links, and
-//     files are always given the generic application/octet-stream type
-//   - file names are reduced to a harmless download name
+//   - no innerHTML / insertAdjacentHTML: elements are built strictly with DOM APIs and textContent
+//   - inline <img> only for data:image/(png|jpeg|webp|gif);base64,<valid base64>; SVG is never inline
+//   - audio and file attachments use Blob URLs; arbitrary files force application/octet-stream
+//   - file names are sanitized for download
 
 const INLINE_IMAGE = /^image\/(png|jpeg|webp|gif)$/i;
 const AUDIO_TYPE = /^audio\/(mpeg|mp3|ogg|wav|x-wav|webm|mp4|aac|flac)$/i;
@@ -69,7 +66,7 @@ function renderMedia(doc, payload, ctx) {
         audio.className = 'media-audio';
         audio.controls = true;
         audio.src = ctx.createObjectUrl(bytes, mime.trim().toLowerCase());
-        const label = filename.startsWith('voice_') ? `🎙️ ENCRYPTED OPUS VOICE NOTE (${filename})` : `🎙️ ${filename}`;
+        const label = filename.startsWith('voice_') ? `Voice note (${filename})` : filename;
         wrap.appendChild(el(doc, 'div', 'media-name', label));
         wrap.appendChild(audio);
         return wrap;
@@ -91,6 +88,7 @@ function renderMedia(doc, payload, ctx) {
 
 function renderSignature(doc, msg) {
     if (msg.isOutgoing) return null;
+    if (msg.isGroup) return el(doc, 'div', 'sig-ok', 'GROUP AES-256-GCM');
     if (msg.signatureStatus === 'VERIFIED') {
         const fp = msg.signerFingerprint ? ` \u00b7 ${msg.signerFingerprint.slice(0, 8)}` : '';
         return el(doc, 'div', 'sig-ok', `VERIFIED SIGNATURE${fp}`);
@@ -104,33 +102,118 @@ function renderSignature(doc, msg) {
     return null;
 }
 
+function summarizePayload(payload) {
+    if (!payload) return 'Message';
+    if (payload.type === 'text') return payload.text.slice(0, 80);
+    if (payload.type === 'media') return `[File: ${payload.filename || 'attachment'}]`;
+    if (payload.type === 'group_invite') return `[Group Invite: ${payload.groupName || 'Group'}]`;
+    if (payload.type === 'introduction') return `[Introduction: ${payload.introAlias || 'Peer'}]`;
+    return `[${payload.type || 'message'}]`;
+}
+
+function renderSpecialCard(doc, msg, payload, ctx) {
+    if (payload.type === 'group_invite') {
+        const card = el(doc, 'div', 'special-card');
+        card.appendChild(el(doc, 'div', 'special-title', `Group Invite: ${payload.groupName || 'Encrypted Group'}`));
+        card.appendChild(el(doc, 'div', 'special-meta', `Drop-ID: ${(payload.groupDropId || '').slice(0, 12)}...`));
+        if (!msg.isOutgoing && typeof ctx.onJoinGroupInvite === 'function') {
+            const alreadyJoined = typeof ctx.hasGroup === 'function' && ctx.hasGroup(payload.groupDropId);
+            const btn = el(doc, 'button', 'btn small', alreadyJoined ? 'Joined' : 'Join Group');
+            btn.type = 'button';
+            btn.disabled = alreadyJoined;
+            btn.addEventListener('click', () => ctx.onJoinGroupInvite(payload));
+            card.appendChild(btn);
+        }
+        return card;
+    }
+    if (payload.type === 'introduction') {
+        const card = el(doc, 'div', 'special-card');
+        card.appendChild(el(doc, 'div', 'special-title', `Contact Introduction: ${payload.introAlias || 'Peer'}`));
+        card.appendChild(el(doc, 'div', 'special-meta', `Drop-ID: ${(payload.introDropId || '').slice(0, 12)}...`));
+        if (payload.introSafetyCode) {
+            card.appendChild(el(doc, 'div', 'special-meta', `Safety Code: ${payload.introSafetyCode}`));
+        }
+        if (!msg.isOutgoing && typeof ctx.onAcceptIntroduction === 'function') {
+            const btn = el(doc, 'button', 'btn small', 'Add Contact');
+            btn.type = 'button';
+            btn.addEventListener('click', () => ctx.onAcceptIntroduction(payload));
+            card.appendChild(btn);
+        }
+        return card;
+    }
+    if (payload.type === 'group_control') {
+        const desc = payload.action === 'key_rotate'
+            ? `${payload.senderAlias || 'Member'} rotated the group AES-256 key`
+            : payload.action === 'leave'
+                ? `${payload.senderAlias || 'Member'} left the group`
+                : `Group control: ${payload.action}`;
+        return el(doc, 'div', 'system-note', desc);
+    }
+    if (payload.type === 'profile_update') {
+        const who = payload.profileAlias || payload.senderAlias || 'Peer';
+        return el(doc, 'div', 'system-note', `Profile updated (${who})`);
+    }
+    return null;
+}
+
 /**
  * Build the DOM node for one message.
- * msg: { id, isOutgoing, timestamp, payload, failed, signatureStatus, signerFingerprint, ciphertext, showArmor }
- * ctx: { decodeBase64(b64)->Uint8Array, createObjectUrl(bytes, mime)->string, onToggleArmor(id) }
+ * msg: { id, isOutgoing, isGroup, timestamp, payload, failed, signatureStatus, signerFingerprint, ciphertext, showArmor }
+ * ctx: { decodeBase64, createObjectUrl, onToggleArmor, onReply?, findMessageByWireId?, onJoinGroupInvite?, hasGroup?, onAcceptIntroduction? }
  */
 export function renderBubble(doc, msg, ctx) {
     const wrapper = el(doc, 'div', 'bubble-row ' + (msg.isOutgoing ? 'out' : 'in'));
     const bubble = el(doc, 'div', 'bubble ' + (msg.isOutgoing ? 'out' : 'in'));
 
     const head = el(doc, 'div', 'bubble-head');
-    head.appendChild(el(doc, 'span', 'dir', msg.isOutgoing ? 'OUTGOING' : 'INCOMING'));
-    head.appendChild(el(doc, 'span', 'time', new Date(msg.timestamp).toLocaleTimeString()));
+    const dirLabel = msg.isOutgoing
+        ? 'OUTGOING'
+        : (msg.isGroup && msg.payload?.senderAlias ? msg.payload.senderAlias : 'INCOMING');
+    head.appendChild(el(doc, 'span', 'dir', dirLabel));
+
+    const metaRight = el(doc, 'span', 'bubble-meta-right');
+    if (msg.payload && typeof msg.payload.ttl === 'number' && msg.payload.ttl > 0) {
+        metaRight.appendChild(el(doc, 'span', 'ttl-tag', `${msg.payload.ttl}s`));
+    }
+    metaRight.appendChild(el(doc, 'span', 'time', new Date(msg.timestamp).toLocaleTimeString()));
+    head.appendChild(metaRight);
     bubble.appendChild(head);
 
     const sig = renderSignature(doc, msg);
     if (sig) bubble.appendChild(sig);
 
+    if (msg.payload && msg.payload.replyTo && typeof ctx.findMessageByWireId === 'function') {
+        const quoted = ctx.findMessageByWireId(msg.payload.replyTo);
+        const quoteBox = el(doc, 'div', 'reply-quote');
+        const who = quoted
+            ? (quoted.isOutgoing ? 'You' : (quoted.payload?.senderAlias || 'Peer'))
+            : 'Quoted message';
+        quoteBox.appendChild(el(doc, 'div', 'reply-quote-author', who));
+        quoteBox.appendChild(el(doc, 'div', 'reply-quote-text', quoted ? summarizePayload(quoted.payload) : msg.payload.replyTo.slice(0, 10)));
+        bubble.appendChild(quoteBox);
+    }
+
     if (msg.failed) {
         bubble.appendChild(el(doc, 'p', 'text warn', 'Could not decrypt this message. It stays on the relay and is retried on the next connection.'));
+    } else if (msg.unsupportedWire) {
+        bubble.appendChild(el(doc, 'p', 'text warn', 'This message is not supported on this version of GhostKey.'));
     } else if (msg.payload && msg.payload.type === 'media') {
         bubble.appendChild(renderMedia(doc, msg.payload, ctx));
+    } else if (msg.payload && (msg.payload.type === 'group_invite' || msg.payload.type === 'introduction' || msg.payload.type === 'group_control' || msg.payload.type === 'profile_update')) {
+        const card = renderSpecialCard(doc, msg, msg.payload, ctx);
+        if (card) bubble.appendChild(card);
     } else {
         const text = msg.payload && typeof msg.payload.text === 'string' ? msg.payload.text : String(msg.fallbackText || '');
         bubble.appendChild(el(doc, 'p', 'text', text));
     }
 
     const foot = el(doc, 'div', 'bubble-foot');
+    if (!msg.failed && typeof ctx.onReply === 'function') {
+        const replyBtn = el(doc, 'button', 'link-btn', 'Reply');
+        replyBtn.type = 'button';
+        replyBtn.addEventListener('click', () => ctx.onReply(msg));
+        foot.appendChild(replyBtn);
+    }
     const toggle = el(doc, 'button', 'link-btn', msg.showArmor ? 'Hide PGP armor' : 'Inspect PGP armor');
     toggle.type = 'button';
     toggle.addEventListener('click', () => ctx.onToggleArmor(msg.id));

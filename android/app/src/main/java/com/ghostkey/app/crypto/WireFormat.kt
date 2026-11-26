@@ -39,6 +39,7 @@ class WireMessage(
     val isIntroduction: Boolean get() = type == TYPE_INTRODUCTION
     val isProfileUpdate: Boolean get() = type == TYPE_PROFILE_UPDATE
     val isGroupControl: Boolean get() = type == TYPE_GROUP_CONTROL
+    val isClearChat: Boolean get() = type == TYPE_CLEAR_CHAT
 
     companion object {
         const val TYPE_TEXT = "text"
@@ -47,6 +48,7 @@ class WireMessage(
         const val TYPE_INTRODUCTION = "introduction"
         const val TYPE_PROFILE_UPDATE = "profile_update"
         const val TYPE_GROUP_CONTROL = "group_control"
+        const val TYPE_CLEAR_CHAT = "clear_chat"
 
         const val GROUP_ACTION_LEAVE = "leave"
         const val GROUP_ACTION_KEY_ROTATE = "key_rotate"
@@ -177,6 +179,11 @@ object WireFormat {
         if (!targetDropId.isNullOrBlank()) put("targetDropId", targetDropId.trim())
         if (!newSharedKey.isNullOrBlank()) put("newSharedKey", newSharedKey.trim())
     }
+
+    fun buildClearChat(
+        senderAlias: String? = null,
+        msgId: String? = null
+    ): ByteArray = buildEnvelope(WireMessage.TYPE_CLEAR_CHAT, senderAlias, msgId = msgId) {}
 
     private fun withPad(obj: JSONObject): ByteArray {
         obj.put("pad", "")
@@ -342,6 +349,13 @@ object WireFormat {
                         groupControlNewKey = newKey
                     )
                 }
+                WireMessage.TYPE_CLEAR_CHAT -> WireMessage(
+                    type = type,
+                    timestamp = ts,
+                    nonce = nonce,
+                    msgId = msgId,
+                    senderAlias = senderAlias
+                )
                 else -> null
             }
         } catch (_: Exception) {
@@ -351,4 +365,20 @@ object WireFormat {
 
     fun decodeMediaData(message: WireMessage): ByteArray =
         Base64.getDecoder().decode(message.data ?: "")
+
+    /**
+     * Returns true when [rawBytes] looks like a GhostKey structured JSON wire envelope
+     * (e.g. a future protocol version or unsupported message type), so callers never leak
+     * raw serialized payload JSON into chat bubbles.
+     */
+    fun isStructuredEnvelope(rawBytes: ByteArray): Boolean {
+        val trimmed = String(rawBytes, Charsets.UTF_8).trim()
+        if (!trimmed.startsWith("{")) return false
+        return try {
+            val obj = JSONObject(trimmed)
+            obj.has("v") || obj.has("type")
+        } catch (_: Exception) {
+            false
+        }
+    }
 }

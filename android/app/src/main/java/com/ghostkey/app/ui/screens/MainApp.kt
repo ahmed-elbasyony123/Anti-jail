@@ -114,6 +114,9 @@ internal fun MainApp(
                     onClearHistory = {
                         if (activeChatId.isNotBlank()) viewModel.clearChatHistory(activeChatId)
                     },
+                    onClearForBoth = {
+                        activeContact?.let(viewModel::clearChatForBoth)
+                    },
                     onDeleteOrLeaveChat = {
                         if (activeGroup != null) viewModel.leaveAndDeleteGroup(activeGroup.id)
                         else if (activeContact != null) viewModel.deleteContact(activeContact.dropId)

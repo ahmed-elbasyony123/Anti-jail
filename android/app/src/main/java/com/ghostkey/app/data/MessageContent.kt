@@ -124,6 +124,8 @@ sealed interface MessageContent {
         val newSharedKey: String? = null
     ) : MessageContent
 
+    data object ClearChat : MessageContent
+
     @Immutable
     data class ProfileUpdate(
         val alias: String? = null,

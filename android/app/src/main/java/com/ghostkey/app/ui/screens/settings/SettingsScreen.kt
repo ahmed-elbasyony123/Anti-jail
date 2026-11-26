@@ -353,6 +353,20 @@ fun SettingsScreen(
 
         // Offline Mesh (Opt-in with runtime permission checks)
         SettingsSectionCard(title = strings.offlineMeshSection) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .background(palette.surfaceVariant, RoundedCornerShape(10.dp))
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = strings.offlineMeshGuide,
+                    color = palette.textSecondary,
+                    fontSize = 11.5.sp,
+                    lineHeight = 16.sp
+                )
+            }
             SettingsToggleRow(
                 icon = ExtraIcons.Bluetooth,
                 title = strings.bleMeshTitle,

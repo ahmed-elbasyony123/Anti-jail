@@ -9,6 +9,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.Dns
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -81,6 +82,7 @@ class TorRelayClient(
     @Volatile private var subscriptionConfirmed = false
     @Volatile private var reconnectAttempt = 0
     private var reconnectJob: Job? = null
+    private var handshakeWatchdogJob: Job? = null
 
     private var activeDropId: String? = null
     private var activeReadToken: String? = null
@@ -97,10 +99,12 @@ class TorRelayClient(
     private fun buildClient(): OkHttpClient {
         val torActive = useTorProxy || serverBaseUrl.contains(".onion")
         val builder = OkHttpClient.Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(25, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
             .pingInterval(20, TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+            .retryOnConnectionFailure(true)
 
         if (torActive) {
             builder.proxy(Proxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved(torSocksHost, torSocksPort)))
@@ -385,6 +389,8 @@ class TorRelayClient(
         isSubscribed = false
         reconnectJob?.cancel()
         reconnectJob = null
+        handshakeWatchdogJob?.cancel()
+        handshakeWatchdogJob = null
         closeSocketOnly()
         try {
             httpClient.connectionPool.evictAll()
@@ -406,6 +412,8 @@ class TorRelayClient(
     private fun closeSocketOnly() {
         socketGeneration.incrementAndGet()
         subscriptionConfirmed = false
+        handshakeWatchdogJob?.cancel()
+        handshakeWatchdogJob = null
         val ws = currentWebSocket
         currentWebSocket = null
         try {
@@ -442,11 +450,27 @@ class TorRelayClient(
         emit(if (useTorProxy) RelayStatus.BUILDING_CIRCUIT else RelayStatus.DISCONNECTED)
 
         val generation = socketGeneration.incrementAndGet()
+        handshakeWatchdogJob?.cancel()
+        handshakeWatchdogJob = scope.launch {
+            delay(25_000L)
+            if (isCurrent(generation) && !subscriptionConfirmed && isSubscribed && !authFailed) {
+                lastConnectionError = "WebSocket handshake stalled after 25s; resetting Tor stream"
+                android.util.Log.w("GhostKey-Relay", lastConnectionError!!)
+                val hung = currentWebSocket
+                currentWebSocket = null
+                socketGeneration.incrementAndGet()
+                try { hung?.cancel() } catch (_: Exception) {}
+                emit(RelayStatus.TIMED_OUT)
+                scheduleReconnect()
+            }
+        }
         currentWebSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (!isCurrent(generation)) return
-                reconnectAttempt = 0                   // success resets the backoff to 4 s
+                handshakeWatchdogJob?.cancel()
+                handshakeWatchdogJob = null
+                reconnectAttempt = 0                   // success resets the backoff
                 for ((dId, rToken) in activeSubscriptions) {
                     webSocket.send(
                         JSONObject()

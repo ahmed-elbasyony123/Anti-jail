@@ -71,14 +71,20 @@ internal class TorConnectionCoordinator(
                 socksPort = state.socksPort
                 applyNetworkConfig()
                 val params = getParams()
-                params.keys?.let {
-                    connectToRelayMailbox(it, params.groups, params.offlineBleMeshEnabled, params.offlineWifiDirectEnabled)
+                val keys = params.keys
+                if (keys != null) {
+                    connectToRelayMailbox(keys, params.groups, params.offlineBleMeshEnabled, params.offlineWifiDirectEnabled)
+                } else if (params.relayServerUrl.isNotBlank()) {
+                    // Pre-warm the .onion Rendezvous circuit & HTTP pool while waiting for PIN unlock or keygen
+                    scope.launch {
+                        transport.torClient.pingRelay(params.relayServerUrl)
+                    }
                 }
             }
             is ArtiTorState.Error -> {
                 Log.w("GhostKey", "Arti Tor error: ${state.message}, retrying or falling back to Orbot")
                 onRelayState(RelayStatus.BUILDING_CIRCUIT, state.message)
-                delay(3_000)
+                delay(1_500)
                 val params = getParams()
                 if (artiRetryCount < 2 && requiresTor(params.useTorSocks, params.relayServerUrl)) {
                     artiRetryCount++
@@ -104,7 +110,7 @@ internal class TorConnectionCoordinator(
         val params = getParams()
         val needed = requiresTor(params.useTorSocks, params.relayServerUrl)
         if (ArtiTorManager.isAvailable) {
-            if (needed && latestArtiState is ArtiTorState.Idle) {
+            if (needed && (latestArtiState is ArtiTorState.Idle || latestArtiState is ArtiTorState.Error)) {
                 artiRetryCount = 0
                 ArtiTorManager.start(appContext, scope)
             } else if (!needed && latestArtiState !is ArtiTorState.Idle) {

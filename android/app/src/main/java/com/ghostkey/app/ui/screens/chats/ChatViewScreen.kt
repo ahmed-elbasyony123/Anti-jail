@@ -80,6 +80,7 @@ fun ChatViewScreen(
     onIntroduceContact: (Contact) -> Unit,
     onAcceptIntroduction: (alias: String, dropId: String, armoredKey: String, safetyCode: String?) -> Unit,
     onClearHistory: () -> Unit,
+    onClearForBoth: () -> Unit = {},
     onDeleteOrLeaveChat: () -> Unit
 ) {
     val palette = GhostTheme.colors
@@ -90,6 +91,7 @@ fun ChatViewScreen(
     var showOverflow by remember { mutableStateOf(false) }
     var showTtlSheet by remember { mutableStateOf(false) }
     var showIntroduceDialog by remember { mutableStateOf(false) }
+    var showClearBothConfirm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val messagesById = remember(messages) { messages.associateBy { it.id } }
@@ -188,8 +190,19 @@ fun ChatViewScreen(
                                 text = { Text(strings.clearHistory, color = palette.textPrimary) },
                                 onClick = { showOverflow = false; onClearHistory() }
                             )
+                            if (!isGroup) {
+                                DropdownMenuItem(
+                                    text = { Text(strings.clearForBothAction, color = palette.error) },
+                                    onClick = { showOverflow = false; showClearBothConfirm = true }
+                                )
+                            }
                             DropdownMenuItem(
-                                text = { Text(strings.deleteChat, color = palette.error) },
+                                text = {
+                                    Text(
+                                        text = if (isGroup) strings.leaveGroupAction else strings.deleteContactAction,
+                                        color = palette.error
+                                    )
+                                },
                                 onClick = { showOverflow = false; onDeleteOrLeaveChat() }
                             )
                         }
@@ -372,6 +385,31 @@ fun ChatViewScreen(
             onIntroduce = { contact ->
                 showIntroduceDialog = false
                 onIntroduceContact(contact)
+            }
+        )
+    }
+
+    if (showClearBothConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearBothConfirm = false },
+            containerColor = palette.surface,
+            title = { Text(strings.clearForBothConfirmTitle, color = palette.error, fontWeight = FontWeight.Bold) },
+            text = { Text(strings.clearForBothConfirmBody, color = palette.textPrimary, fontSize = 14.sp) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearBothConfirm = false
+                        onClearForBoth()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error, contentColor = Color.White)
+                ) {
+                    Text(strings.clearForBothAction, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearBothConfirm = false }) {
+                    Text(strings.cancelBtn, color = palette.textSecondary)
+                }
             }
         )
     }

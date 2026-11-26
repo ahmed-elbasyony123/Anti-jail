@@ -515,7 +515,10 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
                             persistIdentityAsync()
                         }
                     },
-                    onGroupControlReceived = { ctrl, senderDrop -> handleIncomingGroupControl(ctrl, senderDrop) }
+                    onGroupControlReceived = { ctrl, senderDrop -> handleIncomingGroupControl(ctrl, senderDrop) },
+                    onChatClearedByPeer = { _, peerAlias ->
+                        toast("$peerAlias cleared this chat for both sides", Toast.LENGTH_LONG)
+                    }
                 )
                 if (decrypted != null) {
                     val activeId = _uiState.value.activeChatGroup?.id ?: _uiState.value.activeChatContact?.dropId
@@ -682,10 +685,18 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
 
     fun addOrOpenContact(contact: Contact) {
         val st = _uiState.value
+        val isNew = st.contacts.none { it.dropId == contact.dropId }
         val updated = vault.upsertContact(st.contacts, contact)
         val resolved = updated.firstOrNull { it.dropId == contact.dropId } ?: contact
         _uiState.value = st.copy(contacts = updated, activeChatContact = resolved, activeChatGroup = null, navScreen = AppNavScreen.CHAT_VIEW)
         persistIdentityAsync()
+        if (isNew && (st.myAvatarBase64 != null || st.userAlias.isNotBlank())) {
+            st.myPgpKeys?.let { keys ->
+                viewModelScope.launch {
+                    messagingService.broadcastProfileUpdate(listOf(resolved), keys, st.userAlias, st.myAvatarBase64, st.myAvatarHash)
+                }
+            }
+        }
     }
 
     fun createGroup(group: GroupChat) {
@@ -729,6 +740,21 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun clearChatHistory(chatId: String) = messagingService.clearChatMessages(chatId)
+
+    fun clearChatForBoth(contact: Contact) {
+        val st = _uiState.value
+        val keys = st.myPgpKeys
+        messagingService.clearChatMessages(contact.dropId)
+        if (keys == null) {
+            toast("Cleared locally (no PGP key to notify peer)", Toast.LENGTH_SHORT)
+            return
+        }
+        viewModelScope.launch {
+            messagingService.sendClearChat(contact, keys, st.userAlias)
+                .onSuccess { toast("Chat cleared for both sides", Toast.LENGTH_SHORT) }
+                .onFailure { toast("Cleared locally; could not notify peer (${it.message})", Toast.LENGTH_LONG) }
+        }
+    }
 
     fun deleteContact(dropId: String) {
         messagingService.clearChatMessages(dropId)
@@ -787,6 +813,13 @@ internal class MainViewModel(application: Application) : AndroidViewModel(applic
             .onSuccess { contact ->
                 _uiState.value = st.copy(contacts = st.contacts + contact)
                 persistIdentityAsync()
+                if (st.myAvatarBase64 != null || st.userAlias.isNotBlank()) {
+                    st.myPgpKeys?.let { keys ->
+                        viewModelScope.launch {
+                            messagingService.broadcastProfileUpdate(listOf(contact), keys, st.userAlias, st.myAvatarBase64, st.myAvatarHash)
+                        }
+                    }
+                }
                 toast("Added ${contact.alias} to contacts 🛡️", Toast.LENGTH_SHORT)
             }
             .onFailure { toast(it.message ?: "Could not add contact", Toast.LENGTH_LONG) }

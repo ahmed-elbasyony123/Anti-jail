@@ -1,77 +1,130 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- Everything is served by the relay itself: no external scripts, fonts, styles or images. -->
+    <!-- Zero external scripts, fonts, styles or images: everything is served by this relay. -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'; object-src 'none'">
     <meta name="referrer" content="no-referrer">
-    <title>GhostKey // OpenPGP console</title>
+    <title>GhostKey</title>
     <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <div id="layout">
 
-    <!-- Left: identity, peer, status -->
+    <!-- Left Rail: Brand, Chats/Groups, Identity & Backup -->
     <aside id="sidebar">
         <div class="brand-row">
-            <span class="brand">GHOSTKEY</span>
-            <button id="panic-btn" class="btn danger small" type="button" title="Drop keys, messages and connections from this tab">WIPE</button>
-        </div>
-
-        <section class="card">
-            <div class="card-title">MY IDENTITY</div>
-            <div class="label">Fingerprint</div>
-            <div id="my-fingerprint" class="mono-box">Generating keys...</div>
-            <div class="label">Drop-ID (where peers send to you)</div>
-            <div id="my-dropid" class="mono-box small-text">-</div>
-            <div class="label">My public key (share this, it includes the Drop-ID)</div>
-            <textarea id="my-pubkey" class="key-box" readonly rows="4" spellcheck="false" autocomplete="off"></textarea>
-            <div class="row">
-                <button id="copy-key-btn" class="btn small" type="button">COPY KEY</button>
-                <button id="new-identity-btn" class="btn small ghost" type="button">NEW IDENTITY</button>
+            <div class="brand-group">
+                <span id="brand-title" class="brand">GhostKey</span>
+                <span class="status"><span id="relay-dot" class="dot off"></span><span id="relay-status-text">OFFLINE</span></span>
             </div>
-        </section>
+            <div class="brand-actions">
+                <button id="theme-btn" class="icon-pill" type="button" title="Light / Dark">Dark</button>
+                <button id="lang-btn" class="icon-pill" type="button" title="English / العربية">AR</button>
+                <button id="privacy-btn" class="icon-pill" type="button" title="Blur on unfocus & anti-print shield">Shield: On</button>
+                <button id="toggle-logs-btn" class="icon-pill" type="button" title="Activity Log">Log</button>
+                <button id="panic-btn" class="btn danger small" type="button" title="Drop keys, messages and connections from this tab">Wipe</button>
+            </div>
+        </div>
+        <p id="relay-hint" class="hint"></p>
 
+        <!-- Chats & Groups -->
         <section class="card">
-            <div class="card-title">PEER</div>
+            <div class="section-head">
+                <span id="chats-section-title" class="card-title">Chats</span>
+                <button id="new-group-btn" class="btn small ghost" type="button">+ Group</button>
+            </div>
+            <div id="chat-list" class="chat-list"></div>
             <div id="peer-summary" class="peer-summary none">No peer key saved yet.</div>
-            <div class="label">Paste your peer's public key</div>
-            <textarea id="peer-key-input" class="key-box" rows="4" spellcheck="false" autocomplete="off" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
+            <textarea id="peer-key-input" class="key-box" rows="2" spellcheck="false" autocomplete="off" placeholder="Paste OpenPGP public key or Contact Card JSON..."></textarea>
             <div class="row">
-                <button id="save-peer-btn" class="btn small" type="button">SAVE PEER KEY</button>
+                <button id="save-peer-btn" class="btn small flex1" type="button">Save Contact</button>
             </div>
             <div id="peer-error" class="error-text hidden"></div>
         </section>
 
+        <!-- My Identity, Profile & Encrypted Backup -->
         <section class="card">
-            <div class="status-row"><span class="muted">Relay connection</span>
-                <span class="status"><span id="relay-dot" class="dot off"></span><span id="relay-status-text">OFFLINE</span></span>
+            <div class="section-head">
+                <span id="identity-section-title" class="card-title">Identity &amp; Keys</span>
+                <span id="ram-badge" class="pill-muted">RAM-Only</span>
             </div>
-            <div class="status-row"><span class="muted">Storage</span><span class="accent">this tab's memory only</span></div>
-            <p id="relay-hint" class="hint"></p>
+
+            <div class="profile-row">
+                <div id="my-avatar-preview" class="avatar">GK</div>
+                <div class="profile-fields">
+                    <input type="text" id="my-alias-input" class="text-input" placeholder="Display name (optional)" maxlength="48" autocomplete="off">
+                    <div class="row compact">
+                        <input type="file" id="avatar-file-input" class="hidden" accept="image/png,image/jpeg,image/webp">
+                        <button id="avatar-pick-btn" class="link-btn" type="button">Avatar</button>
+                        <button id="broadcast-profile-btn" class="link-btn" type="button">Sync Profile</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="fp-label" class="label">Fingerprint</div>
+            <div id="my-fingerprint" class="mono-box">Generating keys...</div>
+            <div id="dropid-label" class="label">Drop-ID</div>
+            <div id="my-dropid" class="mono-box small-text">-</div>
+            <div id="pubkey-label" class="label">Public Key / Contact Card</div>
+            <textarea id="my-pubkey" class="key-box" readonly rows="3" spellcheck="false" autocomplete="off"></textarea>
+
+            <div class="row wrap">
+                <button id="copy-key-btn" class="btn small" type="button">Copy Key</button>
+                <button id="copy-card-btn" class="btn small ghost" type="button">Copy Card</button>
+                <button id="new-identity-btn" class="btn small ghost" type="button">New Identity</button>
+            </div>
+            <div class="row wrap">
+                <button id="export-backup-btn" class="btn small ghost flex1" type="button">Export .gkbackup</button>
+                <button id="import-backup-btn" class="btn small ghost flex1" type="button">Import .gkbackup</button>
+            </div>
         </section>
 
         <div class="footer-note">GhostKey web console &middot; protocol v2</div>
     </aside>
 
-    <!-- Center: chat -->
+    <!-- Center: Active Conversation -->
     <main id="chat">
         <header id="chat-header">
-            <div>
-                <span id="chat-title">Encrypted chat</span>
-                <span class="chip">OpenPGP &middot; Curve25519 &middot; signed</span>
+            <div class="chat-header-main">
+                <div id="chat-avatar" class="avatar">?</div>
+                <div class="chat-header-meta">
+                    <div id="chat-title">Encrypted chat</div>
+                    <div id="chat-subtitle" class="subtitle">OpenPGP &middot; Ed25519 / X25519 &middot; Signed</div>
+                </div>
             </div>
-            <div class="row">
-                <button id="notif-btn" class="btn small ghost" type="button" title="Desktop Notifications">🔔 NOTIFICATIONS</button>
-                <button id="safety-btn" class="btn small ghost" type="button">SAFETY CODE</button>
+            <div class="row compact header-actions">
+                <select id="ttl-select" class="select-pill" title="Disappearing message timer">
+                    <option value="0">Timer: Off</option>
+                    <option value="30">30s</option>
+                    <option value="300">5m</option>
+                    <option value="3600">1h</option>
+                    <option value="86400">24h</option>
+                </select>
+                <button id="notif-btn" class="btn small ghost" type="button" title="Notifications">Alerts</button>
+                <button id="introduce-btn" class="btn small ghost hidden" type="button">Introduce</button>
+                <button id="group-manage-btn" class="btn small ghost hidden" type="button">Group</button>
+                <button id="clear-both-btn" class="btn small danger hidden" type="button">Clear Both</button>
+                <button id="safety-btn" class="btn small ghost" type="button">Safety Code</button>
             </div>
         </header>
+
+        <div id="key-warning-banner" class="warning-banner hidden">
+            KEY CHANGED WARNING: This peer's fingerprint changed or failed signature check. Verify Safety Code before trusting!
+        </div>
 
         <div id="messages-container"></div>
 
         <footer id="composer">
-            <div id="attachment-bar" class="hidden">
+            <div id="reply-bar" class="composer-banner hidden">
+                <div class="composer-banner-text">
+                    <span id="reply-preview-author" class="banner-author">Replying to</span>
+                    <span id="reply-preview-text" class="banner-snippet"></span>
+                </div>
+                <button id="reply-clear" class="link-btn" type="button">cancel</button>
+            </div>
+            <div id="attachment-bar" class="composer-banner hidden">
                 <span id="attachment-name" class="attachment-name">file</span>
                 <span id="attachment-size" class="muted"></span>
                 <button id="attachment-clear" class="link-btn" type="button">remove</button>
@@ -80,39 +133,102 @@
                 <div class="rec-indicator">
                     <span class="rec-dot"></span>
                     <span id="rec-timer">00:00</span>
-                    <span class="muted">• OPUS PTT (RAM-ONLY)</span>
+                    <span id="rec-label" class="muted">Opus PTT (RAM-Only)</span>
                 </div>
-                <button id="cancel-rec-btn" class="btn small danger" type="button">CANCEL</button>
-                <button id="stop-send-rec-btn" class="btn small" type="button">STOP &amp; SEND</button>
+                <button id="cancel-rec-btn" class="btn small danger" type="button">Cancel</button>
+                <button id="stop-send-rec-btn" class="btn small" type="button">Stop &amp; Send</button>
             </div>
-            <form id="chat-form" autocomplete="off" onsubmit="return false;">
+            <form id="chat-form" autocomplete="off">
                 <input type="file" id="media-file-input" class="hidden" accept="image/*,audio/*,video/*,.pdf,.zip,.txt,.doc,.docx">
-                <button id="attach-btn" class="btn ghost" type="button" title="Attach a file (max 15 MB)">ATTACH</button>
-                <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
-                <button id="ptt-btn" class="btn ghost" type="button" title="Record Voice Note (Opus PTT)">🎙️ REC</button>
-                <button id="send-btn" class="btn" type="submit">SEND</button>
+                <button id="attach-btn" class="btn ghost small" type="button" title="Attach a file (max 15 MB)">Attach</button>
+                <input type="text" id="message-input" placeholder="Message..." autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
+                <button id="ptt-btn" class="btn ghost small" type="button" title="Record Voice Note (Opus PTT)">Voice</button>
+                <button id="send-btn" class="btn small" type="submit">Send</button>
             </form>
         </footer>
     </main>
 
-    <!-- Right: activity log -->
+    <!-- Right: Collapsible Activity Log -->
     <aside id="logs-panel">
         <div class="logs-head">
-            <span>ACTIVITY LOG</span>
+            <span id="logs-title">Activity Log</span>
             <button id="clear-logs-btn" class="link-btn" type="button">clear</button>
         </div>
         <div id="logs-container"></div>
-        <p class="hint small-pad">Messages are stored on the relay (encrypted) until your browser confirms receipt. This page keeps keys and messages only in memory and forgets them when the tab closes.</p>
+        <p class="hint small-pad">Messages stay encrypted on the relay until acknowledged. Keys, contacts, groups, and messages exist only in tab RAM.</p>
     </aside>
 </div>
 
-<!-- Safety code dialog -->
+<!-- Safety Code Modal -->
 <div id="safety-modal" class="modal hidden">
     <div class="modal-card">
-        <div class="modal-head"><span>SAFETY CODE</span><button id="safety-close-x" class="link-btn" type="button">close</button></div>
-        <p class="hint">Compare these 30 digits with your peer over a channel you trust, such as a phone call or in person. If they match, the key you saved is very likely your peer's real key and was not swapped on the way. If they differ, do not trust the key.</p>
+        <div class="modal-head"><span id="safety-modal-title">Safety Code</span><button id="safety-close-x" class="link-btn" type="button">close</button></div>
+        <p id="safety-modal-hint" class="hint">Compare these 30 digits with your peer over a trusted channel (phone call or in person). If they differ, do not trust the key.</p>
         <div id="safety-code-digits" class="mono-box center big">-</div>
-        <div class="row end"><button id="safety-close" class="btn small" type="button">CLOSE</button></div>
+        <div class="row end"><button id="safety-close" class="btn small" type="button">Close</button></div>
+    </div>
+</div>
+
+<!-- Create Group Modal -->
+<div id="group-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head"><span id="group-modal-title">Create Encrypted Group</span><button id="group-modal-close" class="link-btn" type="button">close</button></div>
+        <div class="label">Group Name</div>
+        <input type="text" id="group-name-input" class="text-input" placeholder="e.g. Ops Room" maxlength="48">
+        <div id="group-members-label" class="label">Select contacts to invite:</div>
+        <div id="group-members-list" class="checklist"></div>
+        <div id="group-modal-error" class="error-text hidden"></div>
+        <div class="row end">
+            <button id="create-group-submit" class="btn small" type="button">Create &amp; Invite</button>
+        </div>
+    </div>
+</div>
+
+<!-- Manage Group Modal -->
+<div id="group-manage-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head"><span id="group-manage-title">Group Settings</span><button id="group-manage-close" class="link-btn" type="button">close</button></div>
+        <div id="group-manage-info" class="mono-box"></div>
+        <div class="row">
+            <button id="rotate-key-btn" class="btn small flex1" type="button">Rotate AES-256 Key</button>
+            <button id="leave-group-btn" class="btn small danger flex1" type="button">Leave Group</button>
+        </div>
+    </div>
+</div>
+
+<!-- Introduce Contact Modal -->
+<div id="introduce-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head"><span id="introduce-modal-title">Introduce Contact</span><button id="introduce-close" class="link-btn" type="button">close</button></div>
+        <p id="introduce-hint" class="hint">Introduce another saved contact to the active peer using an E2EE OpenPGP introduction card.</p>
+        <select id="introduce-select" class="text-input"></select>
+        <div class="row end">
+            <button id="introduce-submit" class="btn small" type="button">Send Introduction</button>
+        </div>
+    </div>
+</div>
+
+<!-- Encrypted Backup (.gkbackup) Modal -->
+<div id="backup-modal" class="modal hidden">
+    <div class="modal-card">
+        <div class="modal-head"><span id="backup-modal-title">Encrypted Backup (.gkbackup)</span><button id="backup-close" class="link-btn" type="button">close</button></div>
+        <p id="backup-modal-hint" class="hint">100% compatible with Android GhostKey .gkbackup files (PBKDF2-HMAC-SHA256 + AES-256-GCM).</p>
+        <div id="backup-file-row" class="hidden">
+            <input type="file" id="backup-file-input" accept=".gkbackup,.json,application/json">
+        </div>
+        <div class="label">Passphrase (min 6 chars)</div>
+        <input type="password" id="backup-passphrase" class="text-input" placeholder="Passphrase..." autocomplete="off">
+        <div id="backup-error" class="error-text hidden"></div>
+        <div class="row end">
+            <button id="backup-submit" class="btn small" type="button">Continue</button>
+        </div>
+    </div>
+</div>
+
+<div id="privacy-veil" class="privacy-veil hidden">
+    <div class="privacy-veil-card">
+        <div id="privacy-veil-title" class="privacy-veil-title">GhostKey Privacy Shield</div>
+        <p id="privacy-veil-desc" class="hint">Screen hidden while tab is unfocused to protect against task-switcher snapshots and shoulder surfing. Note: web browsers cannot block OS screenshots like the Android app (FLAG_SECURE).</p>
     </div>
 </div>
 

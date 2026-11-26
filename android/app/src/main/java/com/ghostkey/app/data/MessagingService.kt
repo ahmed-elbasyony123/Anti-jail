@@ -179,7 +179,8 @@ internal class MessagingService(
         fromRelay: Boolean,
         onGroupInviteReceived: (GroupChat) -> Unit = {},
         onProfileUpdated: (senderDropId: String, alias: String?, avatarBase64: String?, avatarHash: String?) -> Unit = { _, _, _, _ -> },
-        onGroupControlReceived: (MessageContent.GroupControl, senderDropId: String?) -> Unit = { _, _ -> }
+        onGroupControlReceived: (MessageContent.GroupControl, senderDropId: String?) -> Unit = { _, _ -> },
+        onChatClearedByPeer: (senderDropId: String, alias: String) -> Unit = { _, _ -> }
     ): ChatMessage? = withContext(Dispatchers.Default) {
         val env = decryptEnvelope(msg, dropId, myKeys, contacts, groups)
         val wire = WireFormat.parse(env.plainBytes)
@@ -195,6 +196,18 @@ internal class MessagingService(
         val senderDrop = matchedContact?.dropId ?: dropId
         val targetChatId = env.group?.id ?: senderDrop
         val content = decodeWireContent(wire, env.plainBytes)
+
+        if (content is MessageContent.ClearChat) {
+            if (matchedContact != null && env.sigStatus == SignatureStatus.VERIFIED && env.group == null) {
+                clearChatMessages(matchedContact.dropId)
+                onChatClearedByPeer(matchedContact.dropId, matchedContact.alias)
+            }
+            _messages.update { list -> list.filterNot { it.id == msg.id } }
+            if (fromRelay) {
+                transport.torClient.ack(listOf(msg.id), dropId = env.group?.groupDropId ?: dropId)
+            }
+            return@withContext null
+        }
 
         dispatchSpecialContent(
             content = content,
@@ -264,7 +277,12 @@ internal class MessagingService(
     }
 
     private fun decodeWireContent(wire: WireMessage?, rawPlainBytes: ByteArray): MessageContent {
-        if (wire == null) return MessageContent.Text(String(rawPlainBytes, Charsets.UTF_8))
+        if (wire == null) {
+            if (WireFormat.isStructuredEnvelope(rawPlainBytes)) {
+                return MessageContent.Text("⚠️ This message is not supported on your version of GhostKey.")
+            }
+            return MessageContent.Text(String(rawPlainBytes, Charsets.UTF_8))
+        }
         return when {
             wire.isGroupInvite -> MessageContent.GroupInvite(
                 groupId = wire.groupId ?: "",
@@ -290,6 +308,7 @@ internal class MessagingService(
                 targetDropId = wire.groupControlTargetDropId,
                 newSharedKey = wire.groupControlNewKey
             )
+            wire.isClearChat -> MessageContent.ClearChat
             wire.isMedia -> {
                 val mimeType = wire.mimeType ?: "application/octet-stream"
                 val filename = wire.filename ?: "attachment"
@@ -445,6 +464,19 @@ internal class MessagingService(
         }
     }
 
+    suspend fun sendClearChat(
+        contact: Contact,
+        myKeys: PgpKeyPairArmored,
+        userAlias: String
+    ): Result<DeliveryState> = withContext(Dispatchers.Default) {
+        clearChatMessages(contact.dropId)
+        val payload = WireFormat.buildClearChat(senderAlias = userAlias)
+        runCatching {
+            val (_, sendRes) = encryptAndSendDirect(contact.dropId, contact.publicKeyArmored, payload, myKeys)
+            sendRes.getOrThrow()
+        }
+    }
+
     suspend fun sendGroupControl(
         group: GroupChat,
         action: String,
@@ -532,51 +564,54 @@ internal class MessagingService(
         replyToId: String? = null,
         ttlSeconds: Long? = null
     ): Result<DeliveryState> {
-        val recipientDrop: String
-        val isGroup: Boolean
-        val ciphertext: String
-        val deliveryResult: Result<DeliveryState>
-
-        when (target) {
-            is ChatTarget.Group -> {
-                recipientDrop = target.group.groupDropId
-                isGroup = true
-                ciphertext = GroupCrypto.encrypt(payload, target.group.sharedKeyBase64)
-                rememberSentCiphertext(ciphertext)
-                deliveryResult = transport.sendEncryptedGroup(recipientDrop, ciphertext)
-            }
-            is ChatTarget.Direct -> {
-                recipientDrop = target.contact.dropId
-                isGroup = false
-                val pair = encryptAndSendDirect(recipientDrop, target.contact.publicKeyArmored, payload, myKeys)
-                ciphertext = pair.first
-                deliveryResult = pair.second
-            }
+        val isGroup = target is ChatTarget.Group
+        val recipientDrop = when (target) {
+            is ChatTarget.Group -> target.group.groupDropId
+            is ChatTarget.Direct -> target.contact.dropId
         }
-
-        val state = deliveryResult.getOrElse {
-            if (enqueueOutbox(OutboxItem(msgId, isGroup, recipientDrop, ciphertext))) DeliveryState.QUEUED else DeliveryState.FAILED
-        }
+        val groupId = (target as? ChatTarget.Group)?.group?.id
+        val chatId = groupId ?: (target as ChatTarget.Direct).contact.dropId
         val expires = if (ttlSeconds != null && ttlSeconds > 0) System.currentTimeMillis() + (ttlSeconds * 1000L) else null
-        val chatId = (target as? ChatTarget.Group)?.group?.id ?: (target as ChatTarget.Direct).contact.dropId
 
-        val msg = ChatMessage(
+        // Optimistic UI insert: render immediately in chat with QUEUED (⏳) before Tor round-trip
+        val pendingMsg = ChatMessage(
             id = msgId,
             isOutgoing = true,
             content = content,
             ciphertext = "",
             timestamp = System.currentTimeMillis(),
-            deliveryState = state,
+            deliveryState = DeliveryState.QUEUED,
             chatId = chatId,
-            groupId = (target as? ChatTarget.Group)?.group?.id,
+            groupId = groupId,
             isGroup = isGroup,
             senderAlias = userAlias,
             replyToId = replyToId,
             expiresAt = expires,
             ttlSeconds = ttlSeconds
         )
-        _messages.update { it + msg }
-        return if (deliveryResult.isSuccess) Result.success(state) else deliveryResult
+        _messages.update { it + pendingMsg }
+
+        val ciphertext = try {
+            when (target) {
+                is ChatTarget.Group -> GroupCrypto.encrypt(payload, target.group.sharedKeyBase64)
+                is ChatTarget.Direct -> StandalonePgpEngine.encrypt(payload, target.contact.publicKeyArmored, myKeys.privateKeyArmored)
+            }.also { rememberSentCiphertext(it) }
+        } catch (e: Exception) {
+            _messages.update { list -> list.map { if (it.id == msgId) it.copy(deliveryState = DeliveryState.FAILED) else it } }
+            return Result.failure(e)
+        }
+
+        val deliveryResult = if (isGroup) {
+            transport.sendEncryptedGroup(recipientDrop, ciphertext)
+        } else {
+            transport.sendEncryptedDirect(recipientDrop, ciphertext)
+        }
+
+        val finalState = deliveryResult.getOrElse {
+            if (enqueueOutbox(OutboxItem(msgId, isGroup, recipientDrop, ciphertext))) DeliveryState.QUEUED else DeliveryState.FAILED
+        }
+        _messages.update { list -> list.map { if (it.id == msgId) it.copy(deliveryState = finalState) else it } }
+        return if (deliveryResult.isSuccess) Result.success(finalState) else deliveryResult
     }
 
     private fun enqueueOutbox(item: OutboxItem): Boolean {

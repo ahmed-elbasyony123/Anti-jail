@@ -188,3 +188,36 @@ test('invalid peer keys are rejected with a message', async () => {
     bob.$('save-peer-btn').click();
     await waitFor(() => /private key/i.test(bob.$('peer-error').textContent), 3000, 'private key refused');
 });
+
+test('encrypted groups: create group, E2EE invite over relay, group AES-GCM messaging', async () => {
+    await alice.savePeer(bob.myKey());
+    await bob.savePeer(alice.myKey());
+    await waitFor(() => alice.$('chat-list').children.length >= 1, 3000, 'alice chat list');
+
+    alice.$('new-group-btn').click();
+    alice.$('group-name-input').value = 'Phase6 Group';
+    alice.$('create-group-submit').click();
+    await waitFor(() => alice.app.getStateForTests().groups.length === 1, 5000, 'alice group created');
+
+    await waitFor(() => bob.bubbles().some((b) => b.textContent.includes('Phase6 Group')), 8000, 'bob receives group invite');
+    const inviteBubble = bob.bubbles().find((b) => b.textContent.includes('Phase6 Group'));
+    inviteBubble.querySelector('.special-card button').click();
+    await waitFor(() => bob.app.getStateForTests().groups.length === 1, 5000, 'bob joined group');
+
+    await alice.send('secret group hello');
+    await waitFor(() => bob.bubbles().some((b) => b.textContent.includes('secret group hello')), 8000, 'bob receives group AES msg');
+});
+
+test('clear chat for both sides wipes direct conversation on sender and peer', async () => {
+    const aliceChatId = bob.app.getStateForTests().identity.dropId;
+    const bobChatId = alice.app.getStateForTests().identity.dropId;
+    alice.app.getStateForTests().activeChat = { type: 'direct', id: aliceChatId };
+    bob.app.getStateForTests().activeChat = { type: 'direct', id: bobChatId };
+
+    await alice.send('temp secret message');
+    await waitFor(() => bob.bubbles().some((b) => b.textContent.includes('temp secret message')), 8000, 'bob gets message');
+
+    alice.$('clear-both-btn').click();
+    await waitFor(() => alice.bubbles().length === 0, 5000, 'alice cleared locally');
+    await waitFor(() => bob.bubbles().length === 0, 8000, 'bob cleared remotely via signed clear_chat');
+});

@@ -1,7 +1,7 @@
 // Tests for the shared web core (server/public/ghostkey-core.mjs). Run: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { webcrypto, createHash, randomBytes } from 'node:crypto';
+import { webcrypto, createHash, randomBytes, createCipheriv, pbkdf2Sync } from 'node:crypto';
 import * as openpgp from 'openpgp';
 import { createCore } from '../public/ghostkey-core.mjs';
 
@@ -128,6 +128,111 @@ test('wire format v2: padding buckets, media round trip, strict parsing', async 
     assert.equal(core.parseWire('{"type":"text","text":"x"}'), null, 'v1 style rejected');
     assert.equal(core.parseWire('{"v":3,"type":"text","text":"x"}'), null);
     assert.equal(core.parseWire('{"v":2,"type":"other"}'), null);
-    assert.equal(core.parseWire('{"v":2,"type":"profile_update"}').unsupported, true);
-    assert.equal(core.parseWire('{"v":2,"type":"group_control"}').unsupported, true);
+    assert.equal(core.parseWire('{"v":2,"type":"group_control"}'), null, 'group_control requires groupId & action');
+    const pu = core.parseWire(core.buildProfileUpdate({ profileAlias: 'Alice', senderAlias: 'Alice' }));
+    assert.equal(pu.type, 'profile_update');
+    assert.equal(pu.profileAlias, 'Alice');
+});
+
+test('AES-256-GCM fallback matches Node crypto ciphertexts across edge lengths', () => {
+    for (const len of [0, 1, 15, 16, 17, 63, 64, 250]) {
+        const key = new Uint8Array(randomBytes(32));
+        const iv = new Uint8Array(randomBytes(12));
+        const plain = new Uint8Array(randomBytes(len));
+        const aad = new Uint8Array(utf8.encode('ghostkey-backup-v1'));
+
+        const cipher = createCipheriv('aes-256-gcm', key, iv);
+        cipher.setAAD(aad);
+        const enc = Buffer.concat([cipher.update(plain), cipher.final(), cipher.getAuthTag()]);
+
+        const got = core.aes256GcmEncryptFallback(key, iv, plain, aad);
+        assert.deepEqual(Buffer.from(got), enc, `GCM encrypt len=${len}`);
+        const dec = core.aes256GcmDecryptFallback(key, iv, got, aad);
+        assert.deepEqual(Buffer.from(dec), Buffer.from(plain), `GCM decrypt len=${len}`);
+    }
+    const key = new Uint8Array(randomBytes(32));
+    const iv = new Uint8Array(randomBytes(12));
+    const ct = core.aes256GcmEncryptFallback(key, iv, utf8.encode('secret'));
+    ct[ct.length - 1] ^= 0xff;
+    assert.throws(() => core.aes256GcmDecryptFallback(key, iv, ct), /tag mismatch/);
+});
+
+test('PBKDF2 fallback matches Node crypto and .gkbackup round-trips', async () => {
+    const pass = utf8.encode('correct horse battery');
+    const salt = new Uint8Array(randomBytes(16));
+    assert.deepEqual(
+        Buffer.from(core.pbkdf2HmacSha256Fallback(pass, salt, 200, 32)),
+        pbkdf2Sync(pass, salt, 200, 32, 'sha256')
+    );
+
+    const id = await core.generateIdentity();
+    const peer = await core.generateIdentity();
+    const grpKey = core.generateGroupKey();
+    const gToken = core.randomHex32();
+    const gDrop = await core.deriveDropId(gToken);
+    const backupStr = await core.exportEncryptedBackup({
+        identity: id,
+        userAlias: 'Alice',
+        relayUrl: 'http://test.onion',
+        contacts: [{ dropId: peer.dropId, alias: 'Bob', publicKeyArmored: peer.publicKeyArmored, fingerprint: peer.fingerprint }],
+        groups: [{ id: 'g1', name: 'Ops', groupDropId: gDrop, groupReadToken: gToken, sharedKeyBase64: grpKey, members: [] }]
+    }, 'strong-pass-123');
+
+    const restored = await core.importEncryptedBackup(backupStr, 'strong-pass-123');
+    assert.equal(restored.identity.dropId, id.dropId);
+    assert.equal(restored.identity.readToken, id.readToken);
+    assert.equal(restored.contacts.length, 1);
+    assert.equal(restored.groups[0].sharedKeyBase64, grpKey);
+    await assert.rejects(core.importEncryptedBackup(backupStr, 'wrong-pass-123'));
+});
+
+test('group AES-256-GCM messages, invites, Contact Card JSON, replyTo & intro round-trip', async () => {
+    const alice = await core.generateIdentity();
+    const bob = await core.generateIdentity();
+    const cardJson = core.encodeContactCard({
+        alias: 'Alice',
+        dropId: alice.dropId,
+        fingerprint: alice.fingerprint,
+        publicKeyArmored: alice.publicKeyArmored
+    });
+    const parsedCard = await core.parsePeerInput(cardJson);
+    assert.equal(parsedCard.dropId, alice.dropId);
+    assert.equal(parsedCard.alias, 'Alice');
+
+    const grpKey = core.generateGroupKey();
+    const gToken = core.randomHex32();
+    const gDrop = await core.deriveDropId(gToken);
+    const inviteBytes = core.buildGroupInvite({
+        groupId: 'grp-1',
+        groupName: 'Alpha',
+        groupDropId: gDrop,
+        groupReadToken: gToken,
+        sharedKey: grpKey,
+        senderAlias: 'Alice'
+    });
+    const parsedInvite = await core.parseWireAsync(inviteBytes);
+    assert.equal(parsedInvite.type, 'group_invite');
+    assert.equal(parsedInvite.groupName, 'Alpha');
+
+    const badInvite = core.buildGroupInvite({
+        groupId: 'grp-1',
+        groupName: 'Fake',
+        groupDropId: bob.dropId,
+        groupReadToken: gToken,
+        sharedKey: grpKey
+    });
+    assert.equal(await core.parseWireAsync(badInvite), null, 'mismatched groupDropId vs readToken rejected');
+
+    const msgBytes = core.buildText('hi group', { senderAlias: 'Alice', groupId: 'grp-1', replyTo: 'm0', ttlSeconds: 60 });
+    const ct = await core.encryptGroup(msgBytes, grpKey);
+    const pt = await core.decryptGroup(ct, grpKey);
+    const parsedMsg = core.parseWire(pt);
+    assert.equal(parsedMsg.text, 'hi group');
+    assert.equal(parsedMsg.replyTo, 'm0');
+    assert.equal(parsedMsg.ttl, 60);
+
+    const clrBytes = core.buildClearChat({ senderAlias: 'Alice' });
+    const parsedClr = core.parseWire(clrBytes);
+    assert.equal(parsedClr.type, 'clear_chat');
+    assert.equal(parsedClr.senderAlias, 'Alice');
 });

@@ -142,13 +142,20 @@ fun LockScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (enteredPin.length >= 4) {
-                PrimaryActionButton(
-                    text = strings.continueBtn,
-                    onClick = { submitPin(enteredPin) },
-                    modifier = Modifier.widthIn(max = 260.dp)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            // Fixed-height slot prevents the keypad from shifting upward when the 4th digit is typed.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (enteredPin.length >= 4) {
+                    PrimaryActionButton(
+                        text = strings.continueBtn,
+                        onClick = { submitPin(enteredPin) },
+                        modifier = Modifier.widthIn(max = 260.dp)
+                    )
+                }
             }
 
             TextButton(onClick = onDeviceUnlock) {

@@ -46,6 +46,7 @@ data class ChatMessage(
         is MessageContent.GroupInvite -> "👥 Group invitation: ${content.groupName}"
         is MessageContent.GroupControl -> "👥 Group update (${content.action})"
         is MessageContent.ProfileUpdate -> "🪪 Profile updated"
+        MessageContent.ClearChat -> "🧹 Chat cleared"
         MessageContent.Encrypted -> fallback
     }
 

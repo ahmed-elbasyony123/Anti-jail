@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check lib/config.js && node --check lib/mailboxStore.js && node --check lib/wsHub.js && node --check lib/httpRoutes.js && node --check public/ghostkey-core.mjs && node --check public/ghostkey-ui.mjs && node --check public/app.js",
+    "check": "node --check server.js && node --check lib/config.js && node --check lib/mailboxStore.js && node --check lib/wsHub.js && node --check lib/httpRoutes.js && node --check public/ghostkey-core.mjs && node --check public/ghostkey-ui.mjs && node --check public/ghostkey-i18n.mjs && node --check public/app.js",
     "test": "node --test test/relay.test.js test/core.test.mjs test/ui.test.mjs test/web-e2e.test.mjs"
   },
   "dependencies": {
