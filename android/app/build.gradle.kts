@@ -8,11 +8,26 @@ android {
     namespace = "com.ghostkey.app"
     compileSdk = 34
 
+    // versionCode is injected by CI via -PversionCode=N; falls back to 29 for local dev builds.
+    val ciVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 29
+
+    signingConfigs {
+        create("release") {
+            val ksFile = System.getenv("RELEASE_KEYSTORE_PATH")
+            if (!ksFile.isNullOrBlank()) {
+                storeFile = file(ksFile)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: "ghostkey"
+                keyPassword = System.getenv("RELEASE_KEYSTORE_PASSWORD") ?: ""
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.ghostkey.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 28
+        versionCode = ciVersionCode
         versionName = "3.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -28,9 +43,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            // Fall back to the debug signing key when no release keystore is configured
-            // so CI/local release builds remain directly installable with full R8 shrinking.
-            signingConfig = signingConfigs.getByName("debug")
+            // Use release keystore when available (CI), otherwise fall back to debug key (local).
+            val releaseConfig = signingConfigs.findByName("release")
+            signingConfig = if (releaseConfig?.storeFile != null) releaseConfig
+                            else signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -108,3 +124,4 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
+

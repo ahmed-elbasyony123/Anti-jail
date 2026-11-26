@@ -23,3 +23,9 @@ Cargo.lock
 
 # Patches & build artifacts
 *.patch
+
+# Keystore files — NEVER commit private keys
+*.jks
+*.keystore
+*.jks.b64
+android/keystore/
