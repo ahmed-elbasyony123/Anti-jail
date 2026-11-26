@@ -27,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -494,7 +496,18 @@ private fun ChatComposerBar(
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = onInputChange,
-                    placeholder = { Text(strings.messageInputPlaceholder, color = palette.textTertiary, fontSize = 14.sp) },
+                    textStyle = TextStyle(
+                        fontSize = 15.sp,
+                        textDirection = TextDirection.Content
+                    ),
+                    placeholder = {
+                        Text(
+                            text = strings.messageInputPlaceholder,
+                            color = palette.textTertiary,
+                            fontSize = 14.sp,
+                            style = TextStyle(textDirection = TextDirection.Content)
+                        )
+                    },
                     shape = RoundedCornerShape(24.dp),
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(autoCorrect = false),
