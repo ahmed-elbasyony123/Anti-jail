@@ -1,0 +1,7 @@
+Initial F-Droid release (v3.0.1):
+- Embedded Arti Tor engine (Rust) with strict anti-DNS-leak routing
+- Ed25519/X25519 OpenPGP 1-to-1 chats & AES-256-GCM group chats
+- 5-minute Quick Pair invite links, Contact Requests & in-person QR (SAS)
+- Opt-in BLE Mesh, Wi-Fi Direct P2P, Local LAN Mesh & Offline APK Sharing
+- RAM-only Opus voice notes, EXIF-stripped media, Duress PIN & Panic Wipe
+- Full English & Arabic (RTL) UI with Light/Dark themes

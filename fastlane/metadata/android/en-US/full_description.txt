@@ -1,0 +1,8 @@
+GhostKey is a privacy-first, open-source end-to-end encrypted messenger built with zero Google Play Services, zero telemetry, and an embedded Tor routing engine.
+
+Key Features:
+• Embedded Tor (Arti in Rust): Routes traffic directly through Tor v3 onion circuits in-process with strict DNS-leak blocking—no external VPN or Orbot required (Orbot remains supported as a fallback).
+• Embedded OpenPGP (Ed25519 + X25519): Sign-then-encrypt messages with mandatory SEIPD/MDC integrity protection and AES-256-GCM encrypted group chats.
+• 5-Minute Quick Pair & QR Verification: Connect remotely via zero-knowledge one-time invite links/codes, or verify peers in person using live CameraX QR scanning and 30-digit Safety Numbers.
+• Offline Mesh & APK Sharing: Keep communicating when internet/Tor is down via opt-in BLE multi-hop mesh, Wi-Fi Direct P2P, Local LAN discovery, and local Wi-Fi offline APK sharing.
+• Anti-Forensics by Design: Messages, EXIF-stripped images, and Opus PTT voice notes stay strictly in volatile RAM. Includes FLAG_SECURE screenshot blocking, Hardware AndroidKeyStore persistence (or RAM-only Ephemeral Mode), Disappearing Messages, in-app PIN keypad, Duress PIN, and one-tap Panic Wipe.
