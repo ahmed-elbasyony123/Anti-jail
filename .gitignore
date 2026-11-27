@@ -29,3 +29,6 @@ Cargo.lock
 *.keystore
 *.jks.b64
 android/keystore/
+
+# Prebuilt native libs — must be built from rust/arti-mobile source
+android/app/src/main/jniLibs/

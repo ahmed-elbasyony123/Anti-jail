@@ -43,10 +43,10 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            // Use release keystore when available (CI), otherwise fall back to debug key (local).
+            // Use release keystore when available (CI); omit signing otherwise
+            // so F-Droid can apply its own signature cleanly.
             val releaseConfig = signingConfigs.findByName("release")
-            signingConfig = if (releaseConfig?.storeFile != null) releaseConfig
-                            else signingConfigs.getByName("debug")
+            signingConfig = if (releaseConfig?.storeFile != null) releaseConfig else null
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
