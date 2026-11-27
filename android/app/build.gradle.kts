@@ -8,7 +8,15 @@ android {
     namespace = "com.ghostkey.app"
     compileSdk = 34
 
-    // versionCode is injected by CI via -PversionCode=N; falls back to 29 for local dev builds.
+    // === VERSION CONFIG ===
+    // CI (GitHub Actions): versionCode = github.run_number (auto-increments)
+    // F-Droid: builds from git tag, ignores CI, uses the fallback number below.
+    //
+    // ⚠️  GOLDEN RULE for every new release:
+    //   1. Bump versionName (e.g. "3.0.2")
+    //   2. Bump the fallback number below (e.g. 30)
+    //   3. Add fastlane/metadata/android/{en-US,ar}/changelogs/<fallback>.txt
+    //   4. git commit + git push → CI auto-tags + builds + releases
     val ciVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 29
 
     signingConfigs {

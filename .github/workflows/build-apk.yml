@@ -111,7 +111,7 @@ jobs:
           VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' android/app/build.gradle.kts || echo "3.0.1")
           TAG="v${VERSION}"
 
-          # Create annotated git tag if it doesn't exist yet on this commit
+          # Create annotated git tag if it doesn't exist yet
           if ! git rev-parse "$TAG" >/dev/null 2>&1; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -119,10 +119,10 @@ jobs:
             git push origin "$TAG"
             echo "Created new tag: $TAG"
           else
-            EXISTING=$(git rev-parse "$TAG")
+            # Dereference annotated tag to its commit with ^{}
+            EXISTING=$(git rev-parse "$TAG^{}" 2>/dev/null || git rev-parse "$TAG")
             CURRENT=$(git rev-parse HEAD)
             if [ "$EXISTING" != "$CURRENT" ]; then
-              # versionName unchanged but code changed — append build number
               TAG="${TAG}-build.${{ github.run_number }}"
               echo "Tag exists on different commit, using: $TAG"
             else
